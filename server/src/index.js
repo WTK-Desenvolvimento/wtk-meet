@@ -4,6 +4,7 @@ import cors from 'cors';
 import { Server } from 'socket.io';
 import { RoomStore, MAX_PARTICIPANTS } from './rooms.js';
 import { issueTurnCredentials } from './turnCredentials.js';
+import 'dotenv/config';
 
 const PORT = process.env.PORT || 4000;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';

@@ -42,14 +42,26 @@ export default function Room() {
 
     let cancelled = false;
 
+    async function getLocalStream() {
+      try {
+        return await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      } catch {
+        try {
+          return await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch {
+          return null;
+        }
+      }
+    }
+
     async function setup() {
       const [localStream, iceServers, roomKey] = await Promise.all([
-        navigator.mediaDevices.getUserMedia({ video: true, audio: true }),
+        getLocalStream(),
         fetchIceServers(),
         deriveRoomKey(passphrase, roomId),
       ]);
       if (cancelled) {
-        localStream.getTracks().forEach((t) => t.stop());
+        localStream?.getTracks().forEach((t) => t.stop());
         return;
       }
 
@@ -135,7 +147,13 @@ export default function Room() {
       signaling.connect();
     }
 
-    setup();
+    setup().catch((err) => {
+      if (!cancelled) {
+        console.error('[Room] setup error:', err);
+        setPhase(PHASE.DENIED);
+        setDenyReason('setup-error');
+      }
+    });
 
     return () => {
       cancelled = true;
@@ -184,7 +202,9 @@ export default function Room() {
         <p>
           {denyReason === 'room-full'
             ? 'A sala já está com 6 participantes.'
-            : 'Seu pedido de entrada foi negado.'}
+            : denyReason === 'setup-error'
+              ? 'Erro ao inicializar a conexão. Verifique sua rede e tente novamente.'
+              : 'Seu pedido de entrada foi negado.'}
         </p>
         <button onClick={() => navigate('/')}>Voltar</button>
       </main>
