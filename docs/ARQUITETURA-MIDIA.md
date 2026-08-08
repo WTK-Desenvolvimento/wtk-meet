@@ -67,12 +67,23 @@ src/
   lib/text.js       normalização e tokenização de texto (pura, testada)
   lib/presence.js   agrupamento e debounce de entrada/saída (pura, testada)
   lib/share-lock.js política de um-compartilhamento-por-vez (pura, testada)
-test/               33 testes unitários + 10 de integração do protocolo
+test/
+  helpers/fake-env.js  navegador falso: DOM mínimo + getUserMedia,
+                       getDisplayMedia, RTCPeerConnection e AnalyserNode falsos
+  *.test.js            165 testes: lógica pura, protocolo contra o servidor
+                       real, módulos de navegador e uma chamada ponta a ponta
 ```
 
-Regra que organiza tudo isso: **o que é lógica pura mora em `src/lib/` e tem
-teste**; o que toca DOM ou WebRTC fica fino o bastante para ser verificado com
-os olhos.
+Regra que organiza tudo isso: **o que é lógica pura mora em `src/lib/`**, e o que
+toca DOM ou WebRTC fica fino o bastante para ser dirigido por doubles.
+
+O `test/helpers/fake-env.js` é o que permite testar a parte de navegador sem
+navegador. Ele não é um jsdom pobre: é um conjunto de doubles que **registram o
+que o app fez** — quantas vezes cada `MediaStreamTrack.stop()` foi chamado, o que
+passou por cada `sender.replaceTrack()`, quais nós entraram no DOM, quantos
+`requestAnimationFrame` ficaram agendados. É isso que transforma "o LED apaga" e
+"não gasta CPU em silêncio" em asserções, em vez de comentários de código.
+Ver `docs/TESTE-MANUAL.md` para o mapa item-do-DoD → teste.
 
 ---
 
@@ -218,6 +229,13 @@ Detalhes que separam isto de uma implementação ingênua:
   durante a transição. Alternar rápido não deixa dois tracks vivos.
 - **`deviceId` que sumiu** (câmera trocada de porta): `OverconstrainedError` /
   `NotFoundError` limpam a preferência e tentam o dispositivo padrão, uma vez.
+  A retentativa acontece **dentro** da trava `busy` (`enableCamera` faz
+  `return await openCamera()`, não `return openCamera()`): com o `return` sem
+  `await`, o `finally` soltaria a trava assim que a promessa fosse criada, e um
+  clique nesse intervalo abriria uma segunda câmera órfã — LED aceso, ninguém
+  apontando para ela. Coberto por teste
+  (`test/media-camera.test.js`, "a trava de concorrência continua valendo
+  durante a retentativa de fallback").
 - **Dispositivo tomado por outro app:** `NotReadableError` vira uma mensagem
   clara ("a câmera está em uso por outro aplicativo"), não uma falha silenciosa.
 - **Câmera arrancada** (USB removido): o listener de `ended` do próprio track
@@ -303,7 +321,7 @@ próxima frase. A assimetria é deliberada e está comentada no código.
 npm install
 npm run dev      # http://localhost:5173 servindo o fonte
 npm run preview  # build + servidor servindo dist/
-npm test         # 43 testes
+npm test         # 165 testes
 npm run lint
 ```
 

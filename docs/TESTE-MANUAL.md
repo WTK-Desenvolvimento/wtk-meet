@@ -115,25 +115,51 @@ nenhum warning novo) e `chrome://webrtc-internals` numa terceira aba.
 
 ## O que já foi verificado por automação
 
-Executado neste ambiente, sem navegador:
+Executado neste ambiente, sem navegador: **165 testes** verdes (`npm test`),
+**lint limpo** (`npm run lint`) e **build de produção** sem aviso
+(`npm run build`, 15 módulos).
 
-- **43 testes** verdes (`npm test`) — 33 unitários + 10 de integração que sobem
-  o servidor real e conversam por WebSocket.
-- **Lint limpo** (`npx eslint .`, zero erros e zero warnings).
-- **Build de produção** (`vite build`) — 15 módulos, sem aviso.
-- **Servidor HTTP**: `index.html` 200, `.js`/`.css` com MIME correto, asset
-  inexistente 404, path traversal codificado 403.
-- Protocolo coberto por teste de integração: welcome com lista de participantes,
-  anúncio de entrada e de saída, relay de SDP/ICE apenas ao destinatário,
-  isolamento entre salas, chat entregue a todos, **histórico não replicado para
-  quem entra depois**, limite de tamanho, rate limit, trava de tela exclusiva,
-  liberação da trava por queda do compartilhador, propagação de estado de
-  câmera/microfone.
-- Lógica pura coberta: nível de áudio contínuo e não binário, hangover,
-  ataque/liberação, decaimento a zero, rejeição de `javascript:`/`data:` na
-  linkificação, escape de HTML, limites de texto, agrupamento de avisos, debounce
-  de reconexão, exclusividade da trava de tela.
+A suíte tem três camadas:
 
-**Não verificável sem hardware:** LED da câmera (4.2), fluidez a 60 fps (1.9),
-CPU ociosa (1.7), seletor do `getDisplayMedia` (2.x), sons audíveis, e o
-comportamento real de SDP/ICE entre navegadores.
+**1. Lógica pura** (`test/level|text|presence|share-lock|rooms.test.js`) — nível
+de áudio contínuo e não binário, hangover, ataque/liberação, decaimento a zero,
+rejeição de `javascript:`/`data:` na linkificação, escape de HTML, limites de
+texto, agrupamento de avisos, debounce de reconexão, exclusividade da trava.
+
+**2. Servidor real** (`test/signaling.test.js`) — sobe o servidor e conversa por
+WebSocket: welcome com lista de participantes, anúncio de entrada e saída, relay
+de SDP/ICE apenas ao destinatário, isolamento entre salas, chat entregue a todos,
+**histórico não replicado para quem entra depois**, limite de tamanho, rate
+limit, trava de tela exclusiva e sua liberação por queda, propagação de estado de
+câmera/microfone. Mais o servidor HTTP: `index.html` 200, MIME correto, 404 para
+asset inexistente, 403 para path traversal codificado.
+
+**3. Navegador falso** (`test/helpers/fake-env.js` + `media-camera`,
+`media-screen`, `rtc-slots`, `audio-meter`, `chat-dom`, `notifications`,
+`tiles-ring`, `speaking-ring-reduced-motion`, `app-flow`) — doubles escritos à
+mão para `getUserMedia`, `getDisplayMedia`, `RTCPeerConnection`, `AnalyserNode` e
+um DOM mínimo. Isso torna verificável, sem hardware, a *causa* de vários itens
+que antes só se via com o olho:
+
+| Item do DoD | O que a automação prova |
+|---|---|
+| 2, 3 | `--level` recebe valores distintos e crescentes; o tile remoto acende igual |
+| 4 | Com `prefers-reduced-motion` não há `arc`/`fill` (partículas), só contorno cuja espessura e opacidade seguem o volume |
+| 5 | Em silêncio **nenhum `requestAnimationFrame` fica agendado** (sondagem de 250 ms); voz religa o rAF; silêncio devolve ao ocioso |
+| 6, 7, 8 | `getDisplayMedia` chamado uma vez, `contentHint='detail'`, `ended` nativo limpa estado e devolve a trava, câmera sobrevive intacta ao compartilhamento, sem `getDisplayMedia` o módulo recusa |
+| 9–12 | Badge conta/zera, `destroy()` esvazia o log, HTML vira nó de texto (zero elementos criados a partir do texto do usuário), limite aplicado antes da rede |
+| 13 | **`track.stop()` chamado e `readyState === 'ended'`** — a causa direta do LED apagar |
+| 14 | O segundo `getUserMedia` pede `deviceId: { exact: ... }`; queda para a câmera padrão quando o id sumiu |
+| 15 | Cinco ciclos: 5 tracks criados, 5 parados, **zero vivos**, uma única `RTCPeerConnection`, nunca fechada |
+| 16, 17, 18 | Modal um a um exigindo clique, toasts limitados a 4, saídas simultâneas agrupadas em um aviso, som suprimido quando silenciado, **nenhum som nem modal na própria entrada** |
+
+`test/app-flow.test.js` executa `src/main.js` de verdade contra esse navegador
+falso, numa chamada em ordem: entrar → alguém chega → câmera on/off ×5 →
+compartilhar → parar pelo botão nativo → chat → saídas → sair. É onde os bugs de
+cabeamento apareceriam.
+
+**Ainda depende de humano com hardware:** o LED em si (4.2 — a automação prova o
+`stop()`, não o fóton), fluidez percebida a 60 fps (1.9), CPU medida no perfilador
+(1.7 — a automação prova que não há rAF agendado), o seletor real do
+`getDisplayMedia` (2.x), sons audíveis, e o comportamento real de SDP/ICE/NAT
+entre navegadores (todo o item 3 e `chrome://webrtc-internals`).

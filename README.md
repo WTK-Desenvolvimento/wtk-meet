@@ -32,7 +32,7 @@ segura — câmera e microfone funcionam sem HTTPS.
 | `npm run dev` | Servidor de signaling + app (serve o fonte direto) |
 | `npm run build` | Bundle de produção em `dist/` |
 | `npm run preview` | Build + servidor servindo `dist/` |
-| `npm test` | 43 testes (unitários + integração do protocolo) |
+| `npm test` | 165 testes (lógica pura, protocolo, módulos de navegador, chamada ponta a ponta) |
 | `npm run lint` | ESLint |
 
 ## Documentação

@@ -88,6 +88,23 @@ export function createLocalMedia() {
     state.busy = true;
     notify();
     try {
+      // `await` aqui, e nao `return openCamera()`: sem ele o `finally` soltaria
+      // a trava assim que a promessa fosse CRIADA, e um clique durante a
+      // retentativa abriria uma segunda camera — orfa e com o LED aceso.
+      return await openCamera();
+    } finally {
+      state.busy = false;
+      notify();
+    }
+  }
+
+  /**
+   * Abre o dispositivo de fato. A trava `busy` e responsabilidade de quem chama,
+   * e vale para a tentativa inicial E para a retentativa.
+   * @param {boolean} podeCairParaPadrao permite uma unica retentativa
+   */
+  async function openCamera(podeCairParaPadrao = true) {
+    try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           deviceId: state.videoDeviceId ? { exact: state.videoDeviceId } : undefined,
@@ -111,15 +128,12 @@ export function createLocalMedia() {
     } catch (err) {
       state.camOn = false;
       // deviceId exato indisponivel (camera trocada de porta): tenta o padrao.
-      if (state.videoDeviceId && (err.name === 'OverconstrainedError' || err.name === 'NotFoundError')) {
+      const sumiu = err.name === 'OverconstrainedError' || err.name === 'NotFoundError';
+      if (podeCairParaPadrao && state.videoDeviceId && sumiu) {
         state.videoDeviceId = null;
-        state.busy = false;
-        return enableCamera();
+        return openCamera(false);
       }
       throw err;
-    } finally {
-      state.busy = false;
-      notify();
     }
   }
 
