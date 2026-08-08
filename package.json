@@ -1,0 +1,23 @@
+{
+  "name": "wtk-meet",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Sala de chamada WebRTC com halo de fala, compartilhamento de tela, chat efemero e avisos de entrada/saida",
+  "scripts": {
+    "dev": "node server/index.js",
+    "build": "vite build",
+    "preview": "npm run build && node server/index.js",
+    "lint": "eslint .",
+    "test": "node --test 'test/**/*.test.js'"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.17.0",
+    "globals": "^15.14.0",
+    "vite": "^6.0.7"
+  }
+}

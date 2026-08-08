@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wtk-meet</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <!-- Lobby -->
+    <section id="lobby" class="lobby">
+      <form id="lobby-form" class="lobby-card">
+        <h1>wtk-meet</h1>
+        <label for="name">Seu nome</label>
+        <input id="name" name="name" maxlength="40" required autocomplete="name" placeholder="Nicolas" />
+        <label for="room">Sala</label>
+        <input id="room" name="room" maxlength="64" required value="wtk" />
+        <button type="submit" class="primary">Entrar na chamada</button>
+        <p class="hint">Câmera e microfone são pedidos só depois de entrar.</p>
+      </form>
+    </section>
+
+    <!-- Chamada -->
+    <main id="call" class="call" hidden>
+      <div class="stage">
+        <div id="tiles" class="tiles" aria-label="Participantes"></div>
+
+        <footer class="controls" role="toolbar" aria-label="Controles da chamada">
+          <button id="btn-mic" class="ctrl" aria-pressed="true" title="Microfone (M)">
+            <span class="icon" aria-hidden="true">🎙️</span><span class="label">Microfone</span>
+          </button>
+          <button id="btn-cam" class="ctrl" aria-pressed="false" title="Câmera (V)">
+            <span class="icon" aria-hidden="true">📷</span><span class="label">Câmera</span>
+          </button>
+          <button id="btn-share" class="ctrl" aria-pressed="false" title="Compartilhar tela">
+            <span class="icon" aria-hidden="true">🖥️</span><span class="label">Compartilhar tela</span>
+          </button>
+          <button id="btn-chat" class="ctrl" aria-expanded="false" aria-controls="chat-panel" title="Chat (C)">
+            <span class="icon" aria-hidden="true">💬</span><span class="label">Chat</span>
+            <span id="chat-badge" class="badge" hidden aria-live="polite"></span>
+          </button>
+          <button id="btn-sound" class="ctrl" aria-pressed="true" title="Sons de entrada e saída">
+            <span class="icon" aria-hidden="true">🔔</span><span class="label">Avisos</span>
+          </button>
+          <button id="btn-leave" class="ctrl danger" title="Sair da chamada">
+            <span class="icon" aria-hidden="true">📞</span><span class="label">Sair</span>
+          </button>
+        </footer>
+      </div>
+
+      <!-- Chat efêmero -->
+      <aside id="chat-panel" class="chat-panel" hidden aria-label="Chat da sala">
+        <header class="chat-header">
+          <h2>Chat da sala</h2>
+          <button id="chat-close" class="icon-btn" aria-label="Fechar chat">✕</button>
+        </header>
+        <p class="chat-notice">As mensagens somem quando a chamada acaba. Nada fica salvo.</p>
+        <ol id="chat-log" class="chat-log" aria-live="polite" aria-relevant="additions"></ol>
+        <form id="chat-form" class="chat-form">
+          <label class="sr-only" for="chat-input">Mensagem</label>
+          <textarea id="chat-input" rows="2" maxlength="2000" placeholder="Escreva uma mensagem…"></textarea>
+          <div class="chat-form-row">
+            <span id="chat-count" class="counter">0/2000</span>
+            <button type="submit" class="primary small">Enviar</button>
+          </div>
+        </form>
+      </aside>
+    </main>
+
+    <!-- Avisos -->
+    <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+    <div id="modal-root" class="modal-root" hidden role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal">
+        <h2 id="modal-title"></h2>
+        <p id="modal-body"></p>
+        <button id="modal-ok" class="primary">Entendi</button>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
