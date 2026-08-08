@@ -1,0 +1,9 @@
+services:
+  coturn:
+    image: coturn/coturn:4.6
+    container_name: wtk-meet-coturn
+    restart: unless-stopped
+    network_mode: host # coturn precisa da faixa de portas de relay diretamente
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
