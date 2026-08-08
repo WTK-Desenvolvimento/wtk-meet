@@ -1,36 +1,31 @@
-import crypto from 'node:crypto';
-
-const TTL_SECONDS = Number(process.env.TURN_CREDENTIAL_TTL || 3600);
+const CF_API_URL = 'https://rtc.live.cloudflare.com/v1/turn/keys';
 
 /**
- * Ephemeral TURN credentials via the coturn "TURN REST API" convention:
- * username = "<expiry-unix-ts>:<label>", credential = base64(HMAC-SHA1(sharedSecret, username)).
- * coturn is configured with the same shared secret (`use-auth-secret` /
- * `static-auth-secret`) so it can verify credentials without either side
- * persisting a per-user record — nothing here is ever stored.
+ * Obtém ICE servers com credenciais efêmeras via Cloudflare TURN API.
+ * Retorna null se as variáveis de ambiente não estiverem configuradas.
+ * O array retornado está no formato RTCPeerConnection.iceServers pronto para uso.
  */
-export function issueTurnCredentials({ label = 'wtk-meet' } = {}) {
-  const sharedSecret = process.env.TURN_SHARED_SECRET;
-  const turnUrls = (process.env.TURN_URLS || '')
-    .split(',')
-    .map((url) => url.trim())
-    .filter(Boolean);
+export async function fetchCloudflareIceServers() {
+  const tokenId  = process.env.CF_TURN_TOKEN_ID;
+  const apiToken = process.env.CF_TURN_API_TOKEN;
+  const ttl      = Number(process.env.CF_TURN_TTL || 86400);
 
-  if (!sharedSecret || turnUrls.length === 0) {
-    return null; // no self-hosted TURN configured — client falls back to STUN-only
-  }
+  if (!tokenId || !apiToken) return null;
 
-  const expiresAt = Math.floor(Date.now() / 1000) + TTL_SECONDS;
-  const username = `${expiresAt}:${label}`;
-  const credential = crypto
-    .createHmac('sha1', sharedSecret)
-    .update(username)
-    .digest('base64');
+  const res = await fetch(
+    `${CF_API_URL}/${tokenId}/credentials/generate-ice-servers`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ ttl }),
+    },
+  );
 
-  return {
-    username,
-    credential,
-    urls: turnUrls,
-    ttl: TTL_SECONDS,
-  };
+  if (!res.ok) throw new Error(`Cloudflare TURN API error: ${res.status}`);
+
+  const { iceServers } = await res.json();
+  return iceServers;
 }

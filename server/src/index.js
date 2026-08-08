@@ -3,27 +3,32 @@ import express from 'express';
 import cors from 'cors';
 import { Server } from 'socket.io';
 import { RoomStore, MAX_PARTICIPANTS } from './rooms.js';
-import { issueTurnCredentials } from './turnCredentials.js';
+import { fetchCloudflareIceServers } from './turnCredentials.js';
 import 'dotenv/config';
 
 const PORT = process.env.PORT || 4000;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+const allowedOrigins = CLIENT_ORIGIN.split(',').map(o => o.trim());
+const corsOrigin = allowedOrigins.length === 1 ? allowedOrigins[0] : allowedOrigins;
 
 const app = express();
-app.use(cors({ origin: CLIENT_ORIGIN }));
+app.use(cors({ origin: corsOrigin }));
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
-// Short-lived TURN credentials (HMAC over a shared secret) — never a static
-// username/password, never persisted. STUN URL is public info, no auth needed.
-app.get('/turn-credentials', (_req, res) => {
-  const stunUrl = process.env.STUN_URL || null;
-  const turn = issueTurnCredentials();
-  res.json({ stunUrl, turn });
+// Short-lived TURN credentials via Cloudflare TURN API — nunca persistidas.
+app.get('/turn-credentials', async (_req, res) => {
+  try {
+    const iceServers = await fetchCloudflareIceServers();
+    res.json({ iceServers: iceServers ?? [] });
+  } catch (err) {
+    console.error('TURN credentials error:', err.message);
+    res.json({ iceServers: [] });
+  }
 });
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: CLIENT_ORIGIN },
+  cors: { origin: corsOrigin },
 });
 
 const rooms = new RoomStore();

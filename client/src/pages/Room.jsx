@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { createSignalingClient } from '../lib/signaling.js';
 import { WebRTCMesh } from '../lib/webrtcMesh.js';
-import { deriveRoomKey, isInsertableStreamsSupported } from '../lib/e2ee.js';
+// import { deriveRoomKey, isInsertableStreamsSupported } from '../lib/e2ee.js';
 import { fetchIceServers, MAX_PARTICIPANTS } from '../config.js';
 
 const PHASE = {
@@ -17,7 +17,11 @@ export default function Room() {
   const location = useLocation();
   const navigate = useNavigate();
   const passphrase = location.hash.slice(1);
-  const displayName = sessionStorage.getItem('displayName');
+
+  const [displayName, setDisplayName] = useState(
+    () => sessionStorage.getItem('displayName') || '',
+  );
+  const [nameInput, setNameInput] = useState('');
 
   const [phase, setPhase] = useState(PHASE.CONNECTING);
   const [denyReason, setDenyReason] = useState(null);
@@ -30,15 +34,12 @@ export default function Room() {
   const localStreamRef = useRef(null);
   const signalingRef = useRef(null);
   const meshRef = useRef(null);
-  const roomKeyRef = useRef(null);
+  // const roomKeyRef = useRef(null);
 
-  const e2eeSupported = isInsertableStreamsSupported();
+  // const e2eeSupported = isInsertableStreamsSupported();
 
   useEffect(() => {
-    if (!displayName || !passphrase) {
-      navigate('/');
-      return undefined;
-    }
+    if (!displayName || !passphrase) return undefined;
 
     let cancelled = false;
 
@@ -55,10 +56,10 @@ export default function Room() {
     }
 
     async function setup() {
-      const [localStream, iceServers, roomKey] = await Promise.all([
+      const [localStream, iceServers] = await Promise.all([
         getLocalStream(),
         fetchIceServers(),
-        deriveRoomKey(passphrase, roomId),
+        // deriveRoomKey(passphrase, roomId), // E2EE desabilitado por ora
       ]);
       if (cancelled) {
         localStream?.getTracks().forEach((t) => t.stop());
@@ -66,7 +67,7 @@ export default function Room() {
       }
 
       localStreamRef.current = localStream;
-      roomKeyRef.current = roomKey;
+      // roomKeyRef.current = roomKey;
       if (localVideoRef.current) localVideoRef.current.srcObject = localStream;
 
       const signaling = createSignalingClient();
@@ -76,7 +77,7 @@ export default function Room() {
         signaling,
         iceServers,
         localStream,
-        getRoomKey: () => roomKeyRef.current,
+        // getRoomKey: () => roomKeyRef.current, // E2EE desabilitado por ora
         onRemoteStream: (peerId, stream) => {
           setParticipants((prev) => {
             const next = new Map(prev);
@@ -195,6 +196,39 @@ export default function Room() {
     setCameraOff(next);
   }, [cameraOff]);
 
+  if (!displayName) {
+    function handleNameSubmit(e) {
+      e.preventDefault();
+      const name = nameInput.trim();
+      if (!name) return;
+      sessionStorage.setItem('displayName', name);
+      setDisplayName(name);
+    }
+    return (
+      <main className="home">
+        <h1>wtk-meet</h1>
+        <p className="tagline">Você foi convidado para uma sala. Escolha um nome para entrar.</p>
+        <form onSubmit={handleNameSubmit}>
+          <label className="field">
+            Seu nome
+            <input
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              placeholder="Como te chamam"
+              maxLength={40}
+              autoFocus
+            />
+          </label>
+          <div className="actions">
+            <button type="submit" disabled={!nameInput.trim()}>
+              Entrar na sala
+            </button>
+          </div>
+        </form>
+      </main>
+    );
+  }
+
   if (phase === PHASE.DENIED) {
     return (
       <main className="room denied">
@@ -229,12 +263,7 @@ export default function Room() {
 
   return (
     <main className="room in-call">
-      {!e2eeSupported && (
-        <p className="warning">
-          Seu navegador não suporta a camada extra de E2EE (Insertable Streams). A chamada
-          segue protegida apenas pela criptografia padrão do WebRTC (DTLS-SRTP).
-        </p>
-      )}
+      {/* E2EE desabilitado por ora */}
 
       {pendingRequests.length > 0 && (
         <div className="pending-requests">

@@ -2,34 +2,27 @@ export const SIGNALING_URL = import.meta.env.VITE_SIGNALING_URL || 'http://local
 
 export const MAX_PARTICIPANTS = 6;
 
+let cachedIceServers = null;
+
 /**
- * Self-hosted STUN/TURN only — no reliance on third-party infrastructure
- * (no stun.l.google.com, no managed TURN provider). TURN credentials are
- * short-lived, minted per-session by the signaling server (see
- * server/src/turnCredentials.js), never a static secret baked into the
- * client bundle.
+ * Obtém ICE servers com credenciais efêmeras do servidor de sinalização,
+ * que por sua vez as busca na Cloudflare TURN API. As credenciais nunca
+ * ficam baked no bundle do client. Resultado cacheado na sessão.
  */
 export async function fetchIceServers() {
-  const iceServers = [];
+  if (cachedIceServers) return cachedIceServers;
   try {
     const res = await fetch(`${SIGNALING_URL}/turn-credentials`);
     if (res.ok) {
-      const { stunUrl, turn } = await res.json();
-      if (stunUrl) iceServers.push({ urls: stunUrl });
-      if (turn) {
-        iceServers.push({
-          urls: turn.urls,
-          username: turn.username,
-          credential: turn.credential,
-        });
+      const { iceServers } = await res.json();
+      if (Array.isArray(iceServers) && iceServers.length > 0) {
+        cachedIceServers = iceServers;
+        return cachedIceServers;
       }
     }
   } catch {
-    // Signaling server unreachable for TURN provisioning — caller falls
-    // back to whatever is in iceServers (possibly empty, direct-LAN only).
+    // Servidor inacessível — cair no fallback
   }
-  if (iceServers.length === 0) {
-    iceServers.push({ urls: 'stun:localhost:3478' });
-  }
-  return iceServers;
+  // Fallback: STUN público da Cloudflare (funciona sem credenciais)
+  return [{ urls: 'stun:stun.cloudflare.com:3478' }];
 }
