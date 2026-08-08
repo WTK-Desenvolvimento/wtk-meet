@@ -19,7 +19,7 @@ export default [
     },
   },
   {
-    files: ['server/**/*.js', 'test/**/*.js', '*.config.js'],
+    files: ['server/**/*.js', 'test/**/*.js', 'scripts/**/*.js', '*.config.js'],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: 'module',
