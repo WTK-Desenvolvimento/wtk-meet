@@ -5,16 +5,17 @@ services:
       - "${PORT:-4000}:${PORT:-4000}"
     environment:
       PORT: ${PORT:-4000}
-      CLIENT_ORIGIN: ${CLIENT_ORIGIN:-http://localhost:5173}
+      CLIENT_ORIGIN: ${CLIENT_ORIGIN:-http://localhost}
       CF_TURN_TOKEN_ID: ${CF_TURN_TOKEN_ID}
       CF_TURN_API_TOKEN: ${CF_TURN_API_TOKEN}
       CF_TURN_TTL: ${CF_TURN_TTL:-86400}
 
   client:
-    build: ./client
+    build:
+      context: ./client
+      args:
+        VITE_SIGNALING_URL: ${VITE_SIGNALING_URL:-http://localhost:4000}
     ports:
-      - "5173:5173"
-    environment:
-      VITE_SIGNALING_URL: ${VITE_SIGNALING_URL:-http://localhost:4000}
+      - "80:80"
     depends_on:
       - server
