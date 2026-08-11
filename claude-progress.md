@@ -41,12 +41,43 @@
 - `npm --prefix client run build` → ok
 - `node e2e/run.mjs` → **41/41**, 5 execuções consecutivas limpas
 
+## Revalidação (sessão de 2026-08-11)
+
+Suíte inteira rodada de novo, do zero, sem alterar código:
+
+- `npm --prefix client run lint` → limpo
+- `npm --prefix client test` → 14/14
+- `npm --prefix client run build` → ok
+- `node e2e/run.mjs` → **41/41**
+- `git diff main -- server/` → vazio (servidor confirmadamente intocado)
+
+Auditoria linha a linha do DoD contra o código: os 13 itens estão cobertos
+(itens 1 e 12 pelos documentos em `docs/`, item 13 por `ARCHITECTURE.md` §6.3/§6.4
+e pela remoção do compartilhamento de tela da lista de limitações, hoje §9).
+
 ## Pendências
 
-Nenhuma no escopo. O que não dá para cobrir em headless está listado como
+**Nenhuma no código.** O que não dá para cobrir em headless está listado como
 checklist manual em `docs/teste-3-participantes.md` (LED físico da webcam,
 `chrome://webrtc-internals`, barra nativa "Parar compartilhamento", diálogo de
 escolha de tela, Firefox/Safari).
+
+**Bloqueio no board (persiste da execução anterior).** As ferramentas MCP
+(`update_task`, `move_task_forward`, `add_task_log`, `list_tasks`) não foram
+expostas nesta sessão — `ToolSearch` não encontra nenhuma delas. A API REST
+também não dá acesso ao recurso de tasks:
+
+| Endpoint | Resultado |
+|---|---|
+| `GET /api/tasks` | 500 |
+| `GET /api/tasks/<id>` | 404 |
+| `GET /api/projects` | 500 |
+| `GET /api/projects/<id>/tasks` | 403 Access denied |
+| `GET /api/columns` | 200 (único que responde) |
+
+Portanto **a movimentação da task e os checkboxes do DoD continuam pendentes** e
+precisam ser feitos por quem tiver acesso ao board. Não há tentativa de contornar
+isso — mover a task exigiria uma escrita que o servidor recusa.
 
 ## Notas para rodar o E2E neste ambiente
 
