@@ -14,7 +14,7 @@
 | `client/src/pages/Room.jsx` | Orquestração: estado de participantes/chat/toasts/níveis, toggles de câmera e tela, limpeza no unmount |
 | `client/src/styles.css` | Anel de fala, placeholder, painel de chat, toasts, badge |
 | `client/test/*.test.mjs` | 14 testes unitários (`node:test`) |
-| `e2e/{harness,run}.mjs` | Teste ponta a ponta com 3 Chromium + TURN local, 41 verificações |
+| `e2e/{harness,run}.mjs` | Teste ponta a ponta com 3 Chromium + TURN local, 44 verificações |
 | `client/.eslintrc.json` | Linter (não existia no projeto) |
 | `ARCHITECTURE.md`, `README.md`, `docs/` | Documentação |
 
@@ -56,6 +56,30 @@ reinstalado do lockfile, sem alterar código de produção:
 Auditoria linha a linha do DoD contra o código: os 13 itens estão cobertos
 (itens 1 e 12 pelos documentos em `docs/`, item 13 por `ARCHITECTURE.md` §6.3/§6.4
 e pela remoção do compartilhamento de tela da lista de limitações, hoje §9).
+
+## Passada de QA (2026-08-11)
+
+Suíte inteira revalidada e **três buracos de cobertura fechados** — todos em
+`e2e/`, sem tocar em código de produção:
+
+| Novo | O que cobria antes | O que cobre agora |
+|---|---|---|
+| `A4` | nada — o próprio `run.mjs` admitia (“o toast dura ~4s, então já expirou”) | Toast de **entrada** com nome e classe `toast-join` |
+| `A5` | nada | O bipe de entrada (740Hz), que é distinto do de saída |
+| `C7` | só o botão da UI (`C6`) | Parar pela **barra do navegador**, disparando `ended` na track de tela |
+
+O toast de entrada agora é capturado por um `MutationObserver` instalado antes
+de Carol entrar, em vez de lido do DOM dentro da janela de expiração — o que
+seria uma corrida. `C7` trata timeout como falha reportada, não como exceção:
+se esse caminho quebrar, a checagem falha com nome e a suíte segue.
+
+**Cada uma das três foi validada por mutação** (texto do toast trocado, bipe de
+entrada suprimido, listener de `ended` removido): as três falharam, e voltaram a
+passar com o código restaurado. Sem isso seriam checagens que só sabem passar.
+
+Item 3 de "o que o teste não cobre" em `docs/teste-3-participantes.md` foi
+corrigido: ele afirmava que o caminho do evento `ended` estava coberto, o que
+não era verdade até agora.
 
 ## Pendências
 

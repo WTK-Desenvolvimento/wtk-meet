@@ -247,6 +247,9 @@ export const INSTRUMENTATION = `
     raf: 0, oscillators: 0,
   };
   window.__wtkLiveTracks = new Set();
+  // Só as tracks vindas de getDisplayMedia. O teste precisa distinguí-las das
+  // da câmera para simular "Parar compartilhamento" da barra do navegador.
+  window.__wtkDisplayTracks = new Set();
 
   // AudioContext: quantos foram criados (deve ser exatamente 1 por sala),
   // quantos osciladores tocaram (um por bipe) e em que estado terminaram.
@@ -293,7 +296,12 @@ export const INSTRUMENTATION = `
   md.getUserMedia = async (...a) => { window.__wtkCounters.getUserMedia++; return trackStream(await origGUM(...a)); };
   const origGDM = md.getDisplayMedia?.bind(md);
   if (origGDM) {
-    md.getDisplayMedia = async (...a) => { window.__wtkCounters.getDisplayMedia++; return trackStream(await origGDM(...a)); };
+    md.getDisplayMedia = async (...a) => {
+      window.__wtkCounters.getDisplayMedia++;
+      const stream = await origGDM(...a);
+      for (const t of stream.getTracks()) window.__wtkDisplayTracks.add(t);
+      return trackStream(stream);
+    };
   }
 
   window.__wtkTrackStates = () => [...window.__wtkLiveTracks].map((t) => ({

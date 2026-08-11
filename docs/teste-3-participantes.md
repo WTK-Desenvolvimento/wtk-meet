@@ -29,7 +29,7 @@ O script sobe tudo sozinho:
 | Interceptação de `**/turn-credentials` | Injeta o ICE server local **sem tocar no código de produção**. |
 | Wrappers de `WebSocket`/`XMLHttpRequest` | Registram cada frame trocado com o servidor — é a evidência direta de que o chat não passa por lá. |
 
-## Resultados — 41/41 verificações, 4 execuções consecutivas limpas
+## Resultados — 44/44 verificações
 
 ### A. Mesh com 3 participantes
 
@@ -38,6 +38,15 @@ O script sobe tudo sozinho:
 | A1 | 3 participantes, 2 `RTCPeerConnection` `connected` cada | ✅ |
 | A2 | Por conexão: 1 áudio + 2 vídeo em cada sentido | ✅ `["audio:sendonly","video:sendonly","video:sendonly","audio:recvonly","video:recvonly","video:recvonly"]` |
 | A3 | Grade com 3 tiles | ✅ |
+| A4 | Entrada dispara toast com o nome | ✅ `"→ Carol entrou na sala"` |
+| A5 | A entrada também é anunciada por um bipe | ✅ osciladores `1 → 2` |
+
+A4/A5 e F1–F4 cobrem os dois lados do item de presença. Eles não são redundantes:
+entrada e saída têm texto, ícone e frequência de bipe diferentes (740Hz subindo
+contra 420Hz descendo), então a checagem de saída não exercita o caminho de
+entrada. Como o toast vive só ~4s, o teste instala um `MutationObserver` na
+página de Alice **antes** de Carol entrar e afirma sobre o registro — em vez de
+correr contra a expiração lendo o DOM.
 
 ### B. Indicador de fala
 
@@ -69,7 +78,8 @@ menores são cliques que caíram numa pausa entre bipes.
 | C3 | `signalingState` volta a `stable` em todas as conexões | ✅ |
 | C4 | Compartilhar tela **não** renegocia SDP | ✅ `setLocalDescription: 5 → 5` |
 | C5 | Grade cresce para 5 tiles (3 câmeras + 2 telas) | ✅ |
-| C6 | Sair do compartilhamento remove a track e restaura a grade | ✅ |
+| C6 | Sair do compartilhamento pelo **botão da UI** remove a track e restaura a grade | ✅ |
+| C7 | Sair pela **barra do navegador** (evento `ended`) encerra a track e restaura a grade | ✅ track `ended`, grade de volta a 3 tiles, botão restaurado |
 
 C4 é a razão de os transceivers serem pré-criados: o canal de tela já existe
 negociado desde o início, então entrar em compartilhamento é um `replaceTrack()`
@@ -147,10 +157,12 @@ para quem for validar em máquina:
    que ele apaga também ao clicar em "Sair".
 2. **`chrome://webrtc-internals`.** Confirmar visualmente, depois de sair da
    sala, que não sobrou nenhuma `PeerConnection` ativa.
-3. **Barra "Parar compartilhamento" do navegador.** O teste cobre o caminho do
-   código (o evento `ended` da track, que é o mesmo gatilho), mas a barra nativa
-   não existe em headless. Verificar: compartilhar a tela, parar pela barra do
-   Chrome e conferir que a grade volta ao normal nos três participantes.
+3. **Barra "Parar compartilhamento" do navegador.** C7 cobre o caminho do código
+   disparando o evento `ended` na track de tela — que é exatamente o que a barra
+   nativa faz com a página — e confirma que a track termina em `ended` e que a
+   grade volta. O que não dá para automatizar é a barra em si, que não existe em
+   headless. Verificar: compartilhar a tela, parar pela barra do Chrome e
+   conferir que a grade volta ao normal nos três participantes.
 4. **Diálogo de escolha de tela** do `getDisplayMedia` (janela × aba × tela
    inteira), incluindo o cancelamento pelo usuário — que não deve gerar erro
    visível na UI.

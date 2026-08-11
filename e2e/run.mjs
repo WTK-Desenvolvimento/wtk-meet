@@ -83,6 +83,24 @@ try {
   bob = await openParticipant(browser, { roomUrl, name: 'Bob' });
   await waitInCall(bob, alice);
 
+  // Grava os toasts que passarem pela tela de Alice a partir daqui. Sem isso o
+  // aviso de entrada precisaria ser lido dentro da janela de ~4s em que ele
+  // existe no DOM — uma corrida contra a própria expiração.
+  await alice.page.evaluate(() => {
+    window.__wtkToastLog = [];
+    const record = () => {
+      for (const el of document.querySelectorAll('.toast')) {
+        const entry = { cls: el.className, text: el.innerText };
+        if (!window.__wtkToastLog.some((e) => e.text === entry.text && e.cls === entry.cls)) {
+          window.__wtkToastLog.push(entry);
+        }
+      }
+    };
+    new MutationObserver(record).observe(document.body, { childList: true, subtree: true });
+    record();
+  });
+  const beepsBeforeCarol = await alice.page.evaluate(() => window.__wtkCounters.oscillators);
+
   carol = await openParticipant(browser, { roomUrl, name: 'Carol' });
   await waitInCall(carol, alice);
 
@@ -115,8 +133,27 @@ try {
   check('A3. Grade mostra 3 tiles (local + 2 remotos)', nTiles === 3, `tiles=${nTiles}`);
 
   // ------------------------------------------------- A4. toasts de entrada
-  // Alice viu Bob e Carol entrarem; o toast dura ~4s, então já expirou.
-  // Verificamos o mecanismo forçando uma saída mais abaixo (F).
+  // O aviso de entrada tem texto e bipe próprios (740Hz subindo, contra 420Hz
+  // descendo na saída), então a checagem de saída em F não cobre este caminho.
+  const joinToast = await waitFor(
+    async () => {
+      const log = await alice.page.evaluate(() => window.__wtkToastLog);
+      return log.find((t) => /Carol/.test(t.text)) || false;
+    },
+    { timeout: 10000, label: 'toast de entrada de Carol' },
+  );
+  check(
+    'A4. Entrada dispara toast com o nome',
+    /Carol entrou na sala/.test(joinToast.text) && /toast-join/.test(joinToast.cls),
+    JSON.stringify(joinToast.text.replace(/\n/g, ' ')),
+  );
+
+  const beepsAfterCarol = await alice.page.evaluate(() => window.__wtkCounters.oscillators);
+  check(
+    'A5. A entrada também é anunciada por um bipe',
+    beepsAfterCarol === beepsBeforeCarol + 1,
+    `osciladores: ${beepsBeforeCarol} → ${beepsAfterCarol}`,
+  );
 
   // ------------------------------------------------------- B. anel de fala
   // A câmera/mic falsos do Chromium emitem um tom contínuo: o indicador de
@@ -275,10 +312,32 @@ try {
   );
   check('C6. Sair do compartilhamento remove a track e restaura a grade', true);
 
-  await carol.page.getByRole('button', { name: 'Parar compartilhamento' }).click();
-  await waitFor(
+  // Carol para pelo outro caminho: a barra nativa "Parar compartilhamento" do
+  // navegador não é clicável em headless, mas o que ela faz com a página é
+  // disparar `ended` na track — que é o gatilho real que o código escuta.
+  const endedDispatched = await carol.page.evaluate(() => {
+    const track = [...window.__wtkDisplayTracks].find((t) => t.readyState === 'live');
+    if (!track) return false;
+    track.dispatchEvent(new Event('ended'));
+    return true;
+  });
+  // O timeout vira `false` em vez de exceção: se este caminho quebrar, o certo é
+  // a checagem reportar a falha com nome, não a suíte inteira abortar aqui.
+  const gridRestored = await waitFor(
     async () => (await alice.page.locator('.video-tile').count()) === 3,
     { timeout: 15000, label: 'grade sem telas' },
+  ).catch(() => false);
+  // A track precisa ter sido efetivamente encerrada pelo handler, não só sumido
+  // da grade: é o que garante que a captura de tela realmente parou.
+  const carolScreenEnded = await carol.page.evaluate(() =>
+    [...window.__wtkDisplayTracks].every((t) => t.readyState === 'ended'),
+  );
+  const carolButtonBack = await carol.page.getByRole('button', { name: 'Compartilhar tela' }).count();
+  check(
+    'C7. "Parar compartilhamento" do navegador (evento ended) também encerra a tela',
+    endedDispatched && gridRestored && carolScreenEnded && carolButtonBack === 1,
+    `ended disparado=${endedDispatched} grade restaurada=${gridRestored} ` +
+      `track encerrada=${carolScreenEnded} botão restaurado=${carolButtonBack === 1}`,
   );
 
   // ------------------------------------------------------------- D. chat
