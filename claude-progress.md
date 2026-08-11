@@ -43,11 +43,13 @@
 
 ## Revalidação (sessão de 2026-08-11)
 
-Suíte inteira rodada de novo, do zero, sem alterar código:
+Suíte inteira rodada de novo, do zero — worktree limpo, `node_modules`
+reinstalado do lockfile, sem alterar código de produção:
 
+- `npm ci` em `client/`, `server/` e `e2e/`
 - `npm --prefix client run lint` → limpo
 - `npm --prefix client test` → 14/14
-- `npm --prefix client run build` → ok
+- `npm --prefix client run build` → ok (229 kB, 74 kB gzip)
 - `node e2e/run.mjs` → **41/41**
 - `git diff main -- server/` → vazio (servidor confirmadamente intocado)
 
@@ -81,18 +83,45 @@ isso — mover a task exigiria uma escrita que o servidor recusa.
 
 ## Notas para rodar o E2E neste ambiente
 
-O sandbox não tem as bibliotecas de sistema nem fontes do Chromium, e
-`playwright install-deps` precisa de root. A solução usada foi baixar os `.deb`
-com `apt-get download`, extrair em `/tmp/pwlibs/root` e exportar:
+Num ambiente normal, `npx playwright install-deps chromium` resolve tudo — o que
+segue só vale para este sandbox, que não tem as bibliotecas de sistema nem as
+fontes do Chromium e não dá root. `/tmp` não persiste entre sessões, então isto
+precisa ser refeito a cada vez. Receita completa, validada nesta sessão:
 
 ```bash
+# 1. As listas do apt vêm vazias e `apt-get update` não pode escrever em /var.
+#    Redirecionar todos os diretórios de estado para /tmp resolve sem root.
+mkdir -p /tmp/apt/{lists/partial,cache/archives/partial,state} && touch /tmp/apt/state/status
+APTOPT="-o Dir::State::Lists=/tmp/apt/lists -o Dir::Cache=/tmp/apt/cache \
+        -o Dir::State::status=/tmp/apt/state/status -o Acquire::Languages=none"
+apt-get $APTOPT update
+
+# 2. `apt-get download` não resolve dependências: a lista tem que vir do
+#    apt-cache com --recurse (128 pacotes, contra os 23 de topo).
+mkdir -p /tmp/pwlibs/debs && cd /tmp/pwlibs/debs
+PKGS="libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdbus-1-3 \
+      libdrm2 libxcb1 libxkbcommon0 libatspi2.0-0t64 libx11-6 libxcomposite1 libxdamage1 \
+      libxext6 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2t64 \
+      libglib2.0-0t64 fonts-liberation fonts-dejavu-core"
+apt-get $APTOPT download $(apt-cache $APTOPT depends --recurse --no-recommends \
+  --no-suggests --no-conflicts --no-breaks --no-replaces --no-enhances $PKGS \
+  | grep '^[a-z0-9]' | sort -u)
+for d in *.deb; do dpkg-deb -x "$d" /tmp/pwlibs/root; done
+
+# 3. Fontconfig só varre caminhos que ele conhece — copiar para ~/.fonts, que já
+#    está no fonts.conf, evita ter que reescrever a config.
+cp -r /tmp/pwlibs/root/usr/share/fonts/truetype/* $HOME/.fonts/
+
+# 4. Ambiente de execução do e2e:
 export LD_LIBRARY_PATH=/tmp/pwlibs/root/usr/lib/x86_64-linux-gnu:/tmp/pwlibs/root/lib/x86_64-linux-gnu
 export FONTCONFIG_PATH=$HOME/.config/fonts-etc FONTCONFIG_FILE=$HOME/.config/fonts-etc/fonts.conf
 ```
 
 Sem as fontes, o processo do Chromium **crasha** ao renderizar texto (HarfBuzz
-sem nenhuma fonte disponível). Num ambiente normal, `npx playwright install-deps
-chromium` resolve tudo isso.
+sem nenhuma fonte disponível) — o sintoma é `browserType.launch: Target page,
+context or browser has been closed`, o mesmo erro de biblioteca faltando.
+`ldd .../chrome-linux64/chrome | grep -c 'not found'` distingue os dois casos:
+se der 0, o que falta é fonte.
 
 Duas armadilhas do ambiente headless que estão documentadas no próprio harness:
 injeção de teclado via CDP não chega ao renderer (usar o setter nativo de
