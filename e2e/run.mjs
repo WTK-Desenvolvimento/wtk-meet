@@ -16,8 +16,10 @@ import {
   approveAll,
   buildClient,
   launchBrowser,
+  noPageScroll,
   openParticipant,
   peerStats,
+  roomLayout,
   setInputValue,
   sleep,
   startClientServer,
@@ -80,7 +82,106 @@ try {
   alice = await openParticipant(browser, { roomUrl, name: 'Alice' });
   await waitInCall(alice, null);
 
+  // Com 1 participante o tile antigo (4:3 em auto-fit) ocupava a largura inteira
+  // e empurrava a barra de controles para fora da tela. É o bug de origem desta
+  // suíte de checagens de layout.
+  const soloLayout = await roomLayout(alice.page);
+  check(
+    'L1. Com 1 participante a página não rola e o tile não excede a área da grade',
+    noPageScroll(soloLayout) &&
+      soloLayout.cols === 1 &&
+      soloLayout.tileWidth > 0 &&
+      soloLayout.tileFitsStage === true,
+    `scrollHeight=${soloLayout.scrollHeight} innerHeight=${soloLayout.innerHeight} ` +
+      `cols=${soloLayout.cols} tile=${Math.round(soloLayout.tileWidth)}px ` +
+      `cabe no palco=${soloLayout.tileFitsStage}`,
+  );
+  check(
+    'L2. Os controles ficam dentro do viewport, sem depender de scroll',
+    soloLayout.controlsBottom !== null && soloLayout.controlsBottom <= soloLayout.innerHeight + 1,
+    `controls.bottom=${Math.round(soloLayout.controlsBottom)} innerHeight=${soloLayout.innerHeight}`,
+  );
+
   bob = await openParticipant(browser, { roomUrl, name: 'Bob' });
+
+  // ------------------------------------------- M. modal de pedido de entrada
+  // O pedido tem que ser impossível de não ver: quem espera depende de uma ação
+  // de quem já está dentro. Antes ele era um bloco inline empurrado para fora da
+  // área visível pelo tile gigante — na prática, ninguém entrava.
+  await alice.page.locator('.join-request-modal').waitFor({ timeout: 40000 });
+  const modal = await alice.page.evaluate(() => {
+    const dialog = document.querySelector('.join-request-modal');
+    const approve = [...dialog.querySelectorAll('button')].find((b) => b.textContent === 'Aprovar');
+    const rect = dialog.getBoundingClientRect();
+    const backdrop = document.querySelector('.modal-backdrop');
+    const zOf = (el) => (el ? Number(getComputedStyle(el).zIndex) || 0 : 0);
+    // Os toasts só existem no DOM quando há algum na fila, e neste instante não
+    // há. Uma sonda com a mesma classe lê o z-index da regra CSS de verdade —
+    // comparar contra um elemento ausente daria um "passou" vazio.
+    const probe = document.createElement('div');
+    probe.className = 'toasts';
+    document.body.appendChild(probe);
+    const toastZ = zOf(probe);
+    probe.remove();
+    return {
+      backdropFixed: getComputedStyle(backdrop).position === 'fixed',
+      backdropZ: zOf(backdrop),
+      toastZ,
+      role: dialog.getAttribute('role'),
+      ariaModal: dialog.getAttribute('aria-modal'),
+      hasLabel: !!document.getElementById(dialog.getAttribute('aria-labelledby') || ''),
+      focusOnApprove: !!approve && document.activeElement === approve,
+      hasDeny: [...dialog.querySelectorAll('button')].some((b) => b.textContent === 'Negar'),
+      // Visível sem rolagem, em qualquer estado da tela.
+      inViewport: rect.top >= 0 && rect.bottom <= window.innerHeight && rect.width > 0,
+      pageScrollHeight: document.documentElement.scrollHeight,
+      innerHeight: window.innerHeight,
+    };
+  });
+  check(
+    'M1. Pedido de entrada abre um modal centralizado, visível sem rolagem',
+    modal.inViewport && modal.hasDeny && modal.pageScrollHeight <= modal.innerHeight,
+    `inViewport=${modal.inViewport} scrollHeight=${modal.pageScrollHeight}/${modal.innerHeight}`,
+  );
+  check(
+    'M2. O modal é acessível: role=dialog, aria-modal, título associado e foco em "Aprovar"',
+    modal.role === 'dialog' &&
+      modal.ariaModal === 'true' &&
+      modal.hasLabel &&
+      modal.focusOnApprove,
+    `role=${modal.role} aria-modal=${modal.ariaModal} rotulado=${modal.hasLabel} ` +
+      `foco em Aprovar=${modal.focusOnApprove}`,
+  );
+  // Se o empilhamento inverter, o clique em "Aprovar" é interceptado e ninguém
+  // entra na sala — falha longe da causa.
+  check(
+    'M3. O modal é fixo e fica acima dos toasts',
+    modal.backdropFixed && modal.backdropZ > modal.toastZ && modal.toastZ > 0,
+    `position=${modal.backdropFixed ? 'fixed' : 'outro'} backdrop z=${modal.backdropZ} toasts z=${modal.toastZ}`,
+  );
+
+  // Esc equivale a "não decidi": o pedido continua pendente e o modal continua
+  // aberto. Fechar aqui deixaria alguém esperando indefinidamente do outro lado.
+  // O evento é despachado de dentro da página porque neste headless a injeção de
+  // teclado via CDP não chega ao renderer (ver `setInputValue` no harness).
+  await alice.page.evaluate(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  });
+  await sleep(200);
+  const afterEsc = await alice.page.evaluate(() => {
+    const dialog = document.querySelector('.join-request-modal');
+    return {
+      stillOpen: !!dialog,
+      // Não fecha "em silêncio": a tentativa recebe uma resposta na tela.
+      feedback: dialog?.querySelector('.join-request-hint')?.textContent?.trim() || '',
+    };
+  });
+  check(
+    'M4. Esc não decide e não fecha o modal — o pedido continua pendente, com aviso na tela',
+    afterEsc.stillOpen && /Esc/i.test(afterEsc.feedback),
+    `aberto=${afterEsc.stillOpen} aviso=${JSON.stringify(afterEsc.feedback)}`,
+  );
+
   await waitInCall(bob, alice);
 
   // Grava os toasts que passarem pela tela de Alice a partir daqui. Sem isso o
@@ -131,6 +232,22 @@ try {
 
   const nTiles = await alice.page.locator('.video-tile').count();
   check('A3. Grade mostra 3 tiles (local + 2 remotos)', nTiles === 3, `tiles=${nTiles}`);
+
+  // A grade se reorganiza sozinha: 3 tiles num palco em paisagem viram 2 colunas
+  // (2x2), e nada disso pode custar uma barra de rolagem na página.
+  const trioLayout = await roomLayout(alice.page);
+  check(
+    'L3. Com 3 participantes a grade vira 2 colunas e a página continua sem rolar',
+    noPageScroll(trioLayout) && trioLayout.cols === 2 && !trioLayout.overflowing,
+    `cols=${trioLayout.cols} scrollHeight=${trioLayout.scrollHeight}/${trioLayout.innerHeight} ` +
+      `overflowing=${trioLayout.overflowing}`,
+  );
+  check(
+    'L4. O tile é 16:9 e o vídeo usa letterbox (object-fit: contain), sem corte nem deformação',
+    Math.abs(trioLayout.tileRatio - 16 / 9) < 0.02 && trioLayout.videoFit === 'contain',
+    `proporção=${trioLayout.tileRatio?.toFixed(3)} (alvo ${(16 / 9).toFixed(3)}) ` +
+      `object-fit=${trioLayout.videoFit}`,
+  );
 
   // ------------------------------------------------- A4. toasts de entrada
   // O aviso de entrada tem texto e bipe próprios (740Hz subindo, contra 420Hz
@@ -341,7 +458,22 @@ try {
   );
 
   // ------------------------------------------------------------- D. chat
+  // O chat divide o palco com a grade: abrir tem que encolher os tiles, não
+  // criar scroll de página nem empurrar os controles para fora.
+  const beforeChat = await roomLayout(alice.page);
   await alice.page.getByRole('button', { name: /^Chat/ }).click();
+  await alice.page.locator('.chat-panel').waitFor({ timeout: 5000 });
+  await sleep(400); // uma volta do ResizeObserver
+  const withChat = await roomLayout(alice.page);
+  check(
+    'L5. Abrir o chat encolhe a grade e não gera scroll de página',
+    noPageScroll(withChat) &&
+      withChat.tileWidth < beforeChat.tileWidth &&
+      withChat.controlsBottom <= withChat.innerHeight + 1,
+    `tile ${Math.round(beforeChat.tileWidth)}px → ${Math.round(withChat.tileWidth)}px, ` +
+      `scrollHeight=${withChat.scrollHeight}/${withChat.innerHeight}`,
+  );
+
   await bob.page.getByRole('button', { name: /^Chat/ }).click();
   await carol.page.getByRole('button', { name: /^Chat/ }).click();
 
@@ -564,6 +696,87 @@ try {
 
   const aliceTilesAfterLeave = await alice.page.locator('.video-tile').count();
   check('F9. Grade encolhe quando alguém sai', aliceTilesAfterLeave === 1, `tiles=${aliceTilesAfterLeave}`);
+
+  // ------------------------ M (cont.). fila do modal e desistência do pedido
+  // Dois pedidos ao mesmo tempo, e os dois solicitantes desistem antes de
+  // qualquer decisão: o modal não pode ficar com botões que não fazem nada.
+  const dave = await openParticipant(browser, { roomUrl, name: 'Dave' });
+  const erin = await openParticipant(browser, { roomUrl, name: 'Erin' });
+
+  const queued = await waitFor(
+    async () => {
+      const n = await alice.page.locator('.join-request').count();
+      return n >= 2 ? n : false;
+    },
+    { timeout: 40000, label: 'dois pedidos simultâneos no modal' },
+  );
+  const queuedNames = await alice.page.locator('.join-request').allInnerTexts();
+  check(
+    'M5. O modal lista múltiplos pedidos simultâneos, um por linha',
+    queued === 2 &&
+      queuedNames.some((t) => /Dave/.test(t)) &&
+      queuedNames.some((t) => /Erin/.test(t)),
+    `pedidos=${queued} ${JSON.stringify(queuedNames.map((t) => t.replace(/\n/g, ' ')))}`,
+  );
+
+  await dave.context.close();
+  await erin.context.close();
+  const modalClosed = await waitFor(
+    async () => (await alice.page.locator('.join-request-modal').count()) === 0,
+    { timeout: 25000, label: 'modal fechar quando os solicitantes desistem' },
+  ).catch(() => false);
+  check(
+    'M6. O modal fecha sozinho quando os solicitantes desconectam',
+    modalClosed === true,
+    modalClosed === true ? '' : 'o modal continuou aberto com pedidos que já não podem ser aprovados',
+  );
+
+  // ------------------------------------------------- L (cont.). viewport móvel
+  // O breakpoint de 720px empilha o chat sobre a grade. É o cenário em que a
+  // altura é mais escassa e onde `100vh` (em vez de `100dvh`) esconderia os
+  // controles debaixo da barra de endereço.
+  //
+  // O chat de Alice ficou aberto desde a seção D — fecha aqui para medir os dois
+  // estados em sequência (sem chat, depois com chat).
+  if ((await roomLayout(alice.page)).chatOpen) {
+    await alice.page.getByRole('button', { name: /^Chat/ }).click();
+    await alice.page.locator('.chat-panel').waitFor({ state: 'detached', timeout: 5000 });
+  }
+  await alice.page.setViewportSize({ width: 390, height: 844 });
+  await sleep(500);
+  const mobile = await roomLayout(alice.page);
+  check(
+    'L6. Em viewport móvel a página continua sem rolar e os controles seguem visíveis',
+    noPageScroll(mobile) && mobile.controlsBottom <= mobile.innerHeight + 1,
+    `scrollHeight=${mobile.scrollHeight}/${mobile.innerHeight} ` +
+      `controls.bottom=${Math.round(mobile.controlsBottom)}`,
+  );
+
+  await alice.page.getByRole('button', { name: /^Chat/ }).click();
+  await alice.page.locator('.chat-panel').waitFor({ timeout: 5000 });
+  await sleep(500);
+  const mobileChat = await roomLayout(alice.page);
+  const stacked = await alice.page.evaluate(() => {
+    const grid = document.querySelector('.video-stage')?.getBoundingClientRect();
+    const chat = document.querySelector('.chat-panel')?.getBoundingClientRect();
+    if (!grid || !chat) return false;
+    return chat.top >= grid.bottom - 1; // empilhado, não lado a lado
+  });
+  // Aqui quem encolhe é a ÁREA da grade, não necessariamente o tile: com um
+  // único tile em retrato o limite é a largura, que o empilhamento não muda. O
+  // que precisa valer é que a grade cede altura ao chat e o tile continua
+  // inteiro dentro dela — sem scroll de página e com os controles alcançáveis.
+  check(
+    'L7. Em ≤720px o chat empilha abaixo da grade, a grade se reduz e a página continua sem rolar',
+    noPageScroll(mobileChat) &&
+      stacked &&
+      mobileChat.stageHeight < mobile.stageHeight &&
+      mobileChat.tileFitsStage === true &&
+      mobileChat.controlsBottom <= mobileChat.innerHeight + 1,
+    `empilhado=${stacked} área da grade ${Math.round(mobile.stageHeight)}px → ` +
+      `${Math.round(mobileChat.stageHeight)}px, tile cabe=${mobileChat.tileFitsStage}, ` +
+      `scrollHeight=${mobileChat.scrollHeight}/${mobileChat.innerHeight}`,
+  );
 
   // ---------------------------------------------- G. nada de erro no console
   for (const p of [alice, bob]) {

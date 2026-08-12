@@ -92,6 +92,18 @@ pelo Google Meet e Zoom para "E2EE":
 6. Após aprovação, o servidor entrega ao novo membro a lista de participantes atuais
    (id + nome, nada de mídia) e avisa os já presentes via `peer-joined`. Só então começa
    a negociação WebRTC (mesh) entre o novo peer e cada peer existente.
+7. Um pedido que **deixa de ser aprovável** é retratado com `join-request-cancelled
+   { requesterId }`, emitido aos membros da sala. Isso acontece quando o requisitante
+   desiste (fecha a aba / cai), quando outro participante já negou, ou quando a sala
+   encheu no meio do caminho.
+
+O passo 7 é o único evento que esta camada acrescentou ao protocolo, e ele existe por
+causa da forma da UI: como o pedido é um **modal** na tela de todo mundo (§6.7), um
+pedido morto que continuasse na tela seria um botão que não faz nada — e, pior, faria
+parecer que a sala ignora quem está esperando. `approve-join`/`deny-join` já são
+idempotentes no servidor (`pendingJoins` é a fonte de verdade), então a retratação é
+só o aviso; ela não afeta a decisão de acesso em si. O evento carrega apenas um
+`requesterId`, que já é público dentro da sala — nenhum nome, nenhum conteúdo.
 
 ## 5. O que o servidor de sinalização sabe (e o que ele nunca sabe)
 
@@ -110,8 +122,10 @@ estado desaparece. Não há banco de dados no backend.
 ## 6. Experiência de chamada: tela, chat, indicador de fala e presença
 
 Quatro mecanismos foram acrescentados sobre o mesh sem mudar nenhuma das
-restrições acima — em particular, **nada disso adiciona um único evento novo ao
-servidor de sinalização**.
+restrições acima — em particular, **nada em §6.1–§6.6 adiciona um único evento novo
+ao servidor de sinalização**. A única exceção no projeto inteiro é o
+`join-request-cancelled` do fluxo de aprovação (§4, passo 7), que é metadado de
+sala e não de mídia; §6.7 descreve por que a UI o exige.
 
 ### 6.1 Layout de transceivers e renegociação
 
@@ -220,6 +234,67 @@ porque o device continua aberto), o `AudioContext` é fechado, o loop de
 fechados. O mesmo vale para "desligar câmera": o track é encerrado de verdade e
 substituído por `null` nos senders, em vez de apenas desabilitado.
 
+### 6.7 Layout da sala: viewport fixo e grade calculada
+
+A sala é um shell de **altura fixa igual à do viewport**, em três faixas: topo
+compacto (banner de erro de mídia), palco elástico e rodapé de controles. A página
+**nunca rola** — `document.documentElement.scrollHeight` não excede
+`window.innerHeight` em nenhuma contagem de participantes.
+
+A altura é declarada como `height: 100vh` seguida de `height: 100dvh`. A segunda
+vence onde é suportada, e é ela que importa em celular: `100vh` mede o viewport
+**sem** a barra de endereço retrátil, o que colocaria o rodapé debaixo dela — o
+mesmo bug de "controle inalcançável", só que em outro dispositivo. Degradação
+graciosa pura, sem `@supports` e sem JS.
+
+**A grade é calculada em JS, não por CSS.** O tamanho ótimo do tile depende ao
+mesmo tempo da largura, da altura e da contagem, e CSS não expressa "escolha o
+número de colunas que maximiza o tile sujeito a caber na altura": `auto-fit`/
+`minmax` só enxerga a largura. Era exatamente essa a causa do layout anterior, em
+que um participante único produzia um tile do tamanho da largura da tela e
+empurrava os controles para fora.
+
+- `client/src/lib/gridLayout.js` é um módulo **puro, sem DOM**: recebe
+  `{ width, height, count, aspect, gap, minTileWidth }` e devolve
+  `{ cols, rows, tileWidth, tileHeight, overflow }`. Faz uma busca sobre o número
+  de colunas e escolhe a que maximiza o tile; empate desempata pelo **menor**
+  número de colunas, senão a grade oscila entre configurações equivalentes a cada
+  pixel de resize. Arredonda para baixo — arredondar para cima produz a linha
+  extra de estouro que este desenho existe para eliminar.
+- `client/src/components/VideoGrid.jsx` mede o palco com `ResizeObserver` e
+  escreve o resultado como custom properties (`--grid-cols`, `--tile-w`,
+  `--grid-gap`). Os tiles não recebem estilo inline.
+- O elemento medido (`.video-stage`) é dimensionado **pelo pai**, e a grade dentro
+  dele é `position: absolute`. É isso que impede o clássico `ResizeObserver loop`:
+  o conteúdo não tem como empurrar a caixa que está sendo medida. A medição também
+  só vira `setState` quando as dimensões **inteiras** mudam — comparar float faria
+  o subpixel de scrollbar/zoom oscilar para sempre.
+
+Num palco de desktop em paisagem a regra produz 1→1×1, 2→2×1, 3–4→2×2, 5–6→3×2,
+7–9→3×3, 10–12→4×3; em palco estreito ou achatado ela reorganiza sozinha (2 tiles
+em retrato viram 1×2). A aritmética está fixada em `client/test/gridLayout.test.mjs`.
+
+Todo tile é **16:9 com letterbox** (`object-fit: contain` sobre fundo escuro). 16:9
+é a proporção nativa da maioria das webcams e das telas compartilhadas. O trade-off
+aceito é a barra lateral em câmeras 4:3 — preferível a `cover`, que cortaria rosto,
+e a `fill`, que deformaria.
+
+**Escape de estouro:** o cálculo respeita um piso de legibilidade
+(`MIN_TILE_WIDTH`, 120px). Quando nem no menor tile legível o conjunto cabe, quem
+rola é o **container da grade** (`.video-grid.overflowing`), nunca a página — a
+invariante que interessa é que os controles e o modal continuem alcançáveis.
+
+**Pedidos de entrada são um modal** (`JoinRequestModal.jsx`), montado junto dos
+toasts num wrapper comum **antes** dos `return` de fase do `Room` — "aparece sobre
+qualquer estado da tela" só é garantido se a renderização não estiver presa a um
+ramo. Ele lista todos os pedidos pendentes (um por linha), tem `role="dialog"` +
+`aria-modal`, move o foco para o primeiro "Aprovar" e o devolve ao fechar. **Não
+fecha por `Esc` nem por clique no backdrop**, de propósito: um fechamento acidental
+deixaria alguém esperando indefinidamente. As duas tentativas recebem uma resposta
+explícita em vez de silêncio. O backdrop fica em `z-index` 30 e o conteúdo em 31,
+acima dos toasts (20) — se esse empilhamento inverter, o clique em "Aprovar" é
+interceptado e ninguém entra na sala.
+
 ## 7. Stack
 
 - **Frontend:** React + Vite. `RTCPeerConnection` nativo (sem SDK de terceiros tipo
@@ -236,7 +311,8 @@ substituído por `null` nos senders, em vez de apenas desabilitado.
 ```
 server/        signaling server (Express + Socket.IO, estado em memória)
 client/        app React (Vite) — UI, WebRTC mesh, E2EE via insertable streams
-client/test/   testes unitários (node:test) da histerese de áudio e do modelo de chat
+client/test/   testes unitários (node:test): histerese de áudio, modelo de chat e
+               cálculo da grade de vídeos (§6.7)
 e2e/           teste ponta a ponta com 3 participantes Chromium + TURN local
 infra/coturn/  config de referência para STUN/TURN self-hosted
 ```

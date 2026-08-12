@@ -200,14 +200,67 @@ export async function setInputValue(locator, value) {
   }, value);
 }
 
-/** Aprova todos os pedidos de entrada pendentes na página. */
+/**
+ * Aprova todos os pedidos de entrada pendentes na página.
+ *
+ * Os botões vivem no modal (`.join-request-modal`), que é o único lugar onde
+ * "Aprovar" aparece — o seletor é escopado nele de propósito: se o modal deixar
+ * de ser renderizado, isto falha por timeout de entrada em vez de silenciosamente
+ * clicar em outro botão de mesmo nome que venha a existir.
+ */
 export async function approveAll(page) {
-  const buttons = page.getByRole('button', { name: 'Aprovar' });
+  const buttons = page.locator('.join-request-modal').getByRole('button', { name: 'Aprovar' });
   for (let i = await buttons.count(); i > 0; i = await buttons.count()) {
     await buttons.first().click();
     await sleep(150);
   }
 }
+
+/**
+ * Estado de layout da sala, medido no próprio browser: é o que prova que a
+ * página não rola e que os controles continuam alcançáveis.
+ */
+export async function roomLayout(page) {
+  return page.evaluate(() => {
+    const doc = document.documentElement;
+    const grid = document.querySelector('.video-grid');
+    const controls = document.querySelector('.controls')?.getBoundingClientRect() || null;
+    const tile = document.querySelector('.video-tile')?.getBoundingClientRect() || null;
+    const stage = document.querySelector('.video-stage')?.getBoundingClientRect() || null;
+    return {
+      // O tile não pode exceder a área da grade: era exatamente isso que fazia
+      // o participante único empurrar os controles para fora da tela.
+      tileFitsStage:
+        tile && stage
+          ? tile.top >= stage.top - 1 &&
+            tile.bottom <= stage.bottom + 1 &&
+            tile.left >= stage.left - 1 &&
+            tile.right <= stage.right + 1
+          : null,
+      chatOpen: !!document.querySelector('.chat-panel'),
+      stageWidth: stage ? stage.width : null,
+      stageHeight: stage ? stage.height : null,
+      scrollHeight: doc.scrollHeight,
+      innerHeight: window.innerHeight,
+      scrollTop: document.scrollingElement.scrollTop,
+      controlsBottom: controls ? controls.bottom : null,
+      controlsTop: controls ? controls.top : null,
+      tiles: document.querySelectorAll('.video-tile').length,
+      tileWidth: tile ? tile.width : null,
+      tileRatio: tile && tile.height ? tile.width / tile.height : null,
+      cols: grid ? Number(getComputedStyle(grid).getPropertyValue('--grid-cols')) : null,
+      overflowing: grid ? grid.classList.contains('overflowing') : null,
+      videoFit: (() => {
+        const video = document.querySelector('.video-tile video');
+        return video ? getComputedStyle(video).objectFit : null;
+      })(),
+    };
+  });
+}
+
+/** True quando a página inteira cabe no viewport e não há como rolá-la. */
+export const noPageScroll = (layout) =>
+  layout.scrollHeight <= layout.innerHeight && layout.scrollTop === 0;
 
 /** Estado interno das RTCPeerConnections, lido do próprio processo da página. */
 export async function peerStats(page) {
