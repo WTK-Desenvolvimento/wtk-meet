@@ -61,7 +61,6 @@ export default function VideoGrid({ tiles, audioLevels }) {
               key={tile.key}
               stream={tile.stream}
               label={tile.label}
-              muted={tile.muted}
               mirrored={tile.mirrored}
               contain={tile.contain}
               badge={tile.badge}
