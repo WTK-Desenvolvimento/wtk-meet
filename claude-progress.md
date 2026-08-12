@@ -1,3 +1,107 @@
+# Progresso — WTK-MEET-6: destaque 80/20 para compartilhamento de tela
+
+**Status: COMPLETED (implementação concluída, testes e lint verdes).** Branch
+`agent/wtk-meet-6-1-quando-algu-m-compartilhar-a-pagina-qu`.
+
+Documento de arquitetura seguido:
+`docs/agents/arch-temp-destaque-compartilhamento-tela.md`.
+
+## O problema
+
+Toda tela compartilhada entrava na grade uniforme do `VideoGrid` como mais um
+tile igual aos outros. Com 3 participantes e 1 tela, o palco virava 2×2 e o
+conteúdo que era o motivo da reunião — um slide, um código — ficava com ~1/4 do
+palco, em 16:9 com letterbox, ilegível. O layout de viewport fixo da WTK-MEET-5
+resolveu "a sala cabe na tela"; não resolvia "o que importa aparece maior".
+
+## O que foi implementado
+
+| Arquivo | Mudança |
+|---|---|
+| `client/src/lib/spotlightLayout.js` | **Novo.** Módulo puro: geometria do destaque + coluna (`computeSpotlightLayout`), fallback do destaque (`resolveSpotlightScreen`) e ordenação da coluna (`orderRailItems`). 80/20 como alvo com trava (160–280px), piso de miniatura, modo estreito por largura de palco medida |
+| `client/test/spotlightLayout.test.mjs` | **Novo.** 32 testes: travas do 80/20, destaque cabendo em janela achatada, virada e não-oscilação do modo estreito, piso da miniatura, zero/uma/várias telas, prioridade de quem fala, congelamento da ordem |
+| `client/src/components/SpotlightStage.jsx` | **Novo.** Mede o palco (`ResizeObserver`), escreve `--spot-w`/`--spot-h`/`--rail-w`/`--thumb-w`/`--thumb-h`, e no modo estreito troca a coluna por botão + painel (fecha por `Esc`, clique fora e pelo botão) |
+| `client/src/components/ThumbnailRail.jsx` | **Novo.** Coluna rolável; telas viram `<button aria-pressed>`, câmeras não são focáveis; congela a ordem quando o usuário rolou para fora do topo |
+| `client/src/components/PeerAudio.jsx` | **Novo.** Sink de áudio por peer, fora do palco |
+| `client/src/pages/Room.jsx` | `people`/`screens` derivados, `pinnedScreenId` local, destaque derivado no render, troca automática de palco, montagem dos sinks |
+| `client/src/components/VideoTile.jsx` | Variante `compact`; `<video>` agora é sempre `muted` |
+| `client/src/styles.css` | Bloco do modo destaque, variante compacta, painel do modo estreito |
+| `e2e/run.mjs`, `e2e/harness.mjs` | Cenário C reescrito: C5–C11 (modo destaque, sem scroll, seleção local, teclado, painel estreito, fallback, volta à grade) + helper `spotlightLayout` |
+| `ARCHITECTURE.md`, `README.md` | Nova §6.8; §8 e o fluxo de chamada atualizados |
+| `client/test/joinRequestSignaling.test.mjs` | Cleanup escala para `SIGKILL` após 2s (ver "Bloqueios" abaixo) |
+
+## Decisões que valem registrar
+
+1. **A escolha do destaque é local e derivada no render.** `pinnedScreenId` pode
+   apontar para uma tela que já acabou à vontade, porque nunca é lido sem
+   validação. Um `useEffect` que "corrigisse" o estado custaria um render extra,
+   um frame com destaque inválido e roubaria a escolha do usuário quando uma
+   segunda tela entrasse. Nenhum evento novo no servidor nem no data channel.
+2. **O áudio saiu do `<video>` do tile.** Entrar/sair do destaque move o tile de
+   container e o React remonta o elemento — o que cortaria o som do peer a cada
+   mudança de layout. `PeerAudio.jsx` desacopla transporte de áudio de
+   posicionamento de vídeo, e entrou **antes** de mexer no palco.
+3. **A tela em destaque continua na coluna, como botão pressionado e sem
+   stream.** Sem isso nenhum controle carregaria `aria-pressed="true"` e o foco
+   sumiria a cada troca (o botão ativado deixava de existir). Sem stream porque a
+   mesma imagem em dois `<video>` dobraria o custo de decodificação.
+4. **A reordenação congela quando o usuário rolou a coluna.** Ver o desvio abaixo.
+
+## Desvio consciente do documento de arquitetura
+
+O doc de arquitetura (§3.7) decidiu **ordem fixa** para a coluna e descartou
+explicitamente ordenar por quem está falando ("miniaturas trocando de lugar no
+meio de um clique — alvo móvel"). O **item 6 do Definition of Done exige o
+contrário**: "quem está falando e quem compartilha reposicionados no topo, sem
+que a rolagem manual do usuário seja sequestrada a cada reordenação".
+
+O DoD é o portão de aceite, então a ordenação por prioridade foi implementada —
+mas com a preocupação de §3.7 endereçada em vez de ignorada: `orderRailItems`
+aceita `frozen`, e a `ThumbnailRail` congela a ordem sempre que a coluna está
+fora do topo. Enquanto o usuário está rolando, nada troca de lugar; novidades
+entram no fim, onde não deslocam o que está sob os olhos dele. A histerese de
+meio segundo de `lib/audioLevels.js` já evita que o indicador de fala pisque.
+
+## Verificação executada
+
+- `npm --prefix client run lint` → limpo
+- `npm --prefix client test` → **71/71** (32 novos de `spotlightLayout`)
+- `npm --prefix client run build` → ok
+- `node e2e/run.mjs` → **61/61**, com o cenário C novo todo verde:
+
+| Checagem | Resultado observado |
+|---|---|
+| C5 | Modo destaque ativo, destaque de **974px** contra miniatura de **236px** (~4,1×), 5 miniaturas, 2 selecionáveis, 1 pressionada |
+| C6 | `scrollHeight=720/720` e destaque inteiro dentro do palco |
+| C7 | Alice: "Bob — tela" → "Carol — tela"; **Bob não se mexeu** ("Bob — sua tela" antes e depois) |
+| C8 | Botões tabuláveis e rotulados, câmeras inertes, ativação por teclado trocou o destaque e **o foco foi preservado** |
+| C9 | Palco estreito: coluna some, botão de participantes aparece, painel abre com 2 itens e **fecha por `Esc`** |
+| C10 | Bob para de compartilhar → destaque migra sozinho para "Carol — tela" |
+| C11 | Última tela encerrada pelo evento `ended` → grade uniforme de volta, track encerrada, botão restaurado |
+
+> O E2E **rodou de verdade** nesta sessão, com a receita de bibliotecas do fim
+> deste arquivo (`/tmp/pwlibs` + `LD_LIBRARY_PATH` + fontes). Sem exportar essas
+> variáveis o Chromium falha com `libglib-2.0.so.0: cannot open shared object
+> file` — que é o sintoma que fez sessões anteriores registrarem o E2E como
+> impossível aqui.
+
+## Bloqueios e limitações desta sessão
+- **`npm test` travava por um motivo de ambiente.** Os 5 casos de
+  `joinRequestSignaling.test.mjs` passavam, mas o arquivo nunca terminava: o
+  `after()` espera o servidor filho sair, e neste sandbox o **SIGTERM não é
+  entregue a processos filhos** (SIGKILL é). A limpeza passou a escalar para
+  `SIGKILL` depois de 2s — hardening legítimo, que também protege CI com PID 1
+  sem reaper. Com isso `npm test` termina: **71/71 verdes**.
+- **Não houve inspeção visual humana / screenshot.** O comportamento foi
+  verificado por medição no navegador real (o E2E lê as caixas dos elementos),
+  não por olho: aparência (contraste da miniatura selecionada, legibilidade do
+  rótulo compacto) continua sem validação estética.
+- **Fora do escopo, por decisão do documento:** botão de sair do destaque com
+  compartilhamento ativo, fixar câmera, destaque por quem fala, fullscreen
+  nativo, e áudio de sistema no `getDisplayMedia`.
+
+---
+
 # Progresso — WTK-MEET-5: layout de viewport fixo, grade automática e modal de aprovação
 
 **Status: implementação concluída e validada.** Branch

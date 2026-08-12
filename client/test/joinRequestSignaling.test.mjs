@@ -119,7 +119,14 @@ after(async () => {
   // kill; sem soltá-los o arquivo termina com "resolution is still pending".
   const exited = new Promise((resolve) => server.once('exit', resolve));
   server.kill();
+  // Escalada depois de um prazo curto: há ambientes (sandboxes de CI, contêineres
+  // com PID 1 sem reaper) em que o SIGTERM simplesmente não é entregue ao filho.
+  // Sem isto, `await exited` fica pendente para sempre e o arquivo inteiro trava
+  // depois de todos os casos já terem passado — uma suíte que nunca termina, sem
+  // nenhum caso vermelho para explicar o porquê.
+  const escalate = setTimeout(() => server.kill('SIGKILL'), 2000);
   await exited;
+  clearTimeout(escalate);
   server.stdout.destroy();
   server.stderr.destroy();
 });

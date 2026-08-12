@@ -262,6 +262,48 @@ export async function roomLayout(page) {
 export const noPageScroll = (layout) =>
   layout.scrollHeight <= layout.innerHeight && layout.scrollTop === 0;
 
+/**
+ * Geometria do palco em modo destaque, do ponto de vista do DOM.
+ *
+ * O que interessa aqui não é o número exato de pixels — isso está fixado nos
+ * testes unitários de `lib/spotlightLayout.js` — mas a **hierarquia**: existe
+ * exatamente uma tela grande, as outras miniaturas são visivelmente menores, e
+ * quem rola é a coluna. É a tradução no navegador do que o módulo puro promete.
+ */
+export async function spotlightLayout(page) {
+  return page.evaluate(() => {
+    const layout = document.querySelector('.spotlight-layout');
+    const main = document.querySelector('.spotlight-main .video-tile');
+    const rail = document.querySelector('.thumb-rail');
+    const thumbs = [...document.querySelectorAll('.thumb-item')];
+    const rect = (el) => (el ? el.getBoundingClientRect() : null);
+    const mainRect = rect(main);
+    const railRect = rect(rail);
+
+    return {
+      active: !!layout,
+      gridActive: !!document.querySelector('.video-grid'),
+      narrow: layout ? layout.classList.contains('spotlight-narrow') : null,
+      spotlightWidth: mainRect ? mainRect.width : null,
+      spotlightHeight: mainRect ? mainRect.height : null,
+      // Rótulo do tile em destaque: é como o teste sabe **de quem** é a tela em
+      // destaque sem depender de ids internos.
+      spotlightLabel:
+        document.querySelector('.spotlight-main .video-label')?.textContent?.trim() || null,
+      railWidth: railRect ? railRect.width : null,
+      railScrolls: rail ? rail.scrollHeight > rail.clientHeight + 1 : null,
+      thumbCount: thumbs.length,
+      thumbWidth: thumbs[0] ? thumbs[0].getBoundingClientRect().width : null,
+      selectableCount: document.querySelectorAll('.thumb-select').length,
+      // Exatamente uma miniatura pressionada enquanto a coluna é um grupo de
+      // escolha: é o estado que o teclado e o leitor de tela leem.
+      pressedCount: document.querySelectorAll('.thumb-select[aria-pressed="true"]').length,
+      panelOpen: !!document.querySelector('.participants-panel'),
+      toggleCount: document.querySelectorAll('.participants-toggle').length,
+    };
+  });
+}
+
 /** Estado interno das RTCPeerConnections, lido do próprio processo da página. */
 export async function peerStats(page) {
   return page.evaluate(async () => {
