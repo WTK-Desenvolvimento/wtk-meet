@@ -5,3 +5,6 @@ dist/
 !.env.example
 *.log
 .DS_Store
+
+# core dumps do Chromium headless durante os testes E2E
+core.*

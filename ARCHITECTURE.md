@@ -100,11 +100,127 @@ pelo Google Meet e Zoom para "E2EE":
 | Que um `roomId` existe e quantos sockets estão nele (contagem efêmera em memória) | A chave/passphrase de E2EE (fica no fragmento da URL, nunca enviado ao servidor) |
 | Nomes de exibição escolhidos pelos participantes | Conteúdo de áudio/vídeo (nunca trafega por ele — mesh P2P) |
 | SDP/ICE candidates (metadados de rede: codecs, IPs candidatas) | O conteúdo dos frames de mídia, mesmo que decidisse inspecionar SRTP (E2EE adicional torna isso inútil) |
+| Que houve troca de SDP (portanto, que *algo* mudou na negociação) | O conteúdo das mensagens de chat — trafega por `RTCDataChannel` P2P, e não existe nenhum evento de chat no protocolo do servidor (§6.3) |
+| — | Quem está falando: os níveis de áudio são medidos localmente por cada participante e nunca saem da máquina (§6.4) |
+| — | Se alguém está compartilhando tela ou com a câmera desligada — esse estado é anunciado pelo data channel, não pelo servidor |
 
 Nada disso é persistido: ao encerrar a sala (todos saem) ou reiniciar o processo, o
 estado desaparece. Não há banco de dados no backend.
 
-## 6. Stack
+## 6. Experiência de chamada: tela, chat, indicador de fala e presença
+
+Quatro mecanismos foram acrescentados sobre o mesh sem mudar nenhuma das
+restrições acima — em particular, **nada disso adiciona um único evento novo ao
+servidor de sinalização**.
+
+### 6.1 Layout de transceivers e renegociação
+
+Cada `RTCPeerConnection` nasce com três transceivers `sendonly`, sempre na mesma
+ordem: **áudio (mic), vídeo (câmera), vídeo (tela)**. O sentido inverso vem de
+três transceivers `recvonly` que o navegador cria ao aplicar a oferta do outro
+lado.
+
+Por que não um único par bidirecional por finalidade: a especificação WebRTC só
+associa uma m-line remota a um transceiver local pré-existente quando ele foi
+criado por `addTrack()`. Transceivers criados por `addTransceiver()` — que é o
+que precisamos, já que o canal de tela existe antes de haver qualquer track de
+tela — nunca são pareados implicitamente. Aceitar o layout unidirecional (3+3)
+é mais barato do que sincronizar quem cria o quê, e mantém a identificação do
+que chega totalmente determinística: os transceivers que criamos são
+reconhecidos por identidade de objeto; os do outro lado chegam na ordem das
+m-lines, que é a ordem em que ele os criou.
+
+A consequência prática é a que interessa: **ligar/desligar câmera e entrar/sair
+de compartilhamento de tela são `replaceTrack()` num sender que já existe**.
+Não há SDP novo, não há renegociação, e o áudio não é tocado.
+
+Ainda assim a renegociação existe e precisa ser correta — a negociação inicial é
+simétrica (os dois lados disparam `onnegotiationneeded`) e uma queda de rede
+dispara `restartIce()`. O client implementa **perfect negotiation** completo,
+com o papel `polite`/`impolite` decidido por comparação lexicográfica dos socket
+ids (`selfId < peerId`): determinístico, oposto nas duas pontas por construção,
+sem sorteio e sem round-trip extra. Em colisão de ofertas, o `impolite` ignora a
+oferta que chegou e o `polite` faz rollback implícito.
+
+### 6.2 Compartilhamento de tela
+
+Usa o terceiro transceiver, com uma track dedicada de `getDisplayMedia()` — ela
+coexiste com a câmera, não a substitui, e por isso o participante que compartilha
+continua aparecendo na grade. A track recebe `contentHint = 'detail'` para que a
+degradação sob banda apertada preserve nitidez em vez de framerate (texto legível
+importa mais que fluidez numa tela compartilhada).
+
+Sair do compartilhamento tem dois gatilhos — o botão da UI e o "Parar
+compartilhamento" da barra do navegador — e ambos caem no mesmo caminho, via o
+evento `ended` da track.
+
+### 6.3 Chat via `RTCDataChannel`
+
+O chat trafega exclusivamente P2P, por um `RTCDataChannel` por conexão do mesh.
+O canal é **negociado fora de banda** (`negotiated: true, id: 0`): os dois lados
+o criam com o mesmo id, então não há `ondatachannel` nem corrida sobre quem cria.
+Como ele existe antes da primeira oferta, a m-line `application` já entra na
+negociação inicial.
+
+Nenhum evento de chat existe no servidor Socket.IO — os únicos eventos são os de
+sinalização (§4). O conteúdo herda a criptografia DTLS do próprio data channel,
+igual à mídia.
+
+O mesmo canal carrega o **estado do peer** (câmera desligada, mic mudo, tela
+ligada). Isso é deliberado: inferir "câmera desligada" de `track.muted` no
+receptor levaria segundos no Chromium, enquanto o anúncio pelo data channel é
+imediato — e continua sendo P2P.
+
+**Histórico é efêmero por construção.** As mensagens vivem apenas no estado do
+React: não há `localStorage`, `sessionStorage`, IndexedDB nem servidor.
+Recarregar a página ou sair da sala apaga a conversa por completo. Quem entra
+depois não recebe o que foi dito antes — não existe backlog para entregar.
+
+Mensagens vindas de um peer são sanitizadas na chegada (tipos, tamanhos, e o
+`id` é regerado localmente, para um participante não conseguir colidir com o id
+de outro e sobrescrever uma linha da conversa).
+
+### 6.4 Indicador de fala: política de medição local
+
+O anel azul de "está falando" é **derivado, não transmitido**. Cada participante
+mede localmente, com `AudioContext` + `AnalyserNode`, o próprio stream e os
+streams remotos que já está recebendo de qualquer forma. Nenhuma mensagem de
+nível de áudio existe — nem no servidor de sinalização, nem no data channel.
+
+Custo controlado: **um** `AudioContext` para a sala inteira e **um** loop
+`requestAnimationFrame` percorrendo todos os analisadores, em vez de um timer
+por tile.
+
+Histerese: acende no primeiro frame acima do limiar (~16ms na prática, bem
+abaixo do teto de 200ms) e só apaga após 500ms contínuos abaixo dele — sem isso
+o anel pisca nas pausas naturais entre palavras. Os limites estão fixados em
+testes unitários (`client/test/audioLevels.test.mjs`) com relógio e analisador
+controlados.
+
+Nota de precisão: o SDP negocia a extensão de cabeçalho RTP `ssrc-audio-level`,
+que é padrão do WebRTC em qualquer aplicação. Ela viaja dentro do SRTP entre os
+peers, não alimenta este indicador, e não é algo que a aplicação escolha enviar.
+
+### 6.5 Presença
+
+Entrada e saída disparam um toast efêmero (~4s) com o nome e um bipe curto,
+sintetizado no mesmo `AudioContext` (sem arquivo de mídia). Os avisos sonoros
+podem ser silenciados na própria UI, sem silenciar os toasts.
+
+Nenhum evento novo foi preciso: `peer-joined` e `peer-left` já existiam. O
+`peer-left` só carrega o id, e o nome é resolvido no mapa local de participantes
+antes da remoção.
+
+### 6.6 Ciclo de vida dos recursos
+
+Ao sair da sala, tudo é liberado: tracks de câmera, microfone e tela são parados
+com `track.stop()` (é o que apaga o LED da webcam — `enabled = false` não apaga,
+porque o device continua aberto), o `AudioContext` é fechado, o loop de
+`requestAnimationFrame` é cancelado, e data channels e `RTCPeerConnection` são
+fechados. O mesmo vale para "desligar câmera": o track é encerrado de verdade e
+substituído por `null` nos senders, em vez de apenas desabilitado.
+
+## 7. Stack
 
 - **Frontend:** React + Vite. `RTCPeerConnection` nativo (sem SDK de terceiros tipo
   PeerJS/Twilio). Socket.IO client apenas para sinalização.
@@ -115,19 +231,23 @@ estado desaparece. Não há banco de dados no backend.
 - **Sem TypeScript** neste MVP para reduzir footprint de ferramentas — decisão
   reversível se o time crescer.
 
-## 7. Estrutura de pastas
+## 8. Estrutura de pastas
 
 ```
-server/    signaling server (Express + Socket.IO, estado em memória)
-client/    app React (Vite) — UI, WebRTC mesh, E2EE via insertable streams
+server/        signaling server (Express + Socket.IO, estado em memória)
+client/        app React (Vite) — UI, WebRTC mesh, E2EE via insertable streams
+client/test/   testes unitários (node:test) da histerese de áudio e do modelo de chat
+e2e/           teste ponta a ponta com 3 participantes Chromium + TURN local
 infra/coturn/  config de referência para STUN/TURN self-hosted
 ```
 
-## 8. Limitações conhecidas / trabalho futuro
+## 9. Limitações conhecidas / trabalho futuro
 
-- Sem suporte a compartilhamento de tela nesta primeira versão (adicionável como uma
-  segunda track de vídeo por peer, mesmo pipeline de E2EE).
 - Sem gravação — é uma decisão de produto (privacidade total), não uma lacuna técnica.
+- O chat não tem histórico e não entrega backlog a quem chega depois. É
+  consequência direta da ausência de persistência (§6.3), não uma pendência.
+- `getDisplayMedia` não captura áudio do sistema nesta versão: o compartilhamento
+  de tela leva só vídeo.
 - Mesh não escala além de ~6-8 participantes; migrar para SFU exigiria reintroduzir um
   componente de mídia no servidor, o que contradiz o requisito atual de privacidade
   total — deve ser uma decisão consciente do produto, não uma otimização silenciosa.

@@ -1,0 +1,14 @@
+{
+  "name": "wtk-meet-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Teste ponta a ponta com 3 participantes Chromium e TURN local",
+  "type": "module",
+  "scripts": {
+    "test": "node run.mjs"
+  },
+  "dependencies": {
+    "node-turn": "^0.0.6",
+    "playwright": "^1.62.1"
+  }
+}

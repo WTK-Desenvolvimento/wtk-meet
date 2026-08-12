@@ -54,14 +54,51 @@ docker compose up -d
    presente aprova ou nega o pedido. Sala cheia (6) rejeita automaticamente.
 4. Após aprovado, a negociação WebRTC (mesh completo) começa entre o novo peer e cada
    peer já presente. Mídia nunca passa pelo servidor de sinalização.
-5. Cada frame de áudio/vídeo é cifrado com AES-GCM (chave derivada da passphrase via
+5. Cada conexão nasce com três canais de envio — microfone, câmera e tela — mais um
+   `RTCDataChannel`. Ligar/desligar câmera e entrar/sair de compartilhamento de tela
+   são trocas de track nesses canais, sem renegociar SDP. Quem já está na sala é
+   avisado por um toast com bipe curto (silenciável).
+6. Durante a chamada: **compartilhamento de tela** aparece como um tile próprio (quem
+   compartilha continua na grade), **chat de texto** trafega P2P pelo data channel, e
+   o tile de quem está falando ganha um anel azul reativo ao volume.
+7. Cada frame de áudio/vídeo é cifrado com AES-GCM (chave derivada da passphrase via
    PBKDF2) antes de sair, usando Insertable Streams — funciona plenamente em navegadores
    Chromium; em Firefox/Safari a UI avisa que só a criptografia padrão do WebRTC está ativa.
+
+### O que fica fora do servidor
+
+- **Chat**: nenhum evento de chat existe no servidor Socket.IO. As mensagens vão pelo
+  `RTCDataChannel` de cada conexão do mesh.
+- **Histórico**: só existe na memória da aba. Recarregar a página ou sair da sala apaga
+  a conversa por completo — não há `localStorage`, `sessionStorage` nem banco.
+- **Indicador de fala**: os níveis de áudio são medidos localmente com
+  `AudioContext` + `AnalyserNode`. Nenhum nível é transmitido.
+- **Câmera desligada / tela ligada**: anunciados pelo data channel, não pelo servidor.
+
+Ver `ARCHITECTURE.md` §6 para o desenho e os trade-offs.
+
+## Testes
+
+```bash
+cd client && npm test     # unitários (node:test): histerese do indicador, modelo de chat
+cd client && npm run lint
+
+node e2e/run.mjs          # ponta a ponta: 3 participantes Chromium + TURN local
+```
+
+O E2E sobe um TURN em `127.0.0.1` (o client usa `iceTransportPolicy: 'relay'`, então
+sem TURN nenhuma conexão fecha nem em loopback), builda o client apontando para uma
+porta sorteada, abre três contextos Chromium isolados com câmera/microfone falsos e
+percorre o roteiro completo: conectar, falar, compartilhar tela (inclusive dois ao
+mesmo tempo, para exercitar glare), trocar mensagens, desligar/religar a câmera e sair
+da sala. Requer as dependências de sistema do Chromium (`npx playwright install-deps`).
 
 ## Estrutura
 
 ```
 server/        sinalização (Express + Socket.IO), estado em memória, credenciais TURN efêmeras
 client/        app React (Vite) — UI, mesh WebRTC, E2EE via insertable streams
+client/test/   testes unitários
+e2e/           teste ponta a ponta com 3 participantes
 infra/coturn/  config de referência para STUN/TURN self-hosted
 ```
