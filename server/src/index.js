@@ -80,13 +80,19 @@ io.on('connection', (socket) => {
 
     if (rooms.isFull(pending.roomId)) {
       io.to(requesterId).emit('join-denied', { reason: 'room-full' });
-      pendingJoins.delete(requesterId);
+      cancelPendingJoin(requesterId, pending.roomId);
+      return;
+    }
+
+    const requesterSocket = io.sockets.sockets.get(requesterId);
+    if (!requesterSocket) {
+      // Requester disconnected while waiting: nobody is coming in, so the
+      // approval prompt has to come down on every screen showing it.
+      cancelPendingJoin(requesterId, pending.roomId);
       return;
     }
 
     pendingJoins.delete(requesterId);
-    const requesterSocket = io.sockets.sockets.get(requesterId);
-    if (!requesterSocket) return; // requester disconnected while waiting
     admitToRoom(requesterSocket, pending.roomId, pending.displayName);
   });
 
@@ -96,7 +102,7 @@ io.on('connection', (socket) => {
     const approverRoom = rooms.findRoomOf(socket.id);
     if (approverRoom !== pending.roomId) return;
 
-    pendingJoins.delete(requesterId);
+    cancelPendingJoin(requesterId, pending.roomId);
     io.to(requesterId).emit('join-denied', { reason: 'denied' });
   });
 
@@ -113,10 +119,29 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    pendingJoins.delete(socket.id);
+    const pending = pendingJoins.get(socket.id);
+    if (pending) cancelPendingJoin(socket.id, pending.roomId);
     leaveCurrentRoom(socket);
   });
 });
+
+/**
+ * Drops a pending join and tells the room to stop asking about it.
+ *
+ * Approval is a modal on every member's screen, so a request that can no longer
+ * be granted — the requester gave up, closed the tab, or someone else already
+ * decided — must be retracted explicitly. Without this the modal would sit there
+ * forever with a button that silently does nothing.
+ *
+ * Only membership metadata travels here: an id that is already public inside the
+ * room, and no name, no room contents.
+ */
+function cancelPendingJoin(requesterId, roomId) {
+  pendingJoins.delete(requesterId);
+  for (const [memberSocketId] of rooms.members(roomId)) {
+    io.to(memberSocketId).emit('join-request-cancelled', { requesterId });
+  }
+}
 
 function admitToRoom(socket, roomId, displayName) {
   const existingMembers = rooms.members(roomId);

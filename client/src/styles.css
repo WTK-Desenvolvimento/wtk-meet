@@ -111,8 +111,14 @@ code {
 
 /* Room */
 
+/* A sala ocupa exatamente o viewport e nunca rola: os controles e o modal de
+   aprovação precisam estar sempre alcançáveis. `dvh` vem depois de `vh` de
+   propósito — em mobile, `vh` ignora a barra de endereço retrátil e esconderia
+   o rodapé debaixo dela; onde `dvh` é suportado, a segunda declaração vence. */
 .room {
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   padding: 1.5rem;
@@ -124,12 +130,23 @@ code {
   align-items: center;
   justify-content: center;
   text-align: center;
+}
+
+/* Nas fases textuais o scroll é interno ao bloco, nunca da página: sem isto,
+   uma mensagem longa em janela baixa sumiria atrás do `overflow: hidden`. */
+.phase-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 1.5rem;
+  max-height: 100%;
+  overflow-y: auto;
 }
 
 .local-preview {
   width: 320px;
   max-width: 90vw;
+  flex: 0 0 auto;
 }
 
 .warning {
@@ -139,24 +156,12 @@ code {
   padding: 0.6rem 1rem;
   border-radius: 8px;
   margin: 0;
+  flex: 0 0 auto;
 }
 
-.pending-requests {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.pending-request {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.6rem 1rem;
-}
-
+/* Palco: a faixa elástica entre o banner e o rodapé. `min-height: 0` aqui e no
+   filho é o que impede o conteúdo de empurrar a coluna — basta um nível sem ele
+   para o scroll de página voltar, agora invisível atrás do `overflow: hidden`. */
 .stage {
   flex: 1;
   display: flex;
@@ -164,11 +169,38 @@ code {
   min-height: 0;
 }
 
-.video-grid {
+/* O elemento medido pelo ResizeObserver. O tamanho vem do pai, nunca do
+   conteúdo: a grade lá dentro é absoluta justamente para não ter como empurrar
+   a caixa que está sendo medida (seria o clássico "ResizeObserver loop"). */
+.video-stage {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+/* Colunas e largura do tile são escritas pelo `VideoGrid` como custom
+   properties (ver `lib/gridLayout.js`); os tiles não recebem estilo inline. */
+.video-grid {
+  position: absolute;
+  inset: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 0.75rem;
+  grid-template-columns: repeat(var(--grid-cols, 1), var(--tile-w, 1fr));
+  gap: var(--grid-gap, 12px);
+  justify-content: center;
+  align-content: center;
+}
+
+/* Primeiro render, antes da medição: os tiles ficam montados (o <video> é o que
+   reproduz o áudio do peer) mas não são pintados com um tamanho errado. */
+.video-grid.unmeasured {
+  visibility: hidden;
+}
+
+/* Escape de estouro: quando nem no menor tile legível o conjunto cabe, quem
+   rola é a grade — a página continua parada e os controles, visíveis. */
+.video-grid.overflowing {
+  overflow-y: auto;
   align-content: start;
 }
 
@@ -177,7 +209,7 @@ code {
   background: var(--surface);
   border-radius: 12px;
   overflow: hidden;
-  aspect-ratio: 4 / 3;
+  aspect-ratio: 16 / 9;
   /* Anel de "está falando": a borda existe sempre (transparente) para não
      empurrar o layout quando acende. */
   outline: 3px solid transparent;
@@ -191,15 +223,19 @@ code {
   box-shadow: 0 0 calc(4px + var(--speak-level, 0) * 18px) rgba(79, 124, 255, 0.75);
 }
 
+/* Letterbox, nunca corte nem deformação: `cover` cortava rosto de câmeras cuja
+   proporção não bate com a do tile, e `fill` esticaria a imagem. A barra
+   resultante é o preço aceito pelo requisito. */
 .video-tile video {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   background: var(--surface);
 }
 
+/* `contain` já é o padrão acima; a classe permanece só pelo fundo preto, que
+   fica melhor nas bordas de um compartilhamento de tela. */
 .video-tile.contain video {
-  object-fit: contain;
   background: #000;
 }
 
@@ -406,11 +442,16 @@ code {
   }
 }
 
+/* Faixa de fluxo, não `position: fixed`: o palco cede a altura que o rodapé
+   precisa e a grade se recalcula sozinha (o ResizeObserver vê a mudança). Um
+   rodapé fixo exigiria um padding mágico sincronizado à mão com a altura real
+   da barra, que muda quando os botões quebram linha. */
 .controls {
   display: flex;
   gap: 0.75rem;
   justify-content: center;
   flex-wrap: wrap;
+  flex: 0 0 auto;
 }
 
 .badge {
@@ -426,20 +467,115 @@ code {
   text-align: center;
 }
 
+/* Linha única de altura previsível: com a URL quebrando em 3–4 linhas, esta
+   faixa roubava altura do palco a cada resize. A URL inteira continua acessível
+   pelo `title` do parágrafo. */
 .invite-hint {
   text-align: center;
   color: var(--muted-text);
   font-size: 0.85rem;
   margin: 0;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.invite-hint code {
+  word-break: normal;
+}
+
+/* Modal de pedidos de entrada */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  /* Acima dos toasts (z-index 20): o pedido de entrada é a única coisa da tela
+     que outra pessoa está esperando. */
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.join-request-modal {
+  position: relative;
+  z-index: 31;
+  width: min(30rem, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.25rem 1.4rem;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+}
+
+.join-request-modal h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.join-request-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.join-request {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.85rem;
+}
+
+.join-request-name {
+  overflow-wrap: anywhere;
+}
+
+.join-request-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.join-request button.approve {
+  border-color: var(--accent);
+}
+
+.join-request-hint {
+  margin: 0;
+  color: var(--muted-text);
+  font-size: 0.8rem;
 }
 
 @media (max-width: 720px) {
+  .room {
+    padding: 1rem;
+  }
+
   .stage {
     flex-direction: column;
   }
 
   .chat-panel {
     width: 100%;
-    max-height: 45vh;
+    /* `flex` em vez de `max-height: 45vh`: com o palco de altura fixa, uma
+       altura em vh estouraria a coluna e ressuscitaria o scroll. */
+    flex: 0 1 45%;
+    min-height: 0;
   }
 }

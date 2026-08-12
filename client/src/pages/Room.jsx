@@ -5,8 +5,10 @@ import { WebRTCMesh } from '../lib/webrtcMesh.js';
 import { AudioLevelMonitor } from '../lib/audioLevels.js';
 import { appendMessage, createChatMessage, sanitizeIncomingMessage } from '../lib/chat.js';
 import VideoTile from '../components/VideoTile.jsx';
+import VideoGrid from '../components/VideoGrid.jsx';
 import ChatPanel from '../components/ChatPanel.jsx';
 import Toasts from '../components/Toasts.jsx';
+import JoinRequestModal from '../components/JoinRequestModal.jsx';
 // import { deriveRoomKey, isInsertableStreamsSupported } from '../lib/e2ee.js';
 import { fetchIceServers, MAX_PARTICIPANTS } from '../config.js';
 
@@ -219,10 +221,25 @@ export default function Room() {
       });
 
       signaling.socket.on('join-request', ({ requesterId, displayName: name }) => {
-        setPendingRequests((prev) => [...prev, { requesterId, displayName: name }]);
+        setPendingRequests((prev) =>
+          // Um reenvio do mesmo pedido não pode virar duas linhas no modal: a
+          // segunda ficaria pendente para sempre, já que aprovar resolve o id.
+          prev.some((r) => r.requesterId === requesterId)
+            ? prev
+            : [...prev, { requesterId, displayName: name }],
+        );
+      });
+
+      // Aditivo: se o servidor avisar que o pedido foi cancelado (o requisitante
+      // desistiu ou caiu), a linha some sozinha. Sem o evento, é um no-op.
+      signaling.socket.on('join-request-cancelled', ({ requesterId }) => {
+        setPendingRequests((prev) => prev.filter((r) => r.requesterId !== requesterId));
       });
 
       signaling.socket.on('peer-joined', ({ peerId, displayName: name }) => {
+        // Qualquer participante presente aprova: quando outro chega primeiro, o
+        // pedido já foi resolvido e o modal não pode continuar cobrando decisão.
+        setPendingRequests((prev) => prev.filter((r) => r.requesterId !== peerId));
         setParticipants((prev) => {
           const next = new Map(prev);
           next.set(peerId, { ...(next.get(peerId) || {}), displayName: name });
@@ -465,6 +482,16 @@ export default function Room() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [participants, displayName, cameraOff, muted, sharingScreen]);
 
+  // Toasts e modal de aprovação vivem fora do switch de fase, num wrapper comum
+  // a todos os `return`: "aparece sobre qualquer estado da tela" só é garantido
+  // se a renderização não estiver presa a um dos ramos.
+  const overlays = (
+    <>
+      <Toasts toasts={toasts} />
+      <JoinRequestModal requests={pendingRequests} onApprove={approve} onDeny={deny} />
+    </>
+  );
+
   if (!displayName) {
     const handleNameSubmit = (e) => {
       e.preventDefault();
@@ -474,58 +501,71 @@ export default function Room() {
       setDisplayName(name);
     };
     return (
-      <main className="home">
-        <h1>wtk-meet</h1>
-        <p className="tagline">Você foi convidado para uma sala. Escolha um nome para entrar.</p>
-        <form onSubmit={handleNameSubmit}>
-          <label className="field">
-            Seu nome
-            <input
-              value={nameInput}
-              onChange={(e) => setNameInput(e.target.value)}
-              placeholder="Como te chamam"
-              maxLength={40}
-              autoFocus
-            />
-          </label>
-          <div className="actions">
-            <button type="submit" disabled={!nameInput.trim()}>
-              Entrar na sala
-            </button>
-          </div>
-        </form>
-      </main>
+      <>
+        {overlays}
+        <main className="home">
+          <h1>wtk-meet</h1>
+          <p className="tagline">Você foi convidado para uma sala. Escolha um nome para entrar.</p>
+          <form onSubmit={handleNameSubmit}>
+            <label className="field">
+              Seu nome
+              <input
+                value={nameInput}
+                onChange={(e) => setNameInput(e.target.value)}
+                placeholder="Como te chamam"
+                maxLength={40}
+                autoFocus
+              />
+            </label>
+            <div className="actions">
+              <button type="submit" disabled={!nameInput.trim()}>
+                Entrar na sala
+              </button>
+            </div>
+          </form>
+        </main>
+      </>
     );
   }
 
   if (phase === PHASE.DENIED) {
     return (
-      <main className="room denied">
-        <h2>Acesso não liberado</h2>
-        <p>
-          {denyReason === 'room-full'
-            ? 'A sala já está com 6 participantes.'
-            : denyReason === 'setup-error'
-              ? 'Erro ao inicializar a conexão. Verifique sua rede e tente novamente.'
-              : 'Seu pedido de entrada foi negado.'}
-        </p>
-        <button onClick={() => navigate('/')}>Voltar</button>
-      </main>
+      <>
+        {overlays}
+        <main className="room denied">
+          <div className="phase-content">
+            <h2>Acesso não liberado</h2>
+            <p>
+              {denyReason === 'room-full'
+                ? 'A sala já está com 6 participantes.'
+                : denyReason === 'setup-error'
+                  ? 'Erro ao inicializar a conexão. Verifique sua rede e tente novamente.'
+                  : 'Seu pedido de entrada foi negado.'}
+            </p>
+            <button onClick={() => navigate('/')}>Voltar</button>
+          </div>
+        </main>
+      </>
     );
   }
 
   if (phase === PHASE.CONNECTING || phase === PHASE.WAITING_APPROVAL) {
     return (
-      <main className="room waiting">
-        <h2>
-          {phase === PHASE.CONNECTING
-            ? 'Conectando…'
-            : 'Aguardando aprovação de quem já está na sala…'}
-        </h2>
-        <div className="local-preview">
-          <VideoTile stream={localStreamRef.current} label={displayName} muted mirrored />
-        </div>
-      </main>
+      <>
+        {overlays}
+        <main className="room waiting">
+          <div className="phase-content">
+            <h2>
+              {phase === PHASE.CONNECTING
+                ? 'Conectando…'
+                : 'Aguardando aprovação de quem já está na sala…'}
+            </h2>
+            <div className="local-preview">
+              <VideoTile stream={localStreamRef.current} label={displayName} muted mirrored />
+            </div>
+          </div>
+        </main>
+      </>
     );
   }
 
@@ -533,82 +573,54 @@ export default function Room() {
   const roomSize = participants.size + 1;
 
   return (
-    <main className={`room in-call${chatOpen ? ' with-chat' : ''}`}>
-      {/* E2EE desabilitado por ora */}
+    <>
+      {overlays}
+      <main className={`room in-call${chatOpen ? ' with-chat' : ''}`}>
+        {/* E2EE desabilitado por ora */}
 
-      <Toasts toasts={toasts} />
+        {mediaError && <p className="warning">{mediaError}</p>}
 
-      {mediaError && <p className="warning">{mediaError}</p>}
+        <div className="stage">
+          <VideoGrid tiles={tiles} audioLevels={audioLevels} />
 
-      {pendingRequests.length > 0 && (
-        <div className="pending-requests">
-          {pendingRequests.map((req) => (
-            <div key={req.requesterId} className="pending-request">
-              <span>{req.displayName} quer entrar na sala</span>
-              <button onClick={() => approve(req.requesterId)}>Aprovar</button>
-              <button onClick={() => deny(req.requesterId)}>Negar</button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="stage">
-        <div className="video-grid">
-          {tiles.map((tile) => {
-            const levels = tile.audioId ? audioLevels[tile.audioId] : null;
-            return (
-              <VideoTile
-                key={tile.key}
-                stream={tile.stream}
-                label={tile.label}
-                muted={tile.muted}
-                mirrored={tile.mirrored}
-                contain={tile.contain}
-                badge={tile.badge}
-                cameraOff={tile.cameraOff}
-                micOff={tile.micOff}
-                speaking={!!levels?.speaking}
-                level={levels?.level || 0}
-              />
-            );
-          })}
+          {chatOpen && (
+            <ChatPanel
+              messages={chatMessages}
+              onSend={sendChat}
+              onClose={() => setChatOpen(false)}
+              peerCount={participants.size}
+            />
+          )}
         </div>
 
-        {chatOpen && (
-          <ChatPanel
-            messages={chatMessages}
-            onSend={sendChat}
-            onClose={() => setChatOpen(false)}
-            peerCount={participants.size}
-          />
-        )}
-      </div>
+        <div className="controls">
+          <button onClick={toggleMute}>{muted ? 'Ativar mic' : 'Silenciar'}</button>
+          <button onClick={toggleCamera}>{cameraOff ? 'Ativar câmera' : 'Desligar câmera'}</button>
+          <button onClick={sharingScreen ? stopScreenShare : startScreenShare}>
+            {sharingScreen ? 'Parar compartilhamento' : 'Compartilhar tela'}
+          </button>
+          <button onClick={chatOpen ? () => setChatOpen(false) : openChat}>
+            Chat
+            {unreadCount > 0 && !chatOpen && <span className="badge">{unreadCount}</span>}
+          </button>
+          <button
+            onClick={() => setSoundsEnabled((value) => !value)}
+            title="Bipe de entrada e saída de participantes"
+          >
+            {soundsEnabled ? 'Silenciar avisos' : 'Ativar avisos'}
+          </button>
+          <button onClick={() => navigate('/')} className="leave">
+            Sair
+          </button>
+        </div>
 
-      <div className="controls">
-        <button onClick={toggleMute}>{muted ? 'Ativar mic' : 'Silenciar'}</button>
-        <button onClick={toggleCamera}>{cameraOff ? 'Ativar câmera' : 'Desligar câmera'}</button>
-        <button onClick={sharingScreen ? stopScreenShare : startScreenShare}>
-          {sharingScreen ? 'Parar compartilhamento' : 'Compartilhar tela'}
-        </button>
-        <button onClick={chatOpen ? () => setChatOpen(false) : openChat}>
-          Chat
-          {unreadCount > 0 && !chatOpen && <span className="badge">{unreadCount}</span>}
-        </button>
-        <button
-          onClick={() => setSoundsEnabled((value) => !value)}
-          title="Bipe de entrada e saída de participantes"
-        >
-          {soundsEnabled ? 'Silenciar avisos' : 'Ativar avisos'}
-        </button>
-        <button onClick={() => navigate('/')} className="leave">
-          Sair
-        </button>
-      </div>
-
-      <p className="invite-hint">
-        Link do convite: <code>{inviteLink}</code> — compartilhe por outro canal.
-        {roomSize >= MAX_PARTICIPANTS && ' Sala no limite de participantes.'}
-      </p>
-    </main>
+        {/* Linha única e truncada: com `word-break` a URL virava 3–4 linhas em
+            janela estreita e roubava altura do palco a cada resize. */}
+        <p className="invite-hint" title={inviteLink}>
+          Link do convite: <code>{inviteLink}</code> — compartilhe por outro canal.
+          {roomSize >= MAX_PARTICIPANTS && ' Sala no limite de participantes.'}
+        </p>
+      </main>
+    </>
   );
 }
