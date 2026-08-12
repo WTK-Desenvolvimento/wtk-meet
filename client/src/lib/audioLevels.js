@@ -31,8 +31,19 @@ const MIN_EMIT_INTERVAL_MS = 50;
 const LEVEL_GAIN = 6;
 
 export class AudioLevelMonitor {
-  constructor({ onUpdate } = {}) {
+  /**
+   * `getContext` injeta o `AudioContext` compartilhado da sala
+   * (`lib/audioContext.js`). Quando ele é injetado, o monitor passa a ser
+   * **inquilino**: `close()` desmonta os analisadores mas não fecha o contexto,
+   * porque o grafo da música vive nele e o dono do ciclo de vida é o `Room`.
+   *
+   * Sem injeção o comportamento é o de sempre — o monitor cria e fecha o
+   * próprio contexto —, que é o que mantém o módulo utilizável isolado.
+   */
+  constructor({ onUpdate, getContext } = {}) {
     this.onUpdate = onUpdate;
+    this.getContext = getContext || null;
+    this.ownsContext = !getContext;
     this.ctx = null;
     this.sources = new Map(); // id -> { source, analyser, buffer, speaking, lastLoudAt, level }
     this.rafId = null;
@@ -48,6 +59,10 @@ export class AudioLevelMonitor {
    */
   ensureContext() {
     if (this.closed) return null;
+    if (this.getContext) {
+      this.ctx = this.getContext() || null;
+      return this.ctx;
+    }
     if (!this.ctx) {
       const Ctor = window.AudioContext || window.webkitAudioContext;
       if (!Ctor) return null;
@@ -238,9 +253,12 @@ export class AudioLevelMonitor {
       this.detach(id);
     }
     if (this.ctx) {
-      this.ctx.close().catch(() => {
-        // já fechado
-      });
+      // Contexto injetado é de outro dono (o `Room`): só soltamos a referência.
+      if (this.ownsContext) {
+        this.ctx.close().catch(() => {
+          // já fechado
+        });
+      }
       this.ctx = null;
     }
   }

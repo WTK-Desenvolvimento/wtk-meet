@@ -1,4 +1,14 @@
 import { CHAT_CHANNEL_ID, CHAT_CHANNEL_LABEL, parseChannelPayload } from './chat.js';
+import { isMusicMessage, snapshotMessage } from './musicProtocol.js';
+
+/**
+ * Teto de banda do canal de música. O client roda com
+ * `iceTransportPolicy: 'relay'`: **todo** o tráfego passa pelo TURN, e em mesh
+ * quem toca sobe N−1 cópias. Com 6 pessoas são 5 × 96 kbps além das 5 cópias de
+ * vídeo — sem teto explícito o Opus pode subir e disputar banda com o vídeo
+ * exatamente quando a sala está cheia.
+ */
+const MUSIC_MAX_BITRATE = 96_000;
 
 /**
  * Full-mesh WebRTC: one RTCPeerConnection per remote peer, capped by the
@@ -10,12 +20,20 @@ import { CHAT_CHANNEL_ID, CHAT_CHANNEL_LABEL, parseChannelPayload } from './chat
  * Três decisões carregam o resto do arquivo:
  *
  * 1. **Transceivers pré-criados, um canal de envio por finalidade.** Cada lado
- *    cria exatamente três transceivers `sendonly`, sempre na mesma ordem: áudio
- *    (mic), vídeo (câmera), vídeo (tela). Ligar/desligar câmera e entrar/sair
- *    de compartilhamento de tela viram `replaceTrack()` num sender que já
- *    existe — sem renegociação de SDP.
+ *    cria exatamente quatro transceivers `sendonly`, sempre na mesma ordem:
+ *    áudio (mic), vídeo (câmera), vídeo (tela), áudio (música). Ligar/desligar
+ *    câmera, entrar/sair de compartilhamento de tela e assumir a faixa que está
+ *    tocando viram `replaceTrack()` num sender que já existe — sem renegociação
+ *    de SDP.
  *
- *    O sentido inverso vem de três transceivers `recvonly` que o navegador cria
+ *    A música tem canal próprio em vez de ser mixada no microfone, e isso não é
+ *    preferência de estilo: `toggleMute` desliga o mic com `track.enabled =
+ *    false`, então música mixada ali **silenciaria para a sala inteira** ao
+ *    silenciar o microfone; o indicador de fala (que mede o stream do peer)
+ *    ficaria permanentemente aceso no tile de quem toca; e ninguém conseguiria
+ *    baixar a música sem baixar a voz junto.
+ *
+ *    O sentido inverso vem de quatro transceivers `recvonly` que o navegador cria
  *    ao aplicar a oferta do outro lado. Vale sublinhar por que não é um pareamento
  *    bidirecional: a spec só permite associar uma m-line remota a um transceiver
  *    local pré-existente quando ele foi criado por `addTrack()` — transceivers de
@@ -46,6 +64,9 @@ export class WebRTCMesh {
     onChatMessage,
     onRemoteStreamClosed,
     onPeerStateChange,
+    onRemoteMusic,
+    onMusicMessage,
+    getMusicSnapshot,
   }) {
     this.signaling = signaling;
     this.iceServers = iceServers;
@@ -57,6 +78,9 @@ export class WebRTCMesh {
     this.onChatMessage = onChatMessage;
     this.onRemoteStreamClosed = onRemoteStreamClosed;
     this.onPeerStateChange = onPeerStateChange;
+    this.onRemoteMusic = onRemoteMusic;
+    this.onMusicMessage = onMusicMessage;
+    this.getMusicSnapshot = getMusicSnapshot;
 
     this.peers = new Map(); // peerId -> peer record (ver _createPeerRecord)
     this.closed = false;
@@ -66,6 +90,7 @@ export class WebRTCMesh {
     this.localAudioTrack = localStream?.getAudioTracks()[0] || null;
     this.localCameraTrack = localStream?.getVideoTracks()[0] || null;
     this.localScreenTrack = null;
+    this.localMusicTrack = null;
 
     // Estado anunciado aos peers pelo data channel (nunca pelo servidor).
     this.localState = {
@@ -119,6 +144,8 @@ export class WebRTCMesh {
       tasks: Promise.resolve(),
       stream: new MediaStream(),       // mic + câmera do peer
       screenStream: new MediaStream(), // compartilhamento de tela do peer
+      musicStream: new MediaStream(),  // música que o peer está transmitindo
+      hasMusicTrack: false,
       hasScreenTrack: false,
       remoteScreenOn: false,
       channel: null,
@@ -169,6 +196,10 @@ export class WebRTCMesh {
       // Ao abrir, cada lado anuncia seu estado atual para o outro não começar
       // com uma grade desatualizada (ex.: alguém já compartilhando tela).
       this._send(rec, { type: 'state', ...this.localState });
+      // …e o estado musical inteiro, que é o que faz quem entra no meio de uma
+      // faixa ver a mesma fila e entrar na música em andamento, não do começo.
+      const snapshot = this.getMusicSnapshot?.();
+      if (snapshot) this._send(rec, snapshotMessage(snapshot));
     };
     rec.channel.onmessage = (event) => this._handleChannelMessage(rec, event.data);
     rec.channel.onerror = (event) => {
