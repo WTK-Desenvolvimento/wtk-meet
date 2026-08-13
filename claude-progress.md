@@ -74,6 +74,22 @@ anterior e que não é tocado por esta: todas as conexões apareceram em
 intermitência do TURN local sob carga, não regressão. Vale rodar de novo antes de
 investigar.
 
+**A intermitência do TURN foi isolada, não presumida.** Numa sessão em que a suíte
+abortou duas vezes seguidas em "mesh conectado (2 peers por participante)" — a
+primeira checagem que depende de ICE, com `conn: failed` / `ice: disconnected` em
+todos os participantes e **nenhum erro de console** —, o experimento decisivo foi
+rodar a suíte no estado anterior à task (`git checkout 6bc3129 -- client e2e`, rodar,
+`git checkout HEAD -- client e2e` para restaurar): o código **sem nada desta entrega
+falhou exatamente no mesmo ponto**. Na execução seguinte, com a máquina ociosa, o
+mesmo commit passou 76/76. Duas coisas para a próxima pessoa:
+
+- O sintoma se agrava quando **duas suítes rodam ao mesmo tempo** no sandbox (4
+  núcleos, dois TURN, seis contextos Chromium). Se houver outra execução em voo,
+  espere-a terminar antes de concluir qualquer coisa sobre uma falha de ICE.
+- UDP em loopback continua funcionando no Node quando isso acontece (testável com um
+  `dgram` de 5 linhas), então "a rede caiu" não é a explicação — é alocação de TURN
+  sob contenção de CPU. Rodar de novo é mais barato que investigar.
+
 O bloco S foi o que cobrou a decisão 3 acima: a primeira execução falhou em S11
 porque trocar a câmera com a câmera desligada ainda reiniciava o preview (só de
 áudio) e gastava um `getUserMedia`. Hoje o contador não se move.
