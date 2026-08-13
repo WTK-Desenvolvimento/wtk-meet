@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createLevelMeter } from '../lib/audioLevels.js';
 import {
   DEFAULT_PREFERENCES,
   buildConstraints,
@@ -6,75 +7,61 @@ import {
   listDevices,
   resolvePreferredDevice,
 } from '../lib/devices.js';
-import { createLevelMeter } from '../lib/audioLevels.js';
 
-const NO_SINK_HINT =
-  'Este navegador não permite escolher a saída de áudio pela página. Use a configuração do sistema.';
-
-const FIELDS = [
-  { key: 'videoInputId', list: 'videoInputs', kind: 'videoinput', id: 'settings-camera', label: 'Câmera' },
-  { key: 'audioInputId', list: 'audioInputs', kind: 'audioinput', id: 'settings-mic', label: 'Microfone' },
-  { key: 'audioOutputId', list: 'audioOutputs', kind: 'audiooutput', id: 'settings-out', label: 'Saída de áudio' },
-];
+const SINK_UNSUPPORTED_HINT =
+  'Este navegador não permite escolher a saída de áudio pela página. ' +
+  'Troque o dispositivo padrão no sistema operacional.';
 
 /**
- * Modal único de configurações de dispositivos — o mesmo componente na Home, na
- * tela de espera e dentro da sala.
+ * Modal único de configurações de dispositivos, usado na Home, na tela de
+ * espera e dentro da sala.
  *
- * O componente **não persiste nada**: ele devolve a seleção em `onSave` e quem
- * grava (e aplica na chamada em andamento) é o pai. Isso mantém a única cópia
- * das preferências e do `localStorage` num lugar só.
+ * Três decisões carregam o componente:
  *
- * Ordem de inicialização deliberada (preview antes de enumerar): sem permissão
- * concedida, `enumerateDevices` devolve entradas sem rótulo e sem id — uma lista
- * inútil. O `getUserMedia` do preview é o que concede a permissão, e só depois
- * dele a listagem tem rótulos reais. Dentro da sala a permissão já existe e a
- * ordem é indiferente; o caso difícil é o da Home.
- *
- * O pai monta este componente condicionalmente (`{open && <SettingsModal/>}`):
- * é o desmonte que para o stream de preview, então fechar por botão, por `Esc`
- * ou navegando para a sala limpam pelo mesmo caminho.
+ * 1. **Preview primeiro, `enumerateDevices` depois.** Sem permissão concedida, a
+ *    enumeração devolve entradas sem `deviceId` e sem rótulo — uma lista
+ *    inútil. É o `getUserMedia` do preview que concede a permissão, então ele
+ *    vem antes. Dentro da sala a ordem é indiferente (a permissão já existe);
+ *    o caso difícil é a primeira abertura na Home.
+ * 2. **Nada aqui é aplicado nem persistido.** O componente devolve a seleção em
+ *    `onSave`; quem grava e quem troca o track em chamada é o pai — só ele tem
+ *    acesso ao mesh e ao stream local.
+ * 3. **O `stop()` do preview mora no cleanup do efeito**, não no handler de
+ *    clique: desmontar por navegação (escolher na Home e entrar na sala) limpa
+ *    igual a fechar pelo botão. Por isso o pai monta com `{open && <Modal/>}`.
  */
 export default function SettingsModal({
-  open = true,
-  preferences,
+  preferences = DEFAULT_PREFERENCES,
   onSave,
   onClose,
   audioContext = null,
+  videoPreview = true,
   onDeviceLost,
   busy = false,
 }) {
-  const [devices, setDevices] = useState(() => listDevices([]));
   const [pending, setPending] = useState(() => ({ ...DEFAULT_PREFERENCES, ...preferences }));
+  const [devices, setDevices] = useState(() => listDevices([]));
   const [level, setLevel] = useState(0);
-  const [previewStream, setPreviewStream] = useState(null);
-  const [notice, setNotice] = useState(null);
+  const [previewError, setPreviewError] = useState('');
 
   const videoRef = useRef(null);
   const firstFieldRef = useRef(null);
-  const pendingRef = useRef(pending);
-  pendingRef.current = pending;
+  const streamRef = useRef(null);
+  const meterRef = useRef(null);
+  // Espelhos para uso dentro de handlers registrados uma única vez.
+  const preferencesRef = useRef(preferences);
+  const onDeviceLostRef = useRef(onDeviceLost);
+  preferencesRef.current = preferences;
+  onDeviceLostRef.current = onDeviceLost;
 
-  // Feature detect uma vez: o seletor de saída é renderizado desabilitado (com
-  // explicação) onde não há `setSinkId`, nunca escondido — esconder faria o
-  // usuário procurar um recurso que ele viu funcionando em outro navegador.
   const sinkSupported = useMemo(() => isSinkIdSupported(), []);
 
-  const notifyLost = useCallback(
-    (message) => {
-      setNotice(message);
-      onDeviceLost?.(message);
-    },
-    [onDeviceLost],
-  );
-
   /**
-   * Reenumera e, se algum device **selecionado** sumiu, volta aquele campo para
-   * "Padrão do sistema" avisando. Não reinicia o preview por conta própria: um
-   * headset USB dispara vários `devicechange` seguidos (mic e saída aparecem em
-   * momentos diferentes) e a câmera piscaria a cada um.
+   * Reenumera e reconcilia a seleção pendente. Um device que sumiu vira "Padrão
+   * do sistema" no seletor — deixar o `<select>` apontando para uma `<option>`
+   * que não existe mais o faria exibir o primeiro item sem que o estado mudasse.
    */
-  const refresh = useCallback(async () => {
+  const refreshDevices = useCallback(async () => {
     let raw = [];
     try {
       raw = await navigator.mediaDevices.enumerateDevices();
@@ -84,111 +71,112 @@ export default function SettingsModal({
     const lists = listDevices(raw);
     setDevices(lists);
 
-    const current = pendingRef.current;
-    const patch = {};
-    const lost = [];
-    for (const field of FIELDS) {
-      const { fellBack } = resolvePreferredDevice(lists[field.list], current[field.key]);
-      if (fellBack) {
-        patch[field.key] = '';
-        lost.push(field.label.toLowerCase());
-      }
-    }
-    if (lost.length > 0) {
-      setPending((prev) => ({ ...prev, ...patch }));
-      notifyLost(
-        `Dispositivo desconectado (${lost.join(', ')}). Voltamos para o padrão do sistema.`,
+    setPending((prev) => {
+      const next = { ...prev };
+      let lostLabel = '';
+      const check = (key, list, label) => {
+        if (!prev[key]) return;
+        if (resolvePreferredDevice(list, prev[key]).fellBack) {
+          next[key] = '';
+          if (!lostLabel) lostLabel = label;
+        }
+      };
+      check('videoInputId', lists.videoInputs, 'a câmera');
+      check('audioInputId', lists.audioInputs, 'o microfone');
+      check('audioOutputId', lists.audioOutputs, 'a saída de áudio');
+      if (!lostLabel) return prev;
+      onDeviceLostRef.current?.(
+        `Perdemos ${lostLabel} que estava selecionada. Voltamos para o padrão do sistema.`,
       );
-    }
-    return lists;
-  }, [notifyLost]);
+      return next;
+    });
+  }, []);
 
-  // Preview + medidor. Reinicia a cada troca de entrada pendente — é o que faz o
-  // preview refletir a seleção ainda não salva. A parada mora no cleanup (e não
-  // no clique de "Cancelar") para que desmontar por navegação limpe igual.
+  // Preview: reinicia a cada mudança da seleção pendente de entrada. A saída de
+  // áudio e o toggle de sons não entram nas deps — trocá-los não muda o que a
+  // câmera e o microfone estão capturando.
   useEffect(() => {
-    if (!open) return undefined;
     let cancelled = false;
-    let stream = null;
-    let meter = null;
-
-    const stopAll = () => {
-      meter?.stop();
-      meter = null;
-      stream?.getTracks().forEach((track) => track.stop());
-      stream = null;
-    };
+    // Copiado aqui (e não lido do ref na limpeza): o efeito roda depois do
+    // commit, então o elemento já existe, e o cleanup precisa limpar o MESMO
+    // elemento que recebeu este stream.
+    const videoEl = videoRef.current;
+    setPreviewError('');
+    setLevel(0);
 
     (async () => {
-      const prefs = pendingRef.current;
-      const attempts = [
-        buildConstraints(prefs, { video: true, audio: true }),
-        buildConstraints(prefs, { video: false, audio: true }),
-        buildConstraints(prefs, { video: true, audio: false }),
-      ];
-      for (const constraints of attempts) {
+      let stream = null;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(
+          buildConstraints(pending, { video: videoPreview, audio: true }),
+        );
+      } catch {
         try {
-          stream = await navigator.mediaDevices.getUserMedia(constraints);
-          break;
+          // Câmera indisponível (ocupada, negada, sumida) não pode custar o
+          // medidor do microfone — que é metade do que o modal serve para fazer.
+          stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+          if (!cancelled) setPreviewError('Não foi possível abrir a câmera selecionada.');
         } catch {
-          stream = null;
+          if (!cancelled) setPreviewError('Não foi possível acessar câmera e microfone.');
         }
       }
+
       if (cancelled) {
-        stopAll();
+        stream?.getTracks().forEach((t) => t.stop());
         return;
       }
-      if (!stream) {
-        setNotice('Não foi possível abrir a câmera ou o microfone para o preview.');
-      } else {
-        setPreviewStream(stream);
-        meter = createLevelMeter({ stream, context: audioContext, onLevel: setLevel });
+
+      streamRef.current = stream;
+      if (videoEl) videoEl.srcObject = stream;
+      if (stream) {
+        meterRef.current = createLevelMeter({
+          stream,
+          context: typeof audioContext === 'function' ? audioContext() : audioContext,
+          onLevel: setLevel,
+        });
       }
-      // Só agora a lista tem rótulos reais (a permissão acabou de ser concedida).
-      await refresh();
+      // Só agora a lista tem rótulos reais: a permissão acabou de ser concedida.
+      await refreshDevices();
     })();
 
     return () => {
       cancelled = true;
-      stopAll();
-      setPreviewStream(null);
-      setLevel(0);
+      meterRef.current?.stop();
+      meterRef.current = null;
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      if (videoEl) videoEl.srcObject = null;
     };
-    // `audioContext` e `refresh` são estáveis; reiniciar por causa deles faria a
-    // câmera piscar sem motivo.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, pending.videoInputId, pending.audioInputId]);
+  }, [pending.videoInputId, pending.audioInputId, videoPreview, refreshDevices]);
 
+  // Conectar/desconectar hardware com o modal aberto: só reenumera. Reiniciar o
+  // preview aqui faria a câmera piscar — um headset USB dispara vários
+  // `devicechange` seguidos (mic e saída aparecem em momentos diferentes).
   useEffect(() => {
-    const video = videoRef.current;
-    if (video) video.srcObject = previewStream || null;
-  }, [previewStream]);
-
-  // Conectar/desconectar hardware com o modal aberto atualiza as listas.
-  useEffect(() => {
-    if (!open) return undefined;
-    const media = navigator.mediaDevices;
-    if (!media?.addEventListener) return undefined;
+    const md = navigator.mediaDevices;
+    if (!md?.addEventListener) return undefined;
     const handler = () => {
-      refresh();
+      refreshDevices();
     };
-    media.addEventListener('devicechange', handler);
-    return () => media.removeEventListener('devicechange', handler);
-  }, [open, refresh]);
+    md.addEventListener('devicechange', handler);
+    return () => md.removeEventListener('devicechange', handler);
+  }, [refreshDevices]);
 
-  // Foco entra no modal e volta para quem o abriu — mesmo padrão do modal de
-  // pedidos de entrada.
+  // Foco entra no modal ao abrir e volta para quem o abriu ao fechar. O opener
+  // pode ter saído do DOM nesse meio tempo (a barra de controles muda de rótulo).
   useEffect(() => {
-    if (!open) return undefined;
     const opener = document.activeElement;
     firstFieldRef.current?.focus();
     return () => {
       if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();
     };
-  }, [open]);
+  }, []);
 
+  // Esc fecha. Sem captura, de propósito: se o modal de aprovação estiver
+  // aberto, o handler dele (que é em captura) atende primeiro — quem tem alguém
+  // esperando do outro lado tem prioridade.
   useEffect(() => {
-    if (!open) return undefined;
     const onKeyDown = (event) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
@@ -196,14 +184,34 @@ export default function SettingsModal({
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [open, onClose]);
+  }, [onClose]);
 
-  if (!open) return null;
-
-  const select = (field) => (event) => {
-    const value = event.target.value;
-    setPending((prev) => ({ ...prev, [field]: value }));
+  const select = (key) => (event) => {
+    const { value } = event.target;
+    setPending((prev) => ({ ...prev, [key]: value }));
   };
+
+  const handleSave = () => {
+    onSave?.({ ...pending });
+  };
+
+  const renderSelect = (key, label, list, extra = {}) => (
+    <label className="settings-field">
+      <span>{label}</span>
+      <select
+        value={pending[key]}
+        onChange={select(key)}
+        ref={key === 'videoInputId' ? firstFieldRef : null}
+        {...extra}
+      >
+        {list.map((device) => (
+          <option key={device.deviceId || 'default'} value={device.deviceId}>
+            {device.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
 
   return (
     <div className="modal-backdrop settings" onMouseDown={() => onClose?.()}>
@@ -214,52 +222,36 @@ export default function SettingsModal({
         aria-labelledby="settings-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <h2 id="settings-title">Configurações de áudio e vídeo</h2>
+        <h2 id="settings-title">Configurações</h2>
 
         <div className="settings-preview">
-          {/* Espelhado como o tile local: o preview tem que parecer com o que a
-              pessoa já vê de si mesma na grade. */}
-          <video ref={videoRef} autoPlay playsInline muted className="mirrored" />
-          {!previewStream && <span className="settings-preview-empty">Sem preview</span>}
+          {videoPreview ? (
+            <video ref={videoRef} autoPlay playsInline muted className="mirrored" />
+          ) : (
+            <p className="settings-preview-off">
+              Câmera desligada. A câmera escolhida será usada quando você ligá-la.
+            </p>
+          )}
         </div>
 
-        {/* Redundante com o preview para quem enxerga e ruidoso para leitor de
-            tela — daí o aria-hidden. */}
-        <div className="mic-meter" aria-hidden="true" style={{ '--mic-level': level.toFixed(2) }}>
-          <span className="mic-meter-bar" />
+        {/* Redundante com o preview para quem enxerga, e ruidoso para leitor de
+            tela: a informação útil já está no rótulo do dispositivo. */}
+        <div className="mic-meter" style={{ '--mic-level': level.toFixed(2) }} aria-hidden="true">
+          <span className="mic-meter-fill" />
         </div>
 
-        {FIELDS.map((field, index) => {
-          const disabled = field.key === 'audioOutputId' && !sinkSupported;
-          return (
-            <label className="settings-field" key={field.key} htmlFor={field.id}>
-              {field.label}
-              <select
-                id={field.id}
-                ref={index === 0 ? firstFieldRef : null}
-                value={pending[field.key]}
-                onChange={select(field.key)}
-                disabled={disabled}
-              >
-                {devices[field.list].map((device) => (
-                  <option key={device.deviceId || 'default'} value={device.deviceId}>
-                    {device.label}
-                  </option>
-                ))}
-                {/* Um id salvo que não está mais na lista não pode sumir do
-                    <select> em silêncio: sem esta opção o campo mostraria outro
-                    device como se fosse o escolhido. */}
-                {pending[field.key] &&
-                  !devices[field.list].some((d) => d.deviceId === pending[field.key]) && (
-                    <option value={pending[field.key]}>Dispositivo salvo (indisponível)</option>
-                  )}
-              </select>
-              {disabled && <span className="settings-hint">{NO_SINK_HINT}</span>}
-            </label>
-          );
+        {previewError && <p className="warning">{previewError}</p>}
+
+        {renderSelect('videoInputId', 'Câmera', devices.videoInputs)}
+        {renderSelect('audioInputId', 'Microfone', devices.audioInputs)}
+        {renderSelect('audioOutputId', 'Saída de áudio', devices.audioOutputs, {
+          disabled: !sinkSupported,
         })}
+        {/* Desabilitado com explicação, nunca escondido: sumir com o seletor faz
+            quem viu o recurso em outro navegador procurar o que não existe. */}
+        {!sinkSupported && <p className="settings-hint">{SINK_UNSUPPORTED_HINT}</p>}
 
-        <label className="settings-toggle">
+        <label className="settings-check">
           <input
             type="checkbox"
             checked={pending.soundsEnabled}
@@ -267,16 +259,14 @@ export default function SettingsModal({
               setPending((prev) => ({ ...prev, soundsEnabled: event.target.checked }))
             }
           />
-          Avisos sonoros de entrada e saída
+          <span>Avisos sonoros de entrada e saída</span>
         </label>
-
-        {notice && <p className="warning">{notice}</p>}
 
         <div className="settings-actions">
           <button type="button" onClick={() => onClose?.()}>
             Cancelar
           </button>
-          <button type="button" className="primary" disabled={busy} onClick={() => onSave?.({ ...pending })}>
+          <button type="button" className="primary" onClick={handleSave} disabled={busy}>
             Salvar
           </button>
         </div>
