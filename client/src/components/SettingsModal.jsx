@@ -92,6 +92,11 @@ export default function SettingsModal({
     });
   }, []);
 
+  // Com a câmera desligada o preview é só de áudio, então trocar de câmera não
+  // muda nada do que está sendo capturado: entrar na dep abaixo faria a seleção
+  // pedir um `getUserMedia` novo para reabrir exatamente o mesmo stream de mic.
+  const previewVideoId = videoPreview ? pending.videoInputId : '';
+
   // Preview: reinicia a cada mudança da seleção pendente de entrada. A saída de
   // áudio e o toggle de sons não entram nas deps — trocá-los não muda o que a
   // câmera e o microfone estão capturando.
@@ -148,7 +153,7 @@ export default function SettingsModal({
       if (videoEl) videoEl.srcObject = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pending.videoInputId, pending.audioInputId, videoPreview, refreshDevices]);
+  }, [previewVideoId, pending.audioInputId, videoPreview, refreshDevices]);
 
   // Conectar/desconectar hardware com o modal aberto: só reenumera. Reiniciar o
   // preview aqui faria a câmera piscar — um headset USB dispara vários

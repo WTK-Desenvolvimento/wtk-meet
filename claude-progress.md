@@ -1,65 +1,104 @@
-# Progresso — WTK-MEET-9: modal de configurações de dispositivos (FASE DE ARQUITETURA)
+# Progresso — WTK-MEET-9: modal de configurações de câmera, microfone e saída de áudio
 
-**Status: documento de arquitetura pronto. Implementação NÃO iniciada.**
-Branch `agent/wtk-meet-9-quero-que-seja-poss-vel-ajustar-as-confi`.
+**Status: implementação concluída e validada.** Branch
+`agent/wtk-meet-9-quero-que-seja-poss-vel-ajustar-as-confi`.
 
-## O que foi feito nesta sessão
+Documento de arquitetura seguido:
+`docs/agents/arch-temp-modal-configuracoes-dispositivos.md` (produzido na fase de
+arquitetura desta mesma task).
 
-Esta sessão rodou sob o papel **Arquiteto**, cujo protocolo é produzir o documento
-técnico e parar antes de codar. Entregue:
+## O problema
 
-- `docs/agents/arch-temp-modal-configuracoes-dispositivos.md` — documento completo
-  (contexto, escopo, 10 decisões arquiteturais, componentes afetados, contratos de
-  interface, ordem de implementação, 10 riscos, 15 critérios de aceite numerados em
-  correspondência com o DoD da task).
+`Room.jsx` chamava `getUserMedia({ video: true, audio: true })` sem restrição de
+`deviceId`, e `toggleCamera` reaquiria com `{ video: true }`. O navegador sempre
+entregava o device **default do sistema**: quem usa webcam ou headset USB ficava preso
+ao hardware embutido do notebook, e a única saída era trocar o default no sistema
+operacional e recarregar a página. Não havia seleção de saída de áudio, nem preview —
+a pessoa descobria que a câmera errada estava ativa já visível para os outros.
 
-Nenhum arquivo de código foi tocado.
+## O que foi implementado
 
-## O que ainda está pendente
+| Arquivo | Mudança |
+|---|---|
+| `client/src/lib/devices.js` | **Novo.** Módulo puro (sem DOM, sem `navigator`): normalização/dedup/rotulagem de `enumerateDevices`, `resolvePreferredDevice` com fallback, `buildConstraints` com `deviceId: { ideal }`, leitura/escrita validada de `wtk-meet:devices` e `reconcilePreferences` |
+| `client/src/lib/audioLevels.js` | `createLevelMeter({ stream, context, onLevel })` para o preview, fora do registro do monitor da sala; RMS→nível extraído para helper compartilhado com `_tick` |
+| `client/src/components/SettingsModal.jsx` | **Novo.** Modal único: listagem, seleção pendente, preview de vídeo, medidor de mic, seletor de saída, toggle de avisos sonoros, salvar/cancelar, `Esc`/backdrop, `devicechange` |
+| `client/src/components/VideoTile.jsx` | Prop `sinkId` + aplicação de `setSinkId` com `catch` (feature-detect, no-op sem suporte) |
+| `client/src/components/VideoGrid.jsx` | Repassa `sinkId`/`onSinkError` aos tiles |
+| `client/src/pages/Home.jsx` | Botão "Configurações" e modal; salvar aqui **só persiste** (não há chamada ativa) |
+| `client/src/pages/Room.jsx` | Preferências hidratadas no primeiro render; cadeia de fallback do `getLocalStream` em 3 passos; reconciliação pós-`getUserMedia`; `toggleCamera` respeita a câmera preferida; `applyDeviceSelection` (tabela §3.8); recuperação por `ended`/`devicechange`; botão em `.controls` e na fase de espera; toggle de avisos removido da barra |
+| `client/src/styles.css` | `.modal-backdrop.settings` (z-index 28, modificadora de camada), `.settings-modal`, preview 16:9, `.mic-meter` dirigido por custom property, seletor desabilitado |
+| `client/test/devices.test.mjs` | **Novo.** 27 casos: dedup, aliases do Chrome, rotulagem sintética, resolução/fallback, storage corrompido, reconciliação |
+| `e2e/harness.mjs` | Camada de simulação de dispositivos (registro mutável, `enumerateDevices`, `gumRequests`, `setSinkId`, `__wtkAddDevice`/`__wtkRemoveDevice`), helpers `openSettings`/`setSelectValue`/`senderTracks`, semente de preferências em `openParticipant` |
+| `e2e/run.mjs` | Bloco **S** novo (S1–S16) e F4a/F4b para o toggle de avisos que mudou de lugar |
+| `README.md`, `ARCHITECTURE.md` | Fluxo de seleção, chave `wtk-meet:devices` e a exceção à regra de zero persistência (nova §6.8, §1, §8, §9) |
 
-**Toda a implementação.** Os 15 itens do Definition of Done da task continuam
-abertos. A ordem está em §6 do documento; o resumo é: `lib/devices.js` +
-teste → `createLevelMeter` em `audioLevels.js` → `SettingsModal.jsx` →
-`VideoTile` (prop `sinkId`) → `Home.jsx` → `Room.jsx` → `styles.css` →
-harness/E2E → README + ARCHITECTURE.
+## Decisões que valem registrar
 
-## Descobertas que o próximo agente deve levar a sério
+1. **`deviceId: { ideal }` + reconciliação, nunca `{ exact }`.** `exact` transformaria
+   "o device sumiu" em `OverconstrainedError` a ser capturado e reexecutado. Com
+   `ideal`, o caminho feliz já satisfaz o item 6 do DoD.
+2. **A reconciliação só corrige um id que foi pedido e não atendido.** Reconciliar um
+   id vazio fixaria "Padrão do sistema" no device do momento — transformando uma
+   escolha explícita de seguir o sistema numa escolha concreta pelas costas do usuário.
+3. **Com a câmera desligada, o modal não pede vídeo no preview.** O documento previa
+   preview sempre ligado; abrir a câmera para pré-visualizar uma câmera que a pessoa
+   acabou de desligar acende o LED sem pedido. O modal recebe `videoPreview={!cameraOff}`
+   e mostra uma explicação no lugar do vídeo. Foi o E2E (S11) que cobrou a consequência:
+   a seleção de câmera também saiu das dependências do preview nesse estado, senão
+   trocar de câmera dispararia um `getUserMedia` para reabrir o mesmo stream de mic.
+4. **`enabled = !muted` antes do `replaceTrack`.** Depois seria tarde: existe uma
+   janela de frames em que o áudio vazaria. Coberto por S10.
+5. **`detach('local')` antes do `attach('local', stream)`** na troca de mic — o
+   `attach` é idempotente por (id, stream) e o `MediaStream` é o mesmo objeto.
+6. **Bloco E2E chamado `S`, não `H`:** o documento pedia "bloco H", mas `H` já existia
+   no arquivo (inventário do tráfego do servidor).
 
-Foram levantadas lendo o código, não presumidas:
+## Verificação executada
 
-1. **`AudioLevelMonitor.attach` é idempotente por (id, stream)** (`audioLevels.js:87`).
-   Depois de trocar o track de áudio dentro do **mesmo** `MediaStream`, um `attach`
-   sozinho retorna cedo e o analisador fica preso ao track antigo, já parado. Exige
-   `detach('local')` antes. Não gera exceção — falha em silêncio.
-2. **`Room.jsx:326` chama `monitor.retainOnly(valid)`** a cada mudança de
-   `participants`. Qualquer id que não seja peer (ex.: um `'settings-preview'`) é
-   detachado na próxima entrada/saída. Por isso o preview usa um meter isolado.
-3. **Um segundo `AudioContext` quebra a checagem B2 do E2E** (`e2e/run.mjs:288`
-   asserta `AudioContexts === 1`). O modal precisa receber o contexto do monitor.
-4. **`--use-fake-device-for-media-stream` dá exatamente 1 câmera e 1 mic.** Não há
-   flag para uma segunda. O item 13 do DoD é inexecutável sem uma camada de
-   simulação de devices no `INSTRUMENTATION` do harness — contrato em §5.3 do doc.
-5. **O Chrome devolve `'default'` e `'communications'` como devices reais**, que
-   duplicam hardware já listado — é a duplicata que o item 2 do DoD proíbe.
-6. **`.modal-backdrop` já é `z-index: 30`** (`styles.css:493`). Reusar a classe crua
-   empata o modal de configurações com o de aprovação.
-7. **Track recém-adquirido nasce `enabled = true`**: trocar de mic sem
-   `enabled = !muted` **desmuta a pessoa** (item 7 do DoD).
+- `npm --prefix client run lint` → limpo
+- `npm --prefix client test` → **66/66** (27 novos em `devices.test.mjs`;
+  `audioLevels`, `gridLayout`, `chat` e sinalização sem regressão)
+- `npm --prefix client run build` → ok
+- `node e2e/run.mjs` → **75/75**, com o bloco S cobrindo: listagem sem duplicatas,
+  troca de câmera+mic em chamada com track novo em todos os senders e SDP inalterado,
+  cancelamento por `Esc`, `setSinkId` em todos os tiles, troca de mic estando mudo,
+  troca de câmera com a câmera desligada, releitura da preferência num documento novo,
+  `devicechange` (conectar e arrancar em uso) e preferência obsoleta se corrigindo.
 
-## Bloqueios
+### Correção de ambiente incluída
 
-Nenhum. Não há dependência externa nem ambiguidade que impeça a implementação —
-o documento resolve as decisões abertas.
+`client/test/joinRequestSignaling.test.mjs` e `e2e/harness.mjs` passaram a matar o
+processo de sinalização com `SIGKILL`. Onde o `SIGTERM` não é entregue ao filho (é o
+caso deste sandbox), o `await` pelo evento `exit` nunca resolvia e o `npm test`
+terminava em *"Promise resolution is still pending"* — com todos os casos verdes e
+nenhum vermelho para explicar. A mesma correção já existia na branch da WTK-MEET-6;
+esta branch partiu de um ponto que não a tinha.
 
-## Próximo passo recomendado
+## O que ficou fora (e por quê)
 
-Acionar o **agente de desenvolvimento** com
-`docs/agents/arch-temp-modal-configuracoes-dispositivos.md` como referência,
-começando pelo passo 1 de §6 (`lib/devices.js` + `client/test/devices.test.mjs`).
-Validação em §9.3. A receita de ambiente do E2E (`/tmp/pwlibs`) está no fim deste
-arquivo e continua necessária a cada sessão nova.
+- Controles de qualidade de áudio (`echoCancellation`, `noiseSuppression`, ganho) e
+  resolução/framerate de câmera: são constraints de qualidade, não seleção de
+  hardware — demanda separada (§2 do documento).
+- Botão "Testar saída" e "Restaurar padrões": §9.4 do documento os classifica como
+  fora do DoD, a propor e não a implementar por conta própria.
+- Sincronizar a preferência entre abas (evento `storage`): cada aba é uma sessão de
+  chamada independente.
+- Seleção de fonte para compartilhamento de tela: `getDisplayMedia` já tem o seletor
+  nativo do navegador.
+
+## Checklist manual que o navegador headless não cobre
+
+- LED físico da webcam ao trocar de câmera com a câmera desligada (S11 prova que
+  nenhum `getUserMedia` de vídeo acontece, que é a causa; o LED em si é físico).
+- `setSinkId` de verdade mudando o alto-falante que emite o som (o harness registra a
+  chamada, o headless não tem saída de áudio real).
+- Seletor de saída desabilitado com explicação no Firefox (que não implementa
+  `setSinkId` por padrão) — o teste cobre a feature detection, não o navegador.
+- Conectar/desconectar um headset USB físico com o modal aberto.
 
 ---
+
 
 # Histórico — WTK-MEET-5: layout de viewport fixo, grade automática e modal de aprovação
 

@@ -104,7 +104,8 @@ Ver `ARCHITECTURE.md` §6 para o desenho e os trade-offs (§6.8 para dispositivo
 ## Testes
 
 ```bash
-cd client && npm test     # unitários (node:test): histerese do indicador, modelo de chat
+cd client && npm test     # unitários (node:test): histerese do indicador, modelo de
+                          # chat, grade de vídeos e seleção de dispositivos
 cd client && npm run lint
 
 node e2e/run.mjs          # ponta a ponta: 3 participantes Chromium + TURN local
@@ -114,8 +115,14 @@ O E2E sobe um TURN em `127.0.0.1` (o client usa `iceTransportPolicy: 'relay'`, e
 sem TURN nenhuma conexão fecha nem em loopback), builda o client apontando para uma
 porta sorteada, abre três contextos Chromium isolados com câmera/microfone falsos e
 percorre o roteiro completo: conectar, falar, compartilhar tela (inclusive dois ao
-mesmo tempo, para exercitar glare), trocar mensagens, desligar/religar a câmera e sair
-da sala. Requer as dependências de sistema do Chromium (`npx playwright install-deps`).
+mesmo tempo, para exercitar glare), trocar mensagens, desligar/religar a câmera, trocar
+de câmera e microfone pelo modal de configurações e sair da sala. Requer as
+dependências de sistema do Chromium (`npx playwright install-deps`).
+
+A flag de câmera falsa do Chromium expõe **um** dispositivo de cada tipo, e não existe
+flag para um segundo — então o harness simula um registro de dispositivos
+(`enumerateDevices`, `devicechange`, `setSinkId`) por cima dele. Sem isso, "trocar de
+câmera" seria inexecutável no navegador.
 
 ## Estrutura
 
