@@ -12,6 +12,8 @@ import SpotlightStage from '../components/SpotlightStage.jsx';
 import PeerAudio from '../components/PeerAudio.jsx';
 import ChatPanel from '../components/ChatPanel.jsx';
 import MusicPanel from '../components/MusicPanel.jsx';
+import MusicVoteCard from '../components/MusicVoteCard.jsx';
+import RemoteMusicAudio from '../components/RemoteMusicAudio.jsx';
 import Toasts from '../components/Toasts.jsx';
 import JoinRequestModal from '../components/JoinRequestModal.jsx';
 import SettingsModal from '../components/SettingsModal.jsx';
@@ -893,6 +895,21 @@ export default function Room() {
           áudio de ninguém. Ver `components/PeerAudio.jsx`. */}
       <PeerAudio participants={participants} />
       <Toasts toasts={toasts} />
+      <MusicVoteCard
+        vote={music.vote}
+        myVote={music.myVote}
+        onVote={music.actions.castMyVote}
+        onClose={music.actions.dismissVote}
+      />
+      {/* Os `<audio>` da música e o host do player do YouTube ficam aqui, fora
+          de qualquer ramo de fase: dentro do painel, fechar o painel
+          silenciaria a sala e o sintoma pareceria problema de rede. */}
+      <RemoteMusicAudio
+        streams={music.musicStreams}
+        volume={music.volume}
+        onBlocked={music.reportBlocked}
+      />
+      <div className="music-youtube-host" ref={music.youtubeHostRef} aria-hidden="true" />
       {/* Montado condicionalmente de propósito: é o desmonte que para o stream
           de preview, então sair do modal por qualquer via (botão, Esc, backdrop,
           navegação) apaga o LED da câmera pelo mesmo caminho. */}
@@ -1067,8 +1084,26 @@ export default function Room() {
             Chat
             {unreadCount > 0 && !chatOpen && <span className="badge">{unreadCount}</span>}
           </button>
-          {/* O toggle de avisos sonoros vive dentro do modal: a barra tem espaço
-              escasso e o layout de altura fixa depende de ela não crescer. */}
+          {/* Sem emoji dentro do texto: os roteiros do e2e comparam
+              `textContent` exato de botões desta barra. */}
+          <button
+            onClick={toggleMusic}
+            className="music-button"
+            aria-pressed={musicOpen}
+            title={
+              music.enabled
+                ? 'Fila de música da sala'
+                : 'Propor à sala ligar o player de música'
+            }
+          >
+            Música
+          </button>
+          <button
+            onClick={() => savePreferences({ soundsEnabled: !soundsEnabled })}
+            title="Bipe de entrada e saída de participantes"
+          >
+            {soundsEnabled ? 'Silenciar avisos' : 'Ativar avisos'}
+          </button>
           <button onClick={openSettings} title="Câmera, microfone e saída de áudio">
             Configurações
           </button>
