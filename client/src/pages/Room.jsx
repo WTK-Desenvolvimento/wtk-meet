@@ -9,6 +9,15 @@ import VideoGrid from '../components/VideoGrid.jsx';
 import ChatPanel from '../components/ChatPanel.jsx';
 import Toasts from '../components/Toasts.jsx';
 import JoinRequestModal from '../components/JoinRequestModal.jsx';
+import SettingsModal from '../components/SettingsModal.jsx';
+import {
+  buildConstraints,
+  listDevices,
+  readPreferences,
+  reconcilePreferences,
+  resolvePreferredDevice,
+  writePreferences,
+} from '../lib/devices.js';
 // import { deriveRoomKey, isInsertableStreamsSupported } from '../lib/e2ee.js';
 import { fetchIceServers, MAX_PARTICIPANTS } from '../config.js';
 
@@ -50,8 +59,15 @@ export default function Room() {
   const [unreadCount, setUnreadCount] = useState(0);
 
   const [toasts, setToasts] = useState([]);
-  const [soundsEnabled, setSoundsEnabled] = useState(true);
   const [audioLevels, setAudioLevels] = useState({});
+
+  // Preferência de dispositivos: a única coisa que este app grava em
+  // `localStorage` (ver `lib/devices.js` e `ARCHITECTURE.md` §6.8). O toggle de
+  // avisos sonoros mora aqui desde que saiu da barra de controles.
+  const [preferences, setPreferences] = useState(() => readPreferences(window.localStorage));
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsContext, setSettingsContext] = useState(null);
+  const soundsEnabled = preferences.soundsEnabled;
 
   const localStreamRef = useRef(null);   // mic + câmera (o track de vídeo entra e sai)
   const cameraTrackRef = useRef(null);
@@ -67,12 +83,75 @@ export default function Room() {
   const chatOpenRef = useRef(chatOpen);
   const soundsEnabledRef = useRef(soundsEnabled);
   const displayNameRef = useRef(displayName);
+  const preferencesRef = useRef(preferences);
+  const mutedRef = useRef(muted);
+  const cameraOffRef = useRef(cameraOff);
   // const roomKeyRef = useRef(null);
 
   participantsRef.current = participants;
   chatOpenRef.current = chatOpen;
   soundsEnabledRef.current = soundsEnabled;
   displayNameRef.current = displayName;
+  preferencesRef.current = preferences;
+  mutedRef.current = muted;
+  cameraOffRef.current = cameraOff;
+
+  /** Grava a preferência e devolve o valor efetivo (o storage pode recusar). */
+  const savePreferences = useCallback((patch) => {
+    const saved = writePreferences(window.localStorage, patch);
+    preferencesRef.current = saved;
+    setPreferences(saved);
+    return saved;
+  }, []);
+
+  // Handler de `ended` dos tracks locais. Vive num ref porque `watchLocalTrack`
+  // precisa existir antes das funções que ele aciona (todas se referenciam).
+  const trackEndedRef = useRef(() => {});
+  const watchedTracksRef = useRef(new WeakSet());
+
+  /**
+   * Um device arrancado enquanto está em uso encerra o track (`ended`) — o
+   * navegador não migra para outro sozinho. Sem este listener, o microfone
+   * simplesmente para de existir para os outros participantes, sem nenhum aviso.
+   */
+  const watchLocalTrack = useCallback((track) => {
+    if (!track || watchedTracksRef.current.has(track)) return;
+    watchedTracksRef.current.add(track);
+    track.addEventListener('ended', () => trackEndedRef.current(track));
+  }, []);
+
+  /**
+   * Troca o track de áudio local em todos os senders do mesh, preservando o
+   * estado de mute e o anel de fala do tile local.
+   */
+  const installAudioTrack = useCallback(
+    async (track) => {
+      const stream = localStreamRef.current;
+      if (!track || !stream) return;
+
+      // Track novo nasce `enabled = true`. Sem esta linha, trocar de microfone
+      // desmuta a pessoa sem que ela peça — e ela precisa vir ANTES do
+      // replaceTrack, senão existe uma janela de frames em que o áudio vaza.
+      track.enabled = !mutedRef.current;
+
+      const old = stream.getAudioTracks()[0] || null;
+      await meshRef.current?.setAudioTrack(track);
+      if (old) {
+        old.stop();
+        stream.removeTrack(old);
+      }
+      stream.addTrack(track);
+      watchLocalTrack(track);
+
+      // `attach` é idempotente por (id, stream) e o MediaStream local é o
+      // **mesmo objeto** depois da troca (só o track interno mudou). Um attach
+      // sozinho retornaria cedo e o analisador continuaria preso ao track
+      // antigo, já parado: o anel de fala local morreria em silêncio.
+      monitorRef.current?.detach(LOCAL_AUDIO_ID);
+      monitorRef.current?.attach(LOCAL_AUDIO_ID, stream);
+    },
+    [watchLocalTrack],
+  );
 
   // const e2eeSupported = isInsertableStreamsSupported();
 
@@ -103,16 +182,27 @@ export default function Room() {
     // sido reatribuído quando o cleanup roda.
     const toastTimers = toastTimersRef.current;
 
+    /**
+     * Cadeia de fallback, do mais desejado ao mínimo viável. O terceiro passo
+     * ignora a preferência de microfone de propósito: sem ele, uma preferência
+     * obsoleta (headset que ficou em outra máquina) faria a pessoa entrar sem
+     * áudio nenhum — e nada disso pode virar erro na tela.
+     */
     async function getLocalStream() {
-      try {
-        return await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      } catch {
+      const prefs = preferencesRef.current;
+      const attempts = [
+        buildConstraints(prefs, { video: true, audio: true }),
+        buildConstraints(prefs, { video: false, audio: true }),
+        { video: false, audio: true },
+      ];
+      for (const constraints of attempts) {
         try {
-          return await navigator.mediaDevices.getUserMedia({ audio: true });
+          return await navigator.mediaDevices.getUserMedia(constraints);
         } catch {
-          return null;
+          // próxima tentativa
         }
       }
+      return null;
     }
 
     async function setup() {
@@ -129,6 +219,18 @@ export default function Room() {
       localStreamRef.current = localStream;
       cameraTrackRef.current = localStream?.getVideoTracks()[0] || null;
       if (!cameraTrackRef.current) setCameraOff(true);
+
+      // A verdade sobre qual device foi aberto vem do track, não do que foi
+      // pedido: é assim que uma preferência apontando para hardware que sumiu se
+      // corrige sozinha, sem nenhuma mensagem de erro (§3.3/§3.4 do documento).
+      if (localStream) {
+        const { prefs, changed } = reconcilePreferences(
+          preferencesRef.current,
+          localStream.getTracks(),
+        );
+        if (changed) savePreferences(prefs);
+        localStream.getTracks().forEach(watchLocalTrack);
+      }
       // roomKeyRef.current = roomKey;
 
       const monitor = new AudioLevelMonitor({ onUpdate: setAudioLevels });
@@ -360,14 +462,22 @@ export default function Room() {
     try {
       const mesh = meshRef.current;
       if (cameraOff) {
-        const fresh = await navigator.mediaDevices.getUserMedia({ video: true });
+        // Religar respeita a câmera escolhida no modal — inclusive uma escolhida
+        // enquanto a câmera estava desligada, que não foi aplicada na hora
+        // justamente para não acender o LED sem ninguém pedir.
+        const fresh = await navigator.mediaDevices.getUserMedia(
+          buildConstraints(preferencesRef.current, { video: true, audio: false }),
+        );
         const track = fresh.getVideoTracks()[0];
         if (!track) return;
         cameraTrackRef.current = track;
         localStreamRef.current?.addTrack(track);
+        watchLocalTrack(track);
         await mesh?.setCameraTrack(track);
         setCameraOff(false);
         mesh?.setLocalState({ cameraOff: false });
+        const { prefs, changed } = reconcilePreferences(preferencesRef.current, [track]);
+        if (changed) savePreferences(prefs);
       } else {
         const track = cameraTrackRef.current;
         await mesh?.setCameraTrack(null);

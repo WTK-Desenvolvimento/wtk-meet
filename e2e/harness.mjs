@@ -91,7 +91,10 @@ export function startSignaling() {
   child.stdout.on('data', (d) => process.stdout.write(`[signaling] ${d}`));
   child.stderr.on('data', (d) => process.stderr.write(`[signaling:err] ${d}`));
   return {
-    stop: () => child.kill('SIGTERM'),
+    // SIGKILL pelo mesmo motivo do teardown de `client/test/joinRequestSignaling`:
+    // onde o SIGTERM não é entregue ao filho, o processo de sinalização sobrevive
+    // à suíte e a próxima execução esbarra nele.
+    stop: () => child.kill('SIGKILL'),
     ready: waitForHttp(`http://localhost:${SIGNALING_PORT}/health`),
   };
 }

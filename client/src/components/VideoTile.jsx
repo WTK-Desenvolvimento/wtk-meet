@@ -18,8 +18,11 @@ export default function VideoTile({
   cameraOff = false,
   micOff = false,
   badge = null,
+  sinkId = '',
+  onSinkError,
 }) {
   const videoRef = useRef(null);
+  const sinkAppliedRef = useRef(false);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -40,6 +43,28 @@ export default function VideoTile({
       stream.removeEventListener('removetrack', refresh);
     };
   }, [stream]);
+
+  /**
+   * Roteamento da saída de áudio. É por elemento de mídia — não existe um
+   * "device de saída da página" — então cada tile aplica o seu.
+   *
+   * Toda rejeição é capturada: `setSinkId` rejeita com `NotAllowedError` (sem
+   * permissão de microfone) ou `NotFoundError` (id que não existe mais), e uma
+   * promise rejeitada dentro de um efeito viraria `unhandledrejection` — erro de
+   * console, que a checagem G do E2E trata como falha.
+   */
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || typeof video.setSinkId !== 'function') return undefined;
+    // Nada a fazer enquanto ninguém escolheu saída nenhuma: chamar com '' antes
+    // disso só produziria uma chamada inútil por tile a cada montagem.
+    if (!sinkId && !sinkAppliedRef.current) return undefined;
+    sinkAppliedRef.current = true;
+    video.setSinkId(sinkId).catch((err) => {
+      onSinkError?.(err);
+    });
+    return undefined;
+  }, [sinkId, onSinkError]);
 
   const showVideo = !!stream && !cameraOff;
   const initial = (label || '?').trim().charAt(0).toUpperCase();

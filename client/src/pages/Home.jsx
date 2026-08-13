@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import SettingsModal from '../components/SettingsModal.jsx';
+import { readPreferences, writePreferences } from '../lib/devices.js';
 
 function generatePassphrase() {
   const bytes = crypto.getRandomValues(new Uint8Array(16)); // 128 bits
@@ -14,6 +16,10 @@ export default function Home() {
   const [displayName, setDisplayName] = useState(() => sessionStorage.getItem('displayName') || '');
   const [inviteLink, setInviteLink] = useState('');
   const [error, setError] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Única exceção à regra de zero persistência do produto: preferência de
+  // hardware (ver `lib/devices.js`).
+  const [preferences, setPreferences] = useState(() => readPreferences(window.localStorage));
 
   function saveDisplayName() {
     const trimmed = displayName.trim();
@@ -72,6 +78,10 @@ export default function Home() {
       <div className="actions">
         <button onClick={handleCreate}>Criar sala</button>
 
+        <button className="secondary" onClick={() => setSettingsOpen(true)}>
+          Configurações
+        </button>
+
         <div className="join-block">
           <input
             value={inviteLink}
@@ -88,6 +98,23 @@ export default function Home() {
         A chave da sala vive só no link, depois do <code>#</code> — nunca é enviada ao
         servidor. Compartilhe o link por um canal separado (mensagem, etc).
       </p>
+
+      {/* Montagem condicional, não `open={false}`: é o desmonte que para o
+          stream de preview, inclusive quando a saída daqui é navegar para a
+          sala em vez de fechar o modal. */}
+      {settingsOpen && (
+        <SettingsModal
+          preferences={preferences}
+          audioContext={null}
+          onClose={() => setSettingsOpen(false)}
+          onSave={(next) => {
+            // Aqui não há chamada ativa: salvar só persiste. Quem aplica é o
+            // primeiro getUserMedia da sala.
+            setPreferences(writePreferences(window.localStorage, next));
+            setSettingsOpen(false);
+          }}
+        />
+      )}
     </main>
   );
 }

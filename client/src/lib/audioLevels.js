@@ -30,6 +30,111 @@ const MIN_EMIT_INTERVAL_MS = 50;
 /** Ganho aplicado ao RMS para levar fala normal perto de 1.0 na UI. */
 const LEVEL_GAIN = 6;
 
+/**
+ * RMS do buffer de domínio do tempo. Compartilhado entre o loop do monitor da
+ * sala e o medidor isolado do preview: duas cópias divergiriam, e o medidor do
+ * modal deixaria de dizer a mesma coisa que o anel de fala.
+ */
+function rmsOf(buffer) {
+  let sum = 0;
+  for (let i = 0; i < buffer.length; i += 1) {
+    sum += buffer[i] * buffer[i];
+  }
+  return Math.sqrt(sum / buffer.length);
+}
+
+const levelFromRms = (rms) => Math.min(1, rms * LEVEL_GAIN);
+
+/** Quantização do nível emitido — a mesma nos dois caminhos. */
+const quantizeLevel = (level) => Math.round(level / LEVEL_STEP) * LEVEL_STEP;
+
+/**
+ * Medidor isolado, para o preview do modal de configurações.
+ *
+ * Deliberadamente **fora** do registro do `AudioLevelMonitor` da sala: o `Room`
+ * roda `monitor.retainOnly(...)` a cada mudança em `participants`, então um
+ * `attach('preview', …)` seria detachado na próxima entrada ou saída de alguém —
+ * o medidor morreria no meio do uso, por um evento de rede, sem erro nenhum.
+ *
+ * Recebe o `context` de fora quando já existe um na página (dentro da sala), o
+ * que preserva a invariante de **um `AudioContext` por aba**. Sem contexto
+ * injetado (Home), cria o próprio e o fecha no `stop()`.
+ */
+export function createLevelMeter({ stream, context = null, onLevel } = {}) {
+  const noop = { stop() {} };
+  if (!stream || stream.getAudioTracks().length === 0) return noop;
+
+  let ctx = context;
+  let ownsContext = false;
+  if (!ctx) {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    if (!Ctor) return noop;
+    ctx = new Ctor();
+    ownsContext = true;
+  }
+  if (ctx.state === 'suspended') {
+    ctx.resume().catch(() => {
+      // sem gesto do usuário ainda — o medidor fica em zero, sem quebrar nada
+    });
+  }
+
+  let source;
+  try {
+    source = ctx.createMediaStreamSource(stream);
+  } catch {
+    if (ownsContext) ctx.close().catch(() => {});
+    return noop;
+  }
+
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 1024;
+  analyser.smoothingTimeConstant = 0.2;
+  source.connect(analyser);
+  // Ramo sem saída: nada aqui é conectado ao `destination`, então o preview não
+  // devolve o próprio microfone pelos alto-falantes.
+
+  const buffer = new Float32Array(analyser.fftSize);
+  let rafId = null;
+  let stopped = false;
+  let lastEmitted = -1;
+  let lastEmitAt = 0;
+
+  const tick = () => {
+    rafId = null;
+    if (stopped) return;
+    analyser.getFloatTimeDomainData(buffer);
+    const level = quantizeLevel(levelFromRms(rmsOf(buffer)));
+    const now = performance.now();
+    if (level !== lastEmitted && now - lastEmitAt >= MIN_EMIT_INTERVAL_MS) {
+      lastEmitted = level;
+      lastEmitAt = now;
+      onLevel?.(level);
+    }
+    rafId = requestAnimationFrame(tick);
+  };
+  rafId = requestAnimationFrame(tick);
+
+  return {
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      if (rafId != null) cancelAnimationFrame(rafId);
+      rafId = null;
+      try {
+        source.disconnect();
+        analyser.disconnect();
+      } catch {
+        // já desconectado
+      }
+      if (ownsContext) {
+        ctx.close().catch(() => {
+          // já fechado
+        });
+      }
+    },
+  };
+}
+
 export class AudioLevelMonitor {
   constructor({ onUpdate } = {}) {
     this.onUpdate = onUpdate;
@@ -163,11 +268,7 @@ export class AudioLevelMonitor {
     for (const [id, entry] of this.sources) {
       entry.analyser.getFloatTimeDomainData(entry.buffer);
 
-      let sum = 0;
-      for (let i = 0; i < entry.buffer.length; i += 1) {
-        sum += entry.buffer[i] * entry.buffer[i];
-      }
-      const rms = Math.sqrt(sum / entry.buffer.length);
+      const rms = rmsOf(entry.buffer);
 
       if (rms >= SPEAKING_ON) {
         entry.speaking = true;
@@ -180,7 +281,7 @@ export class AudioLevelMonitor {
         }
       }
 
-      entry.level = Math.min(1, rms * LEVEL_GAIN);
+      entry.level = levelFromRms(rms);
 
       const quantized = Math.round(entry.level / LEVEL_STEP) * LEVEL_STEP;
       const previous = this.lastEmitted.get(id);
