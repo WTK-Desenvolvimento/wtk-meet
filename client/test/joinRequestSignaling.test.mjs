@@ -118,7 +118,10 @@ after(async () => {
   // Os pipes do processo filho seguram o event loop do runner mesmo depois do
   // kill; sem soltá-los o arquivo termina com "resolution is still pending".
   const exited = new Promise((resolve) => server.once('exit', resolve));
-  server.kill();
+  // `SIGKILL`, e não o `SIGTERM` do `kill()` sem argumento: em sandboxes onde o
+  // sinal padrão é ignorado, o filho nunca sai e o `npm test` inteiro trava aqui
+  // — com todos os casos já verdes, o que é o pior modo de falhar.
+  server.kill('SIGKILL');
   await exited;
   server.stdout.destroy();
   server.stderr.destroy();

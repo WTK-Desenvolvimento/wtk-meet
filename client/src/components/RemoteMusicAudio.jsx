@@ -70,5 +70,5 @@ function PeerMusicAudio({ stream, volume, muted, onBlocked }) {
     element.muted = muted;
   }, [volume, muted]);
 
-  return <audio ref={ref} autoPlay playsInline />;
+  return <audio ref={ref} autoPlay />;
 }

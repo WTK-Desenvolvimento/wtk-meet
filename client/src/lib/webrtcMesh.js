@@ -212,12 +212,18 @@ export class WebRTCMesh {
     rec.audioT = pc.addTransceiver('audio', { direction: 'sendonly' });
     rec.camT = pc.addTransceiver('video', { direction: 'sendonly' });
     rec.screenT = pc.addTransceiver('video', { direction: 'sendonly' });
+    // Música **depois** da tela: a ordem de criação é a ordem das m-lines, e a
+    // ordem das m-lines é o que o outro lado usa para classificar. Inserir este
+    // aqui no meio (por ser áudio, "perto do mic") embaralharia câmera com tela.
+    rec.musicT = pc.addTransceiver('audio', { direction: 'sendonly' });
 
     await Promise.all([
       this._safeReplace(rec.audioT.sender, this.localAudioTrack),
       this._safeReplace(rec.camT.sender, this.localCameraTrack),
       this._safeReplace(rec.screenT.sender, this.localScreenTrack),
+      this._safeReplace(rec.musicT.sender, this.localMusicTrack),
     ]);
+    if (this.localMusicTrack) this._applyMusicEncoding(rec);
   }
 
   _enqueue(rec, fn) {
@@ -236,21 +242,28 @@ export class WebRTCMesh {
   }
 
   /**
-   * Diz qual das três finalidades (mic / câmera / tela) um transceiver carrega.
+   * Diz qual das quatro finalidades (mic / câmera / tela / música) um
+   * transceiver carrega.
    *
    * Os nossos são reconhecidos por identidade. Os do outro lado foram criados
    * pelo navegador ao aplicar a oferta remota, e o spec garante que eles são
    * anexados na ordem das m-lines — que é a ordem em que o peer os criou:
-   * áudio, câmera, tela.
+   * áudio, câmera, tela, música.
+   *
+   * Este array e a ordem de `addTransceiver` acima são **o mesmo contrato**
+   * escrito duas vezes: esquecer de estender um dos dois faz a música cair no
+   * `rec.stream` de voz, onde ela acende o anel de "falando" no tile de quem
+   * toca e deixa de ter volume próprio — e tudo isso *parece* funcionar.
    */
   _classifyTransceiver(rec, transceiver) {
     if (transceiver === rec.audioT) return 'audio';
     if (transceiver === rec.camT) return 'camera';
     if (transceiver === rec.screenT) return 'screen';
+    if (transceiver === rec.musicT) return 'music';
 
-    const ours = new Set([rec.audioT, rec.camT, rec.screenT]);
+    const ours = new Set([rec.audioT, rec.camT, rec.screenT, rec.musicT]);
     const theirs = rec.pc.getTransceivers().filter((t) => !ours.has(t));
-    const kind = ['audio', 'camera', 'screen'][theirs.indexOf(transceiver)];
+    const kind = ['audio', 'camera', 'screen', 'music'][theirs.indexOf(transceiver)];
     if (kind) return kind;
 
     // Layout inesperado (navegador que pareia bidirecionalmente, por exemplo):
@@ -260,8 +273,9 @@ export class WebRTCMesh {
 
   _handleTrack(rec, event) {
     const { track, transceiver } = event;
-    const isScreen = this._classifyTransceiver(rec, transceiver) === 'screen';
-    const target = isScreen ? rec.screenStream : rec.stream;
+    const kind = this._classifyTransceiver(rec, transceiver);
+    const target =
+      kind === 'screen' ? rec.screenStream : kind === 'music' ? rec.musicStream : rec.stream;
 
     if (!target.getTracks().includes(track)) target.addTrack(track);
 
@@ -269,11 +283,18 @@ export class WebRTCMesh {
       target.removeTrack(track);
     });
 
-    if (isScreen) {
+    if (kind === 'screen') {
       // A track de tela chega já na negociação inicial (transceiver fixo), mas
       // vazia. Só vira tile quando o peer anuncia `screenOn` pelo data channel.
       rec.hasScreenTrack = true;
       if (rec.remoteScreenOn) this.onRemoteScreen?.(rec.peerId, rec.screenStream);
+    } else if (kind === 'music') {
+      // Idem: a track de música existe desde a negociação e fica silenciosa até
+      // o peer virar dono de uma faixa em modo `stream`. O `<audio>` oculto é
+      // anexado assim mesmo — se ele só aparecesse quando a música começa, a
+      // política de autoplay pegaria o elemento no pior momento possível.
+      rec.hasMusicTrack = true;
+      this.onRemoteMusic?.(rec.peerId, rec.musicStream);
     } else {
       this.onRemoteStream?.(rec.peerId, rec.stream);
     }
@@ -389,6 +410,53 @@ export class WebRTCMesh {
     );
   }
 
+  /**
+   * Assume (ou larga) a transmissão da faixa corrente. `null` devolve o canal ao
+   * silêncio sem derrubar nada — o transceiver continua lá, negociado.
+   *
+   * Não confundir com o track do microfone: `toggleMute` mexe em
+   * `localAudioTrack`, e é justamente por serem canais diferentes que silenciar
+   * o mic durante a música não silencia a música para a sala.
+   */
+  async setMusicTrack(track) {
+    this.localMusicTrack = track || null;
+    if (this.localMusicTrack) {
+      try {
+        // Desliga as heurísticas de fala do encoder: a Opus para voz derruba
+        // agudos que, em música, são a diferença entre "toca" e "toca bem".
+        this.localMusicTrack.contentHint = 'music';
+      } catch {
+        // contentHint é opcional — ignorar se o navegador não expõe
+      }
+    }
+    await Promise.all(
+      [...this.peers.values()].map(async (rec) => {
+        await this._safeReplace(rec.musicT.sender, this.localMusicTrack);
+        if (this.localMusicTrack) this._applyMusicEncoding(rec);
+      }),
+    );
+  }
+
+  /**
+   * Teto de banda do canal de música, aplicado por conexão. Sem ele, quem toca
+   * numa sala cheia sobe N−1 fluxos de Opus sem limite pelo TURN, disputando
+   * banda com o vídeo exatamente quando há mais gente para degradar.
+   */
+  _applyMusicEncoding(rec) {
+    const sender = rec.musicT?.sender;
+    if (!sender?.getParameters) return;
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+      params.encodings[0].maxBitrate = MUSIC_MAX_BITRATE;
+      sender.setParameters(params).catch(() => {
+        // navegador que não aceita o parâmetro: tocar sem teto é melhor que não tocar
+      });
+    } catch {
+      // idem
+    }
+  }
+
   // ------------------------------------------------------------- data channel
 
   _send(rec, payload) {
@@ -415,12 +483,24 @@ export class WebRTCMesh {
     return this.broadcast({ type: 'chat', message });
   }
 
+  /** Qualquer mensagem `music-*` (ver `lib/musicProtocol.js`). */
+  sendMusicMessage(payload) {
+    return this.broadcast(payload);
+  }
+
   _handleChannelMessage(rec, raw) {
     const payload = parseChannelPayload(raw);
     if (!payload) return;
 
     if (payload.type === 'chat') {
       this.onChatMessage?.(rec.peerId, payload.message);
+      return;
+    }
+
+    // Autoria é a conexão, não o payload: `rec.peerId` é o único id confiável
+    // aqui (ver a regra de identidade em `lib/musicProtocol.js`).
+    if (isMusicMessage(payload)) {
+      this.onMusicMessage?.(rec.peerId, payload);
       return;
     }
 
@@ -457,7 +537,7 @@ export class WebRTCMesh {
     rec.pc.oniceconnectionstatechange = null;
     // Tracks recebidas são de propriedade do receiver; pará-las evita que o
     // decoder continue vivo se algum <video> ainda referenciar o stream.
-    for (const stream of [rec.stream, rec.screenStream]) {
+    for (const stream of [rec.stream, rec.screenStream, rec.musicStream]) {
       for (const track of stream.getTracks()) {
         track.stop();
         stream.removeTrack(track);

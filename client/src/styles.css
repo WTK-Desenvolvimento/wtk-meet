@@ -485,6 +485,280 @@ code {
   word-break: normal;
 }
 
+/* Player de música
+
+   O painel é irmão do chat: `aside` dentro do palco, com a fila em
+   `overflow-y: auto` e `min-height: 0` na cadeia flex. Uma lista com altura de
+   conteúdo aqui ressuscitaria o scroll de página, que esta aplicação não tem. */
+
+.music-panel {
+  width: 340px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.music-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.7rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.music-subtitle {
+  display: block;
+  color: var(--muted-text);
+  font-size: 0.72rem;
+  margin-top: 0.15rem;
+}
+
+.music-unlock {
+  margin: 0.6rem 0.85rem 0;
+  border-color: var(--warning);
+  color: var(--warning);
+  flex: 0 0 auto;
+}
+
+.music-notice {
+  margin: 0.6rem 0.85rem 0;
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+  background: rgba(202, 165, 61, 0.12);
+  border: 1px solid rgba(202, 165, 61, 0.35);
+  color: var(--text);
+  font-size: 0.78rem;
+  flex: 0 0 auto;
+}
+
+.music-now {
+  padding: 0.75rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.music-now-title {
+  margin: 0;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.music-now-meta,
+.music-time {
+  margin: 0.25rem 0 0;
+  color: var(--muted-text);
+  font-size: 0.75rem;
+}
+
+.music-progress {
+  height: 4px;
+  margin-top: 0.55rem;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.music-progress-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.music-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.music-actions button {
+  padding: 0.35rem 0.8rem;
+  font-size: 0.85rem;
+}
+
+.music-volume {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.7rem;
+  color: var(--muted-text);
+  font-size: 0.75rem;
+}
+
+.music-volume input {
+  flex: 1;
+  padding: 0;
+}
+
+.music-empty {
+  color: var(--muted-text);
+  font-size: 0.8rem;
+  margin: 0;
+}
+
+.music-queue {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.music-queue-item {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.4rem;
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+
+.music-queue-item.current {
+  background: rgba(79, 124, 255, 0.14);
+}
+
+.music-queue-kind {
+  flex: 0 0 auto;
+  font-size: 0.62rem;
+  letter-spacing: 0.03em;
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+  background: var(--border);
+  color: var(--muted-text);
+}
+
+.music-queue-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.music-queue-by,
+.music-queue-duration {
+  flex: 0 0 auto;
+  color: var(--muted-text);
+  font-size: 0.72rem;
+}
+
+.music-composer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.6rem;
+  border-top: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.music-composer input {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.music-composer button {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+/* O host do player do YouTube existe sempre, mas não ocupa espaço: só o áudio
+   interessa, e um iframe de 0px não renderiza vídeo à toa. Não pode ser
+   `display: none` — nesse caso o player não toca. */
+.music-youtube-host {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  left: -9999px;
+  top: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.remote-music-audio {
+  display: none;
+}
+
+/* Card de votação: fica acima dos toasts (20) e **abaixo** do modal de entrada
+   (30). Controle de acesso nunca fica atrás de música. */
+.music-vote-card {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 25;
+  width: 280px;
+  max-width: calc(100vw - 2rem);
+  padding: 0.85rem;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+.music-vote-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.music-vote-question {
+  color: var(--muted-text);
+  font-size: 0.82rem;
+}
+
+.music-vote-tally {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+}
+
+.music-vote-quorum {
+  color: var(--muted-text);
+}
+
+.music-vote-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.music-vote-actions button {
+  flex: 1;
+  padding: 0.35rem 0.6rem;
+}
+
+.music-vote-actions button.chosen {
+  border-color: var(--accent);
+  background: rgba(79, 124, 255, 0.18);
+}
+
+.music-vote-timer {
+  margin: 0.45rem 0 0;
+  color: var(--muted-text);
+  font-size: 0.72rem;
+}
+
+.music-vote-result {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  color: var(--danger);
+}
+
+.music-vote-result.approved {
+  color: var(--accent);
+}
+
 /* Modal de pedidos de entrada */
 
 .modal-backdrop {
@@ -571,7 +845,8 @@ code {
     flex-direction: column;
   }
 
-  .chat-panel {
+  .chat-panel,
+  .music-panel {
     width: 100%;
     /* `flex` em vez de `max-height: 45vh`: com o palco de altura fixa, uma
        altura em vh estouraria a coluna e ressuscitaria o scroll. */
