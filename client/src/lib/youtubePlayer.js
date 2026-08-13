@@ -92,8 +92,11 @@ export function loadYouTubeApi() {
  * propósito**: a promessa "nenhuma requisição à Google" tem que valer no ponto
  * onde a requisição nasceria, não só no chamador de hoje.
  */
-export async function fetchYouTubeTitle(videoId, { signal, fetchImpl } = {}) {
-  if (!isYouTubeEnabled()) return null;
+export async function fetchYouTubeTitle(videoId, { signal, fetchImpl, enabled = isYouTubeEnabled() } = {}) {
+  // `enabled` é a flag, e é parâmetro só porque `import.meta.env` não existe em
+  // `node:test`: sem essa costura, "com a flag desligada nenhuma requisição
+  // nasce" só seria verificável no navegador. O padrão continua sendo a flag.
+  if (!enabled) return null;
   if (typeof videoId !== 'string' || !VIDEO_ID.test(videoId)) return null;
 
   const doFetch = fetchImpl || (typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null);
