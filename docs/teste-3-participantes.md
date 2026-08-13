@@ -126,6 +126,31 @@ nenhum de presença extra, nenhum de nível de áudio.
 apaga o LED da webcam. O comportamento anterior (`track.enabled = false`) deixava
 o track `"live"`, com o device aberto e o LED aceso.
 
+### N. Player de música
+
+| # | Verificação | Resultado |
+|---|---|---|
+| N1 | "Música" entra na barra sem alterar o texto dos botões existentes | ✅ |
+| N2 | A votação é um card **não-bloqueante**: dá para silenciar o mic com ele aberto | ✅ |
+| N3 | 2 sim e 1 não aprovam e habilitam o player nos três | ✅ |
+| N4 | Abrir o player fecha o chat e a página continua sem rolar | ✅ |
+| N5 | Faixas de dois participantes aparecem na **mesma ordem** nos três | ✅ |
+| N6 | O áudio chega ao outro participante pelo **quarto** canal (medido por mid) | ✅ |
+| N7 | Silenciar o microfone de quem transmite **não** interrompe a música | ✅ |
+| N8 | Qualquer participante pula a faixa e a próxima assume nos três | ✅ |
+| N9 | Nenhuma mensagem de música no protocolo Socket.IO | ✅ |
+| N10 | Nada de música em `localStorage`/`sessionStorage` | ✅ |
+
+N6 mede os bytes recebidos **no transceiver de índice 3** (a ordem das m-lines é
+mic, câmera, tela, música), e não o total de áudio da conexão. A diferença é o
+teste inteiro: se a música vazasse para o canal de voz — o bug que o canal
+dedicado existe para evitar — uma medição do total passaria por acidente.
+
+N7 é o motivo pelo qual a música não é mixada no track do microfone. Mixada,
+`toggleMute` (que faz `enabled = false` no track do mic) silenciaria a música
+para a sala inteira, e o sintoma apareceria como "sumiu o som" sem relação
+aparente com o botão de mudo.
+
 ### F. Presença e liberação de recursos
 
 | # | Verificação | Resultado |
@@ -174,3 +199,23 @@ para quem for validar em máquina:
    m-lines (comportamento especificado), e há um caminho de fallback por
    `track.kind` para navegadores que pareiem de outra forma — mas isso não foi
    exercitado.
+7. **Música: arquivo local.** O roteiro automatizado usa uma URL same-origin (o
+   modo `stream` é o mesmo dos dois casos), mas escolher um MP3 no disco depende
+   do seletor nativo de arquivos, que não existe em headless. Verificar: adicionar
+   um arquivo pelo botão "Arquivo", confirmar que **quem adicionou também ouve**
+   (é o ramo de monitoração local do grafo — sem ele o dono é o único que não
+   escuta) e que os outros dois ouvem.
+8. **Música: URL sem CORS.** Colar uma URL de áudio de um host que não mande
+   `Access-Control-Allow-Origin` e confirmar que ela **toca mesmo assim**, em modo
+   `local`, com o aviso na UI. O modo errado aqui não falha: transmite silêncio.
+9. **Música: YouTube.** Colar um link normal e um com incorporação bloqueada. O
+   segundo tem que virar "faixa pulada com aviso", nunca um player travado. Conferir
+   também o aviso de privacidade na primeira faixa de YouTube da sessão.
+10. **Música: o dono sai no meio da faixa.** Fechar a aba de quem transmite. Faixa de
+    arquivo local deve ser pulada com aviso; faixa de URL/YouTube deve retomar com o
+    novo dono. Só um participante pode assumir — se dois publicarem, o estado
+    oscila visivelmente.
+11. **Qualidade da música em banda real.** O canal sai mono a 96 kbps por peer,
+    somado a N−1 uploads pelo TURN. Com 6 pessoas, verificar se o vídeo degrada de
+    forma perceptível; se degradar, baixar para 64 kbps antes de qualquer coisa
+    mais elaborada.

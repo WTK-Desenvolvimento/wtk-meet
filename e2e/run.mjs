@@ -8,6 +8,7 @@
  *      modo destaque 80/20 que ele ativa, com seleção local da tela destacada
  *   D. chat P2P via data channel, sem passar pelo servidor
  *   E. desligar/religar câmera com track.stop() e replaceTrack, sem renegociar
+ *   N. player de música: votação, fila convergente e áudio no quarto canal
  *   F. saída da sala sem vazar tracks/AudioContext/rAF
  *
  * Rodar: node e2e/run.mjs   (o próprio script builda o client)
@@ -27,6 +28,7 @@ import {
   startClientServer,
   startSignaling,
   startTurn,
+  writeAudioFixture,
 } from './harness.mjs';
 
 const results = [];
@@ -218,17 +220,23 @@ try {
   await waitFor(everyoneConnected, { timeout: 45000, label: 'mesh conectado (2 peers por participante)' });
   check('A1. Mesh conecta: 3 participantes, 2 RTCPeerConnection "connected" cada', true);
 
-  // Layout esperado por conexão: 3 canais de envio (mic, câmera, tela) e os 3
-  // espelhos de recepção criados pelo navegador ao aplicar a oferta remota.
+  // Layout esperado por conexão: 4 canais de envio (mic, câmera, tela, música) e
+  // os 4 espelhos de recepção criados pelo navegador ao aplicar a oferta remota.
+  //
+  // A **ordem** é verificada junto, e não por preciosismo: ela é o contrato que
+  // permite ao outro lado classificar as m-lines que chegam. Criar o canal de
+  // música em qualquer outra posição embaralha câmera com tela, ou faz a música
+  // cair no stream de voz — onde ela acende o anel de "falando" no tile de quem
+  // toca e deixa de ter volume próprio. Nos dois casos *parece* funcionar.
   const aliceTx = (await peerStats(alice.page))[0].transceivers;
   const send = aliceTx.filter((t) => t.currentDirection === 'sendonly');
   const recv = aliceTx.filter((t) => t.currentDirection === 'recvonly');
+  const sendOrder = send.map((t) => t.kind).join(',');
   check(
-    'A2. Cada conexão tem 2 canais de vídeo por sentido (câmera + tela) e 1 de áudio',
-    send.filter((t) => t.kind === 'video').length === 2 &&
-      send.filter((t) => t.kind === 'audio').length === 1 &&
+    'A2. Cada conexão tem 4 canais por sentido, na ordem mic, câmera, tela, música',
+    sendOrder === 'audio,video,video,audio' &&
       recv.filter((t) => t.kind === 'video').length === 2 &&
-      recv.filter((t) => t.kind === 'audio').length === 1,
+      recv.filter((t) => t.kind === 'audio').length === 2,
     `transceivers=${JSON.stringify(aliceTx.map((t) => `${t.kind}:${t.currentDirection}`))}`,
   );
 
@@ -767,6 +775,213 @@ try {
     window.__wtkTrackStates().some((t) => t.kind === 'audio' && t.readyState === 'live'),
   );
   check('E9. Áudio não caiu no ciclo de câmera', audioStillAlive);
+
+  // ----------------------------------------------------------- N. música
+  // O roteiro cobre o caminho que só existe com três pessoas de verdade:
+  // votação da sala, fila convergente e áudio saindo pelo quarto canal.
+
+  const controlButtons = await alice.page.locator('.controls button').allTextContents();
+  check(
+    'N1. Botão "Música" entra na barra sem alterar o texto dos botões existentes',
+    controlButtons.includes('Música') &&
+      controlButtons.includes('Silenciar') &&
+      controlButtons.some((t) => t === 'Chat' || t.startsWith('Chat')),
+    JSON.stringify(controlButtons),
+  );
+
+  // Alice propõe. Em Bob e Carol tem que aparecer um card — e a tela **não**
+  // pode ficar bloqueada: música não é pedido de entrada, ignorar não deixa
+  // ninguém preso do lado de fora.
+  await alice.page.getByRole('button', { name: 'Música' }).click();
+  await waitFor(
+    async () =>
+      (await bob.page.locator('.music-vote-card').count()) === 1 &&
+      (await carol.page.locator('.music-vote-card').count()) === 1,
+    { timeout: 10000, label: 'card de votação em Bob e Carol' },
+  );
+  const cardText = await bob.page.locator('.music-vote-card').innerText();
+  // Usar a sala com a votação aberta não pode custar o voto: o card fica no
+  // canto, não intercepta clique nenhum, e "cliquei em Silenciar" não é
+  // "quis fechar a votação".
+  await bob.page.getByRole('button', { name: 'Silenciar', exact: true }).click();
+  const micToggled = await bob.page.getByRole('button', { name: 'Ativar mic' }).count();
+  await bob.page.getByRole('button', { name: 'Ativar mic' }).click();
+  await sleep(300);
+  const cardSurvived = await bob.page.locator('.music-vote-card').count();
+  check(
+    'N2. Votação é um card não-bloqueante: dá para usar a sala sem perder o voto',
+    cardText.includes('Alice') &&
+      /\d+s para votar/.test(cardText) &&
+      micToggled === 1 &&
+      cardSurvived === 1,
+    `${JSON.stringify(cardText.replace(/\n/g, ' | '))} mic clicável=${micToggled === 1} ` +
+      `card sobreviveu=${cardSurvived === 1}`,
+  );
+
+  // 2 sim (Alice, Bob) e 1 não (Carol): maioria dos válidos com quórum. O "não"
+  // fecha a votação antes do prazo, porque todo mundo já se manifestou.
+  await bob.page.locator('.music-vote-card').getByRole('button', { name: 'Sim' }).click();
+  await carol.page.locator('.music-vote-card').getByRole('button', { name: 'Não' }).click();
+
+  const musicFixture = writeAudioFixture('e2e-music-a.wav', { seconds: 40, freq: 440 });
+  const musicFixtureB = writeAudioFixture('e2e-music-b.wav', { seconds: 40, freq: 660 });
+
+  async function openMusicPanel(participant) {
+    await waitFor(
+      async () => {
+        if ((await participant.page.locator('.music-panel').count()) === 1) return true;
+        await participant.page.getByRole('button', { name: 'Música' }).click();
+        await sleep(300);
+        return (await participant.page.locator('.music-panel').count()) === 1;
+      },
+      { timeout: 15000, label: `painel de música de ${participant.name}` },
+    );
+  }
+
+  await openMusicPanel(alice);
+  await openMusicPanel(bob);
+  await openMusicPanel(carol);
+  check('N3. Aprovada por maioria, a votação habilita o player nos três participantes', true);
+
+  // Abrir o player fecha o chat e não pode ressuscitar o scroll de página: dois
+  // painéis no palco espremeriam os tiles até o piso de legibilidade.
+  const withMusic = await roomLayout(alice.page);
+  const chatStillOpen = await alice.page.locator('.chat-panel').count();
+  check(
+    'N4. Abrir a música fecha o chat e a página continua sem rolar',
+    chatStillOpen === 0 &&
+      noPageScroll(withMusic) &&
+      withMusic.controlsBottom <= withMusic.innerHeight + 1,
+    `chat aberto=${chatStillOpen} scrollHeight=${withMusic.scrollHeight}/${withMusic.innerHeight} ` +
+      `controls.bottom=${Math.round(withMusic.controlsBottom)}`,
+  );
+
+  // Alice e Bob adicionam uma faixa cada, quase ao mesmo tempo. Os três têm que
+  // exibir as duas na **mesma** ordem — é a ordem total por (lamport, autor, id).
+  await setInputValue(alice.page.getByLabel('Adicionar faixa por link'), musicFixture);
+  await setInputValue(bob.page.getByLabel('Adicionar faixa por link'), musicFixtureB);
+  await alice.page.locator('.music-composer').getByRole('button', { name: 'Adicionar' }).click();
+  await bob.page.locator('.music-composer').getByRole('button', { name: 'Adicionar' }).click();
+
+  const queueOf = async (participant) =>
+    participant.page.locator('.music-queue-item .music-queue-title').allTextContents();
+  const queues = await waitFor(
+    async () => {
+      const all = await Promise.all([queueOf(alice), queueOf(bob), queueOf(carol)]);
+      return all.every((q) => q.length === 2) ? all : false;
+    },
+    { timeout: 20000, label: 'as duas faixas na fila dos três participantes' },
+  );
+  check(
+    'N5. Faixas adicionadas por dois participantes aparecem na mesma ordem nos três',
+    JSON.stringify(queues[0]) === JSON.stringify(queues[1]) &&
+      JSON.stringify(queues[1]) === JSON.stringify(queues[2]),
+    queues.map((q) => JSON.stringify(q)).join(' vs '),
+  );
+
+  // O áudio da faixa de Alice tem que chegar pelo **quarto** canal (o dedicado a
+  // música), não pelo do microfone. Medir por mid é o que distingue os dois: se a
+  // música vazasse para o canal de voz, o teste passaria por acidente.
+  const musicBytes = await waitFor(
+    async () => {
+      const value = await bob.page.evaluate(async () => {
+        const pcs = (window.__wtkPeers || []).filter((pc) => pc.connectionState === 'connected');
+        let best = 0;
+        for (const pc of pcs) {
+          const recv = pc.getTransceivers().filter((t) => t.currentDirection === 'recvonly');
+          // Ordem das m-lines: mic, câmera, tela, música.
+          const music = recv[3];
+          if (!music?.receiver.track) continue;
+          const stats = await pc.getStats(music.receiver.track);
+          stats.forEach((report) => {
+            if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+              best = Math.max(best, report.bytesReceived || 0);
+            }
+          });
+        }
+        return best;
+      });
+      return value > 2000 ? value : false;
+    },
+    { timeout: 30000, label: 'áudio de música chegando no quarto canal de Bob' },
+  );
+  check(
+    'N6. O áudio da faixa chega a outro participante pelo canal dedicado de música',
+    musicBytes > 2000,
+    `bytesReceived no 4º canal=${musicBytes}`,
+  );
+
+  // Silenciar o microfone durante a música: o canal é outro, então a música não
+  // pode parar. Este é o bug que a decisão do canal dedicado existe para evitar.
+  const bytesBeforeMute = musicBytes;
+  await alice.page.getByRole('button', { name: 'Silenciar', exact: true }).click();
+  await sleep(3000);
+  const bytesAfterMute = await bob.page.evaluate(async () => {
+    const pcs = (window.__wtkPeers || []).filter((pc) => pc.connectionState === 'connected');
+    let best = 0;
+    for (const pc of pcs) {
+      const music = pc.getTransceivers().filter((t) => t.currentDirection === 'recvonly')[3];
+      if (!music?.receiver.track) continue;
+      const stats = await pc.getStats(music.receiver.track);
+      stats.forEach((report) => {
+        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+          best = Math.max(best, report.bytesReceived || 0);
+        }
+      });
+    }
+    return best;
+  });
+  await alice.page.getByRole('button', { name: 'Ativar mic' }).click();
+  check(
+    'N7. Silenciar o microfone de quem transmite não interrompe a música',
+    bytesAfterMute > bytesBeforeMute,
+    `bytesReceived ${bytesBeforeMute} → ${bytesAfterMute}`,
+  );
+
+  // Pular é aberto: quem não é dono da faixa também pode, e o estado converge.
+  const currentBefore = await alice.page.locator('.music-now-title').innerText();
+  await carol.page.locator('.music-now').getByRole('button', { name: 'Pular' }).click();
+  const currentAfter = await waitFor(
+    async () => {
+      const titles = await Promise.all(
+        [alice, bob, carol].map(async (p) => {
+          const n = await p.page.locator('.music-now-title').count();
+          return n === 1 ? p.page.locator('.music-now-title').innerText() : null;
+        }),
+      );
+      if (titles.some((t) => t === null || t === currentBefore)) return false;
+      return titles.every((t) => t === titles[0]) ? titles[0] : false;
+    },
+    { timeout: 20000, label: 'a próxima faixa assumindo em todos os participantes' },
+  );
+  check(
+    'N8. Qualquer participante pula a faixa, e a próxima assume nos três',
+    currentAfter && currentAfter !== currentBefore,
+    `"${currentBefore}" → "${currentAfter}"`,
+  );
+
+  const musicWire = (await wire(alice.page)).filter((f) => /music-|"entry"|queue-add/i.test(f.data));
+  check(
+    'N9. Nenhuma mensagem de música existe no protocolo Socket.IO',
+    musicWire.length === 0,
+    musicWire.slice(0, 2).map((f) => f.data.slice(0, 120)).join(' | '),
+  );
+
+  const musicStorage = await bob.page.evaluate(() => [
+    ...Object.keys(localStorage),
+    ...Object.keys(sessionStorage),
+  ]);
+  check(
+    'N10. Nada de música em localStorage/sessionStorage',
+    musicStorage.filter((k) => /music|queue|track|playlist/i.test(k)).length === 0,
+    JSON.stringify(musicStorage),
+  );
+
+  // Fecha o player nos três: a seção F mede toasts e vazamentos, e um painel
+  // aberto muda o palco medido.
+  for (const p of [alice, bob, carol]) {
+    await p.page.locator('.music-panel').getByRole('button', { name: 'Fechar player' }).click();
+  }
 
   // ------------------------------------------------ F. saída e vazamentos
   // Zera a fila de toasts antes de medir: o reload de Bob (seção D) gera um

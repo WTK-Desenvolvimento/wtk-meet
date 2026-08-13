@@ -1,3 +1,143 @@
+# Progresso — WTK-MEET-8: player de música colaborativo P2P
+
+**Status: implementação concluída e validada.** Branch
+`agent/wtk-meet-8-quero-adicionar-uma-funcionalidade-de-mu`.
+
+Documento de arquitetura seguido: `docs/agents/arch-temp-player-musica-colaborativo.md`.
+
+> O histórico das entregas anteriores está preservado abaixo, incluindo a receita
+> de ambiente do E2E — que continua necessária **a cada sessão**, porque `/tmp`
+> não persiste.
+
+## Ponto de partida
+
+Uma sessão anterior nesta mesma branch deixou os módulos puros commitados
+(`musicSession`, `musicVote`, `musicSources`, `musicProtocol` + testes),
+`audioContext.js` extraído, e `MusicVoteCard`/`RemoteMusicAudio` criados. O
+`webrtcMesh.js` estava **no meio da edição**: importava `isMusicMessage` sem usar,
+não criava o quarto transceiver, não roteava `music-*` e não tinha `setMusicTrack`.
+Esta sessão continuou dali, seguindo a ordem do §6 do documento a partir do item 4.
+
+## O que foi implementado
+
+| Arquivo | Mudança |
+|---|---|
+| `client/src/lib/webrtcMesh.js` | Quarto transceiver `sendonly` de áudio criado **depois** do de tela; `_classifyTransceiver` estendido para `['audio','camera','screen','music']` na mesma edição; `rec.musicStream` + `onRemoteMusic`; `setMusicTrack` com `contentHint='music'` e `maxBitrate` de 96 kbps por conexão; roteamento de `music-*` para `onMusicMessage`; snapshot musical no `onopen` do canal |
+| `client/src/lib/musicEngine.js` | **Novo.** Grafo WebAudio (`<audio>` → `MediaElementSource` → `MediaStreamDestination` + ramo de monitoração local), sonda de CORS por `Range: bytes=0-0`, ciclo de vida de `objectURL`, `play()` cuja rejeição vira aviso em vez de silêncio |
+| `client/src/lib/youtubePlayer.js` | **Novo.** IFrame API carregada sob demanda (nada da Google no bundle), atrás de `VITE_ENABLE_YOUTUBE`, com a mesma superfície do motor (`play`/`pause`/`seek`/`positionSec`) |
+| `client/src/lib/useMusicRoom.js` | **Novo.** Orquestração: votação com árbitro, fila convergente, escritor único da reprodução, sucessão determinística, correção de deriva e snapshot para quem entra depois |
+| `client/src/components/MusicPanel.jsx` | **Novo.** Painel irmão do `ChatPanel`: faixa atual, progresso, fila, formulário (link/arquivo) e volume local |
+| `client/src/components/MusicVoteCard.jsx` | Dispensar passou a ser explícito (`Esc` ou ✕) — ver "Desvios conscientes" |
+| `client/src/pages/Room.jsx` | Hook de música ligado ao mesh, botão na barra, painel mutuamente exclusivo com o chat, overlays sempre montados, `selfId` em estado, `AudioContext` injetado no monitor e fechado pelo `Room` |
+| `client/src/styles.css` | Painel, card de votação (z-index 25), fila, barra de progresso, host oculto do YouTube |
+| `client/test/musicProtocol.test.mjs` | **Novo.** 12 casos de entrada hostil e de identidade |
+| `client/test/joinRequestSignaling.test.mjs` | Teardown escala SIGTERM → SIGKILL após 2s (ver "Nota de ambiente") |
+| `e2e/{harness,run}.mjs` | Fixture de áudio WAV sintético; A2 atualizada para 4 canais por sentido; seção **N** com 10 checagens novas |
+| `ARCHITECTURE.md`, `README.md`, `client/.env.example`, `docs/teste-3-participantes.md` | §6.9, limitações, flag do YouTube e checklist manual |
+
+## Decisões que valem registrar
+
+1. **Trocar de faixa é publicado pelo dono da faixa *seguinte*, nunca pelo da que
+   acabou.** O documento fixa "escritor único", mas não diz quem escreve a
+   transição — e as duas escolhas óbvias (o dono que terminou publica "parei"; o
+   próximo publica "comecei") coexistindo dariam dois escritores disputando a
+   mesma versão, com o "parei" podendo vencer por desempate de id. Um escritor
+   por transição resolve; se a fila acabou, quem declara o silêncio é o dono da
+   que terminou.
+2. **A condição de "começar a próxima" é *a faixa corrente não existe mais na
+   fila*, não *`entryId` é nulo*.** Quando alguém pula, o `entryId` continua
+   apontando para uma entrada que já virou tombstone. Testar por nulo deixaria a
+   sala parada com a fila cheia — e o sintoma seria "pular às vezes não faz nada".
+3. **O padrão de entrega é `local`, e `stream` só entra com a sonda de CORS
+   confirmando.** Errar para o lado do `local` custa banda; errar para o outro
+   lado transmite **silêncio sem erro nenhum**, que é o modo de falha mais caro
+   de diagnosticar deste recurso.
+4. **A orquestração virou um hook (`useMusicRoom.js`) em vez de morar em
+   `Room.jsx`.** O documento pede o estado no `Room`; ele já orquestra mídia,
+   chat, toasts e pedidos de entrada, e somar a máquina de estados da música
+   levaria o arquivo a ~1000 linhas. A fronteira é limpa: o hook não conhece JSX,
+   o `Room` não conhece o protocolo.
+5. **O container do player do YouTube é criado fora do React.** `YT.Player`
+   substitui o elemento que recebe por um iframe; um nó trocado por baixo do
+   React estoura no unmount. O React cuida do host, nós cuidamos do filho.
+
+## Desvios conscientes do documento
+
+**§3.6 — o card de votação não fecha mais por "clique fora".** O documento diz
+"fecha por `Esc`/clique fora, sem votar". Implementado ao pé da letra, o efeito
+era o oposto do pretendido: **silenciar o microfone com a votação aberta fazia a
+pessoa perder o voto**, sem entender por quê. Num card fixo de canto, que não
+intercepta clique nenhum, "clique fora" não significa "quis fechar" — significa
+"usou a sala". Dispensar passou a ser explícito (`Esc` ou ✕), o que preserva a
+intenção da decisão (abster-se é legítimo, a tela não é bloqueada) sem o efeito
+colateral. A checagem N2 do E2E fixa isso: usar a sala com o card aberto não pode
+custar o voto.
+
+**Votação para pular não foi implementada**, conforme §3.7 — mas os módulos puros
+já commitados suportam `kind: 'skip'` e o card já sabe renderizá-lo. É código
+morto deliberado, pronto para quando/se a decisão mudar.
+
+## Verificação executada
+
+- `npm --prefix client run lint` → limpo
+- `npm --prefix client test` → **95/95** (12 novos de `musicProtocol`; `audioLevels`
+  e `gridLayout` verdes **sem edição**, como o documento exige)
+- `npm --prefix client run build` → ok
+- `node e2e/run.mjs` → **67/67** (57 anteriores + 10 da seção N)
+
+Cobertura das checagens novas do E2E:
+
+| Checagem | O que prova |
+|---|---|
+| N1 | "Música" entra na barra sem alterar o texto de nenhum botão existente |
+| N2 | Card não-bloqueante: silenciar o mic com ele aberto funciona **e não custa o voto** |
+| N3 | 2 sim + 1 não aprovam e habilitam o player nos três |
+| N4 | Abrir a música fecha o chat e a página continua sem rolar (invariante §6.7) |
+| N5 | Faixas de dois participantes na **mesma ordem** nos três |
+| N6 | Áudio real chegando **no 4º canal**, medido por mid (`bytesReceived=4819`) |
+| N7 | Silenciar o mic de quem transmite não interrompe a música (`4819 → 43138`) |
+| N8 | Quem não é dono pula a faixa e a próxima assume nos três |
+| N9 | Nenhuma mensagem de música no protocolo Socket.IO |
+| N10 | Nada de música em `localStorage`/`sessionStorage` |
+
+**A2 foi atualizada de propósito**, e é a única checagem pré-existente alterada:
+ela fixava "3 transceivers por sentido", que é justamente o contrato que esta
+entrega muda. A versão nova verifica também a **ordem** (`audio,video,video,audio`)
+— criar o canal de música em qualquer outra posição embaralha câmera com tela ou
+faz a música cair no stream de voz, e nos dois casos *parece* funcionar.
+
+**N6/N7 medem o transceiver de índice 3**, não o total de áudio da conexão. Se a
+música vazasse para o canal de voz — exatamente o bug que o canal dedicado existe
+para evitar — uma medição do total passaria por acidente.
+
+## Dois erros que a leitura do código pegou (e o teste não pegaria)
+
+1. **A fila era lida antes do `await` da sonda de CORS.** Uma faixa adicionada por
+   outro participante durante a sonda desapareceria: o estado publicado depois do
+   `await` fora calculado antes dela chegar. Corrigido movendo a sonda para antes
+   de qualquer leitura de estado. Só apareceria com duas pessoas adicionando ao
+   mesmo tempo, e com uma URL lenta.
+2. **Dispensar o card excluía a pessoa da decisão da sala.** O anúncio do árbitro
+   era conferido contra a votação ativa; sem ela, era descartado, e quem tinha
+   fechado o card ficava sem o player que todos os outros acabaram de ligar. A
+   votação dispensada passou a ser guardada (só para validar o anúncio — o card
+   não volta à tela sozinho).
+
+## Pendências e débitos identificados
+
+- **Arquivo local, URL sem CORS, YouTube e saída do dono no meio da faixa** não são
+  cobertos por teste automatizado: dependem, respectivamente, do seletor nativo de
+  arquivos, de um host externo, de um terceiro e de temporização de rede real. Estão
+  no checklist manual (`docs/teste-3-participantes.md`, itens 7–11).
+- **`music-vote-cast` que chegue antes do `music-vote-open` correspondente é
+  descartado.** Só afeta a contagem exibida em quem não é árbitro (o resultado
+  oficial vem do anúncio, e o árbitro sempre tem a votação aberta). Um buffer de
+  votos pendentes resolveria; não pareceu valer a complexidade para uma sala de 6.
+- **Decisão de produto em aberto:** manter ou desligar a origem YouTube antes do
+  deploy (§3.4/§7 do documento). Entregue com a flag ligada e aviso na UI.
+
+---
+
 # Progresso — WTK-MEET-6: destaque 80/20 para compartilhamento de tela
 
 **Status: COMPLETED (implementação concluída, testes e lint verdes).** Branch
@@ -78,12 +218,6 @@ meio segundo de `lib/audioLevels.js` já evita que o indicador de fala pisque.
 | C9 | Palco estreito: coluna some, botão de participantes aparece, painel abre com 2 itens e **fecha por `Esc`** |
 | C10 | Bob para de compartilhar → destaque migra sozinho para "Carol — tela" |
 | C11 | Última tela encerrada pelo evento `ended` → grade uniforme de volta, track encerrada, botão restaurado |
-
-> O E2E **rodou de verdade** nesta sessão, com a receita de bibliotecas do fim
-> deste arquivo (`/tmp/pwlibs` + `LD_LIBRARY_PATH` + fontes). Sem exportar essas
-> variáveis o Chromium falha com `libglib-2.0.so.0: cannot open shared object
-> file` — que é o sintoma que fez sessões anteriores registrarem o E2E como
-> impossível aqui.
 
 ## Bloqueios e limitações desta sessão
 - **`npm test` travava por um motivo de ambiente.** Os 5 casos de
@@ -307,6 +441,78 @@ evento `ended`). **Cada uma foi validada por mutação.**
 O que não dá para cobrir em headless está listado como checklist manual em
 `docs/teste-3-participantes.md` (LED físico da webcam, `chrome://webrtc-internals`,
 barra nativa "Parar compartilhamento", diálogo de escolha de tela, Firefox/Safari).
+
+## Passada de QA do player de música (2026-08-13)
+
+Os módulos puros do player já vinham com teste. O que faltava era tudo o que toca
+DOM, WebAudio e `RTCPeerConnection` — que é exatamente onde as falhas deste
+recurso são **silenciosas**. Três arquivos novos, 53 casos, nenhuma linha de
+produção alterada:
+
+- `client/test/musicEngine.test.mjs` (22) — sonda de CORS nas quatro respostas
+  possíveis, os **dois** ramos do grafo (sem o de monitoração, só o dono não
+  ouve), ordem `crossOrigin` → `src`, modo `local` sem WebAudio, `objectURL`
+  revogado ao trocar de faixa/parar/destruir, autoplay bloqueado virando aviso, e
+  o track de saída estável entre faixas.
+- `client/test/musicMeshRouting.test.mjs` (17) — a ordem dos quatro transceivers,
+  a classificação por posição das m-lines remotas, música no `musicStream` (nunca
+  no de voz), autoria pela conexão e não pelo payload, snapshot no `onopen`, teto
+  de 96 kbps e microfone intocado ao assumir a faixa.
+- `client/test/youtubePlayer.test.mjs` (14) — API carregada sob demanda e uma vez
+  só, hook global encadeado, erro do player virando "faixa pulada com aviso",
+  volume 0–1 → 0–100.
+
+`npm --prefix client test` → **148/148**; `npm --prefix client run lint` → limpo.
+
+**Validação por mutação:** 10 mutantes plantados nos três módulos de produção
+(ramo de monitoração removido, `crossOrigin` depois do `src`, falha de CORS
+tratada como capturável, música criada antes da tela, lista de classificação sem
+`'music'`, música roteada para o stream de voz, autoria vinda do payload,
+snapshot não enviado no `onopen`, teto de banda não aplicado, erro do YouTube
+engolido) — **10 detectados**.
+
+### E2E: verde, mas intermitente **nas duas pontas**
+
+`node e2e/run.mjs` na branch → **67/67** (os 57 do roteiro existente + N1–N10 da
+música). O roteiro de música passou em todas as execuções que chegaram até ele.
+
+A primeira execução da sessão falhou com o mesh sem fechar ICE, o que levantou a
+suspeita da quarta m-line (risco §7 do documento de arquitetura). Não é: rodando
+em série e sem contenção, **o merge-base falha na mesma proporção**.
+
+| | passou | falhou |
+|---|---|---|
+| branch (com música) | 67/67, 67/67 | 1× mesh não reconectou após reload de Bob |
+| merge-base / `main` | 57/57, 61/61 | 1× `B3` (contagem de `requestAnimationFrame`) |
+
+Duas observações que valem mais que a estatística:
+
+1. **Execuções concorrentes contaminam a medição.** Duas rodadas simultâneas
+   disputam CPU e portas, e o sintoma é ICE que nunca conecta — idêntico ao de
+   uma regressão de negociação. Antes de concluir qualquer coisa a partir de uma
+   falha de mesh, varrer `/proc/*/cmdline` por `e2e/run.mjs` órfão (não há `ps`
+   aqui) e repetir em primeiro plano.
+2. As falhas da branch foram de ICE e a do base foi de temporização, então um
+   efeito marginal da quarta m-line sobre o TURN local **não está descartado** —
+   só não há evidência dele. Com `iceTransportPolicy: 'relay'` e o `node-turn`
+   em `debugLevel: 'ERROR'`, um TURN que não sobe não aparece no log: some a
+   malha inteira, sem mensagem.
+
+### O que ficou sem cobertura automatizada
+
+Tudo o que resta mora em `lib/useMusicRoom.js`, um hook React — o projeto não tem
+infraestrutura de teste de componente (nem `jsdom` nem testing-library nas
+devDependencies), e adicionar dependência não cabia a esta passada:
+
+- §8.8 — proponente que fecha a aba durante a votação (o código existe, em
+  `useMusicRoom.js`, no efeito que reage a quem saiu).
+- §8.20 — fim da faixa avançando para a próxima e fila vazia virando "nada
+  tocando".
+- §8.21 — sucessão do dono que fecha a aba no meio da faixa.
+- §8.23 — desvio de posição do YouTube abaixo de 2s após 60s.
+
+Os quatro estão no checklist manual de `docs/teste-3-participantes.md` (itens 7 a
+11), junto de arquivo local pelo seletor nativo e URL sem CORS.
 
 ## Notas para rodar o E2E neste ambiente
 

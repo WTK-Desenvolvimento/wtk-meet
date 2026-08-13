@@ -48,7 +48,38 @@ const MIME = {
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.json': 'application/json',
+  '.wav': 'audio/wav',
 };
+
+/**
+ * Escreve um WAV sintético dentro do `dist` já buildado e devolve a URL dele.
+ *
+ * É a fonte de áudio do roteiro de música: um tom contínuo, servido pelo mesmo
+ * host da aplicação. Same-origin de propósito — assim a sonda de CORS do
+ * `musicEngine` passa e a faixa entra em modo `stream` (retransmitida por quem
+ * adicionou), que é justamente o caminho que o teste precisa exercitar.
+ */
+export function writeAudioFixture(name, { seconds = 30, freq = 440, rate = 8000 } = {}) {
+  const samples = seconds * rate;
+  const buffer = Buffer.alloc(44 + samples * 2);
+  buffer.write('RIFF', 0);
+  buffer.writeUInt32LE(36 + samples * 2, 4);
+  buffer.write('WAVEfmt ', 8);
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);  // PCM
+  buffer.writeUInt16LE(1, 22);  // mono
+  buffer.writeUInt32LE(rate, 24);
+  buffer.writeUInt32LE(rate * 2, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write('data', 36);
+  buffer.writeUInt32LE(samples * 2, 40);
+  for (let i = 0; i < samples; i += 1) {
+    buffer.writeInt16LE(Math.round(Math.sin((2 * Math.PI * freq * i) / rate) * 12000), 44 + i * 2);
+  }
+  fs.writeFileSync(path.join(DIST, name), buffer);
+  return `${CLIENT_ORIGIN}/${name}`;
+}
 
 export function startTurn() {
   const server = new Turn({

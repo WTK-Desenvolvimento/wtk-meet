@@ -115,6 +115,7 @@ só o aviso; ela não afeta a decisão de acesso em si. O evento carrega apenas 
 | Que houve troca de SDP (portanto, que *algo* mudou na negociação) | O conteúdo das mensagens de chat — trafega por `RTCDataChannel` P2P, e não existe nenhum evento de chat no protocolo do servidor (§6.3) |
 | — | Quem está falando: os níveis de áudio são medidos localmente por cada participante e nunca saem da máquina (§6.4) |
 | — | Se alguém está compartilhando tela ou com a câmera desligada — esse estado é anunciado pelo data channel, não pelo servidor |
+| — | Que a sala está ouvindo música, o que está na fila ou quem votou o quê — o player inteiro vive nos clients (§6.8). A exceção é a origem YouTube: ali quem sabe é a Google, não este servidor |
 
 Nada disso é persistido: ao encerrar a sala (todos saem) ou reiniciar o processo, o
 estado desaparece. Não há banco de dados no backend.
@@ -368,79 +369,84 @@ A aritmética, o fallback e a ordenação estão fixados em
 `client/test/spotlightLayout.test.mjs`; o comportamento no navegador, no cenário C
 de `e2e/run.mjs`.
 
-### 6.8 Destaque de compartilhamento de tela (80/20)
+### 6.9 Player de música colaborativo
 
-Tela compartilhada **não** é mais um tile igual aos outros. Enquanto existir ao
-menos uma tela ativa na sala, o palco troca sozinho de "grade uniforme" para
-**modo destaque**: uma tela ocupa a maior parte da área útil e uma coluna
-rolável ocupa o resto, com as câmeras de todos e as miniaturas das demais telas.
-A última tela terminando devolve a grade de §6.7, sem nenhuma diferença de
-comportamento em relação a antes. Não há botão de entrar ou sair do modo — a
-ativação é consequência do estado da sala, não uma preferência.
+A sala tem um player estilo Spotify com fila colaborativa: qualquer participante
+adiciona faixas (arquivo local, URL direta de áudio ou link do YouTube) e a sala
+ouve junto. **Nenhuma rota, evento ou estado novo no servidor** — fila, faixa
+corrente, posição e votos vivem nos clients e trafegam pelo mesmo
+`RTCDataChannel` do chat, com um snapshot enviado a quem entra depois.
 
-**A escolha do destaque é local e derivada.** `Room` guarda um único
-`pinnedScreenId` (`useState`), e o destaque efetivo é recalculado a cada render
-por `resolveSpotlightScreen`: se a tela escolhida ainda está ativa, ela vence;
-senão, vence a primeira da lista. Nada disso vai para a rede — **nenhum evento
-novo no servidor e nenhum `type` novo no data channel** (a tabela de §5 continua
-verdadeira sem alteração). Duas consequências que valem por si:
+**Ligar o player é votado; pular e remover, não.** Um botão "Música" abre uma
+votação da sala (30s, árbitro, maioria dos votos válidos com quórum de metade do
+eleitorado). Aprovada, o player fica habilitado até a sala esvaziar. Já pular a
+faixa corrente ou remover uma entrada é livre, com a autoria visível — votar cada
+pulo transformaria cada música ruim numa cerimônia de meio minuto, e o recurso
+morreria de fricção. A votação existe onde o custo é alto e coletivo: **ligar**.
+O card é **não-bloqueante** (`z-index` 25, entre os toasts e o modal de entrada) e
+fecha por `Esc`/clique fora sem votar — abster-se é legítimo, ao contrário do
+pedido de entrada, onde ignorar deixa alguém preso do lado de fora.
 
-- Cada participante vê o que escolheu. Um apresentador não controla a tela dos
-  outros, porque não existe canal para isso.
-- `pinnedScreenId` pode apontar para uma tela que já acabou à vontade: ele nunca
-  é lido sem validação. Um `useEffect` que "limpasse" o estado custaria um render
-  extra, um frame com destaque inválido e — quando uma segunda tela entra —
-  roubaria a escolha deliberada do usuário.
+**Quarto transceiver, não mixagem no microfone.** Cada `RTCPeerConnection` passa
+a nascer com **quatro** `sendonly`, na ordem **áudio (mic), vídeo (câmera), vídeo
+(tela), áudio (música)**. Mixar a música no track do mic é o caminho mais curto e
+funciona na primeira demo; depois, `toggleMute` (que faz `enabled = false` no
+track do mic) silenciaria a música **para a sala inteira**, o indicador de fala
+(§6.4) ficaria permanentemente aceso no tile de quem toca, e ninguém conseguiria
+baixar a música sem baixar a voz junto. O canal separado ainda recebe
+`contentHint = 'music'` e `maxBitrate` de 96 kbps — com `iceTransportPolicy:
+'relay'`, quem toca sobe N−1 cópias pelo TURN, e sem teto o Opus disputaria banda
+com o vídeo exatamente na sala cheia. A ordem de criação é **contrato de rede**:
+o array de `_classifyTransceiver` precisa ser estendido na mesma edição, senão a
+música cai no stream de voz e o bug *parece* funcionar.
 
-**A geometria é calculada em JS**, pela mesma razão de §6.7:
-`client/src/lib/spotlightLayout.js` é puro, sem DOM, e devolve
-`{ mode, spotlight: {width, height}, rail: {width, thumbWidth, thumbHeight, scrolls} }`.
-O "80/20" é **alvo com trava**, não proporção rígida: a coluna fica em
-`clamp(RAIL_MIN_WIDTH 160px, 20% do palco, RAIL_MAX_WIDTH 280px)`, com um piso de
-legibilidade da miniatura (`MIN_THUMB_WIDTH`) que engorda a coluna em vez de
-encolher a miniatura. Em ultrawide, 20% puro daria uma miniatura de 400px; em
-laptop com o chat aberto, 110px. O destaque recebe o que sobra, em 16:9, reduzido
-para caber na altura — `flex: 4 / flex: 1` daria a proporção mas estouraria
-verticalmente numa janela achatada, ressuscitando o scroll de página. Arredonda
-para baixo, sempre, pelo mesmo motivo da grade.
+**Duas formas de entrega, escolhidas pela origem.** `delivery: 'stream'` é o
+áudio retransmitido pela máquina de quem adicionou a faixa; `delivery: 'local'` é
+cada client tocando a mesma origem, sincronizado por posição.
 
-**O modo estreito é decidido pela caixa medida** (`NARROW_STAGE_WIDTH`, 720px de
-palco), não por media query: o palco encolhe quando o chat abre, e uma media
-query de viewport diria "desktop" com 400px reais de palco. Abaixo do limiar o
-destaque vai a largura cheia e a coluna vira um painel **sobreposto**, aberto por
-um botão com a contagem de itens. Ao contrário do modal de aprovação, esse painel
-**fecha por `Esc` e por clique fora** — a regra do modal existe porque outra
-pessoa depende da decisão; aqui não depende ninguém.
+| Origem | Entrega | Por quê |
+|---|---|---|
+| Arquivo local | `stream` | Única possibilidade: ninguém mais tem o arquivo. O arquivo **nunca** é transferido — o que trafega é áudio decodificado, como som. |
+| URL direta | `stream` com CORS, `local` sem | `createMediaElementSource` sobre mídia cross-origin sem `Access-Control-Allow-Origin` transmite **silêncio digital**, sem erro. Daí a sonda de `Range: bytes=0-0` antes de tocar, e daí o padrão ser `local` quando a sonda não confirma. |
+| YouTube | `local`, obrigatoriamente | O player roda num iframe cross-origin; não existe API que dê acesso ao áudio dele. Extrair o stream violaria os Termos de Serviço e exigiria servidor; capturar a aba levaria junto a voz dos participantes. |
 
-**O áudio saiu do tile.** Todos os `<video>` são `muted` e quem reproduz o som dos
-peers é `components/PeerAudio.jsx`, um `<audio>` por participante montado fora do
-palco. Entrar e sair do destaque **move** o tile de container (grade → coluna), e
-mover um elemento entre pais o desmonta e remonta: manter o áudio no `<video>`
-significaria um corte de som a cada início de compartilhamento e a cada troca de
-destaque. Separar transporte de áudio de posicionamento de vídeo torna qualquer
-rearranjo futuro de layout gratuito.
+**Convergência sem servidor, sem relógio comum e sem eleição.** Cada pedaço do
+estado tem uma regra que converge sozinha (`client/src/lib/musicSession.js`, puro
+e coberto por `client/test/musicSession.test.mjs`):
 
-Detalhes que sustentam o resto:
+- **Fila:** conjunto append-only com tombstones. Ordem total por
+  `(lamport, addedBy, id)` — nunca por relógio de parede, que daria ordens
+  diferentes em máquinas diferentes sem ninguém desconfiar. Merge de snapshot é
+  **união** menos tombstones: substituir a fila local apagaria adições recentes, e
+  sem tombstone o snapshot de quem não viu a remoção **ressuscita** a entrada.
+- **Reprodução:** escritor único, o dono da faixa corrente, com `version`
+  monotônico. Quem não é dono manda um **pedido** (`music-command`); o dono aplica
+  e publica. Autoridade fica alinhada com capacidade física — o áudio nasce na
+  máquina dele. Trocar de faixa é publicado pelo dono da **próxima**, nunca pelo
+  da que acabou: um escritor por transição.
+- **Sucessão:** quando o dono cai, todos aplicam a mesma regra (o presente de
+  menor id, o mesmo critério do polite/impolite) e exatamente um publica. Faixa de
+  **arquivo** de quem saiu é pulada com aviso; URL e YouTube continuam.
+- **Posição:** o dono republica a cada 5s; o receptor estima com
+  `performance.now()` **local** a partir do instante de recepção. Relógios de
+  máquinas diferentes nunca são comparados. Correção só acima de 1.5s de desvio e
+  no máximo uma a cada 5s — sem essa trava, seek causa buffering, buffering causa
+  deriva e o player gagueja em loop.
 
-- `components/SpotlightStage.jsx` mede a caixa com `ResizeObserver` no mesmo
-  padrão de `VideoGrid` (elemento dimensionado pelo pai, conteúdo absoluto,
-  `setState` só em pixels inteiros). Observar a coluna rolável seria o caminho
-  direto para o "ResizeObserver loop".
-- A tela em destaque **não** aparece também como miniatura: cada stream tem
-  exatamente um `<video>` no palco, sem dobrar custo de decodificação.
-- Miniatura de tela é um `<button>` com `aria-pressed` e rótulo "Ver a tela de
-  Fulano em destaque"; miniatura de câmera não é clicável nem focável (fixar
-  câmera está fora do escopo).
-- A ordem da coluna (`orderRailItems`) é determinística: telas não destacadas,
-  quem está falando, quem compartilha, você, e o resto na ordem de chegada.
-  Enquanto o usuário rola a coluna a ordem **congela** — reordenar sob a mão de
-  quem está olhando move o alvo do clique.
-- As chaves dos tiles (`local`, `local-screen`, `<peerId>`, `<peerId>-screen`)
-  são as mesmas nos dois modos. Renomear qualquer uma remonta o `<video>`.
+**Identidade é a conexão.** O autor de qualquer mensagem `music-*` é o peer do
+data channel em que ela chegou; nenhum `addedBy`/`voterId` do payload é aceito
+como identidade — aceitar permitiria votar ou comandar em nome de outro. A
+exceção é o `id` da entrada de fila, que é **preservado** (é a identidade
+compartilhada da entrada, ao contrário do `id` de mensagem de chat, que é
+regerado).
 
-A aritmética está fixada em `client/test/spotlightLayout.test.mjs`; o cenário C do
-E2E cobre a ativação, o tamanho relativo do destaque, a seleção local (a aba que
-clica troca, as outras não), o teclado e a volta para a grade.
+**Volume é sempre local** e nunca trafega: volume compartilhado é uma guerra de
+cliques, e mais um campo para convergir sem nenhum ganho.
+
+**Um `AudioContext` só, e ele é do `Room`.** Nós de contextos diferentes não podem
+ser conectados, então o grafo da música precisa do mesmo contexto do indicador de
+fala. O dono passou a ser o `Room` (`lib/audioContext.js`): enquanto era o
+`AudioLevelMonitor`, um `monitor.close()` mataria a música em silêncio.
 
 ## 7. Stack
 
@@ -459,7 +465,9 @@ clica troca, as outras não), o teclado e a volta para a grade.
 server/        signaling server (Express + Socket.IO, estado em memória)
 client/        app React (Vite) — UI, WebRTC mesh, E2EE via insertable streams
 client/test/   testes unitários (node:test): histerese de áudio, modelo de chat,
-               cálculo da grade de vídeos (§6.7) e do palco em destaque (§6.8)
+               cálculo da grade de vídeos (§6.7), do palco em destaque (§6.8)
+               e o estado musical — fila, votação, parsing de origens e
+               sanitização do protocolo (§6.9)
 e2e/           teste ponta a ponta com 3 participantes Chromium + TURN local
 infra/coturn/  config de referência para STUN/TURN self-hosted
 ```
@@ -470,7 +478,19 @@ infra/coturn/  config de referência para STUN/TURN self-hosted
 - O chat não tem histórico e não entrega backlog a quem chega depois. É
   consequência direta da ausência de persistência (§6.3), não uma pendência.
 - `getDisplayMedia` não captura áudio do sistema nesta versão: o compartilhamento
-  de tela leva só vídeo.
+  de tela leva só vídeo. Para ouvir som junto existe o player de música (§6.8).
+- **YouTube é a única dependência de terceiros do projeto, e é opcional.** Pela
+  impossibilidade técnica de capturar o áudio de um iframe cross-origin (§6.8), a
+  faixa é carregada no navegador de cada participante, o que expõe à Google o IP de
+  todos e o que a sala ouve — em contradição direta com §1 e com a promessa de §5.
+  A origem sai inteira com `VITE_ENABLE_YOUTUBE=false`, e a UI avisa explicitamente
+  ao adicionar a primeira faixa de YouTube da sessão. **É uma decisão de produto em
+  aberto**, não um esquecimento: arquivo local e URL direta entregam o recurso sem
+  nenhum terceiro.
+- O canal de música nasce **mono**, com teto de 96 kbps. Estéreo exigiria munging do
+  `fmtp` do Opus no SDP e é uma entrega separada.
+- A fila de música não reordena por drag-and-drop: a ordem é a de inserção. Remover
+  e re-adicionar cobre o caso.
 - Mesh não escala além de ~6-8 participantes; migrar para SFU exigiria reintroduzir um
   componente de mídia no servidor, o que contradiz o requisito atual de privacidade
   total — deve ser uma decisão consciente do produto, não uma otimização silenciosa.

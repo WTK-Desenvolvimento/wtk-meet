@@ -4,11 +4,16 @@ import { createSignalingClient } from '../lib/signaling.js';
 import { WebRTCMesh } from '../lib/webrtcMesh.js';
 import { AudioLevelMonitor } from '../lib/audioLevels.js';
 import { appendMessage, createChatMessage, sanitizeIncomingMessage } from '../lib/chat.js';
+import { closeAudioContext, getAudioContext, resumeAudioContextOnGesture } from '../lib/audioContext.js';
+import { useMusicRoom } from '../lib/useMusicRoom.js';
 import VideoTile from '../components/VideoTile.jsx';
 import VideoGrid from '../components/VideoGrid.jsx';
 import SpotlightStage from '../components/SpotlightStage.jsx';
 import PeerAudio from '../components/PeerAudio.jsx';
 import ChatPanel from '../components/ChatPanel.jsx';
+import MusicPanel from '../components/MusicPanel.jsx';
+import MusicVoteCard from '../components/MusicVoteCard.jsx';
+import RemoteMusicAudio from '../components/RemoteMusicAudio.jsx';
 import Toasts from '../components/Toasts.jsx';
 import JoinRequestModal from '../components/JoinRequestModal.jsx';
 import { resolveSpotlightScreen } from '../lib/spotlightLayout.js';
@@ -55,6 +60,8 @@ export default function Room() {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatOpen, setChatOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [musicOpen, setMusicOpen] = useState(false);
+  const [selfId, setSelfId] = useState('');
 
   const [toasts, setToasts] = useState([]);
   const [soundsEnabled, setSoundsEnabled] = useState(true);
@@ -102,6 +109,18 @@ export default function Room() {
     }
   }, []);
 
+  // Toda a máquina de estados da música (fila, votação, quem transmite) vive no
+  // hook; o `Room` só liga os fios e desenha. Ver `lib/useMusicRoom.js`.
+  const music = useMusicRoom({
+    meshRef,
+    participants,
+    getSelfId: () => selfId,
+    displayName,
+    pushToast,
+  });
+  const musicCallbacksRef = useRef(music.meshCallbacks);
+  musicCallbacksRef.current = music.meshCallbacks;
+
   useEffect(() => {
     if (!displayName || !passphrase) return undefined;
 
@@ -138,10 +157,14 @@ export default function Room() {
       if (!cameraTrackRef.current) setCameraOff(true);
       // roomKeyRef.current = roomKey;
 
-      const monitor = new AudioLevelMonitor({ onUpdate: setAudioLevels });
+      // O `AudioContext` é um só para a sala e o dono dele é este componente:
+      // nós de contextos diferentes não podem ser conectados, e o grafo da
+      // música precisa do mesmo contexto do indicador de fala. Enquanto o
+      // monitor era o dono, `monitor.close()` mataria a música em silêncio.
+      const monitor = new AudioLevelMonitor({ onUpdate: setAudioLevels, getContext: getAudioContext });
       monitorRef.current = monitor;
       monitor.ensureContext();
-      const stopGestureHook = monitor.resumeOnGesture();
+      const stopGestureHook = resumeAudioContextOnGesture();
       if (localStream) monitor.attach(LOCAL_AUDIO_ID, localStream);
 
       const signaling = createSignalingClient();
@@ -198,6 +221,12 @@ export default function Room() {
             return next;
           });
         },
+        // Música: o quarto canal de mídia e as mensagens `music-*` do data
+        // channel. Os handlers passam por um ref porque o mesh é construído uma
+        // única vez, e o estado musical muda o tempo todo.
+        onRemoteMusic: (peerId, stream) => musicCallbacksRef.current.onRemoteMusic(peerId, stream),
+        onMusicMessage: (peerId, payload) => musicCallbacksRef.current.onMusicMessage(peerId, payload),
+        getMusicSnapshot: () => musicCallbacksRef.current.getMusicSnapshot(),
       });
       meshRef.current = mesh;
       mesh.localState = {
@@ -207,8 +236,11 @@ export default function Room() {
         screenOn: false,
       };
 
-      signaling.socket.on('join-approved', ({ selfId, members }) => {
-        selfIdRef.current = selfId;
+      signaling.socket.on('join-approved', ({ selfId: myId, members }) => {
+        selfIdRef.current = myId;
+        // Também em estado: a identidade da sala é o que decide quem transmite a
+        // música e quem assume quando alguém cai, e isso precisa re-renderizar.
+        setSelfId(myId);
         setPhase(PHASE.IN_CALL);
         setParticipants((prev) => {
           const next = new Map(prev);
@@ -309,9 +341,11 @@ export default function Room() {
       screenStreamRef.current?.getTracks().forEach((t) => t.stop());
       screenStreamRef.current = null;
 
-      // Fecha o AudioContext e cancela o requestAnimationFrame compartilhado.
+      // O monitor solta os analisadores e o rAF; o contexto é fechado aqui, por
+      // quem o possui — e depois do monitor, para não puxar o tapete dele.
       monitorRef.current?.close();
       monitorRef.current = null;
+      closeAudioContext();
 
       toastTimers.forEach((timer) => clearTimeout(timer));
       toastTimers.clear();
@@ -436,10 +470,27 @@ export default function Room() {
     setChatMessages((prev) => appendMessage(prev, { ...message, mine: true }));
   }, []);
 
+  // Chat e música são mutuamente exclusivos: dois painéis abertos espremem a
+  // grade até os tiles baterem no piso de legibilidade.
   const openChat = useCallback(() => {
     setChatOpen(true);
+    setMusicOpen(false);
     setUnreadCount(0);
   }, []);
+
+  const toggleMusic = useCallback(() => {
+    if (!music.enabled) {
+      // Ligar o player é a única coisa que a sala decide junto: o custo de
+      // ligar para todo mundo é alto, o de pular uma faixa não é (por isso
+      // pular e remover são abertos, sem votação).
+      music.actions.proposeEnable();
+      return;
+    }
+    setMusicOpen((open) => {
+      if (!open) setChatOpen(false);
+      return !open;
+    });
+  }, [music.actions, music.enabled]);
 
   /**
    * As pessoas da sala, na ordem de chegada (o `Map` preserva a inserção). As
@@ -567,6 +618,21 @@ export default function Room() {
           áudio de ninguém. Ver `components/PeerAudio.jsx`. */}
       <PeerAudio participants={participants} />
       <Toasts toasts={toasts} />
+      <MusicVoteCard
+        vote={music.vote}
+        myVote={music.myVote}
+        onVote={music.actions.castMyVote}
+        onClose={music.actions.dismissVote}
+      />
+      {/* Os `<audio>` da música e o host do player do YouTube ficam aqui, fora
+          de qualquer ramo de fase: dentro do painel, fechar o painel
+          silenciaria a sala e o sintoma pareceria problema de rede. */}
+      <RemoteMusicAudio
+        streams={music.musicStreams}
+        volume={music.volume}
+        onBlocked={music.reportBlocked}
+      />
+      <div className="music-youtube-host" ref={music.youtubeHostRef} aria-hidden="true" />
       <JoinRequestModal requests={pendingRequests} onApprove={approve} onDeny={deny} />
     </>
   );
@@ -654,7 +720,7 @@ export default function Room() {
   return (
     <>
       {overlays}
-      <main className={`room in-call${chatOpen ? ' with-chat' : ''}`}>
+      <main className={`room in-call${chatOpen ? ' with-chat' : ''}${musicOpen ? ' with-music' : ''}`}>
         {/* E2EE desabilitado por ora */}
 
         {mediaError && <p className="warning">{mediaError}</p>}
@@ -681,6 +747,30 @@ export default function Room() {
               peerCount={participants.size}
             />
           )}
+
+          {musicOpen && music.enabled && (
+            <MusicPanel
+              queue={music.queue}
+              currentEntry={music.currentEntry}
+              playback={music.playback}
+              position={music.position}
+              isOwner={music.isOwner}
+              volume={music.volume}
+              onVolume={music.setVolume}
+              onClose={() => setMusicOpen(false)}
+              onAdd={music.actions.addToQueue}
+              onRemove={music.actions.removeFromQueue}
+              onPause={music.actions.requestPause}
+              onResume={music.actions.requestResume}
+              onSkip={music.actions.skipCurrent}
+              youtubeEnabled={music.youtubeEnabled}
+              notice={music.notice}
+              onDismissNotice={music.dismissNotice}
+              audioBlocked={music.audioBlocked}
+              onUnlock={music.unlockAudio}
+              selfId={selfId}
+            />
+          )}
         </div>
 
         <div className="controls">
@@ -692,6 +782,20 @@ export default function Room() {
           <button onClick={chatOpen ? () => setChatOpen(false) : openChat}>
             Chat
             {unreadCount > 0 && !chatOpen && <span className="badge">{unreadCount}</span>}
+          </button>
+          {/* Sem emoji dentro do texto: os roteiros do e2e comparam
+              `textContent` exato de botões desta barra. */}
+          <button
+            onClick={toggleMusic}
+            className="music-button"
+            aria-pressed={musicOpen}
+            title={
+              music.enabled
+                ? 'Fila de música da sala'
+                : 'Propor à sala ligar o player de música'
+            }
+          >
+            Música
           </button>
           <button
             onClick={() => setSoundsEnabled((value) => !value)}
