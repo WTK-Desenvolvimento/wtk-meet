@@ -1,4 +1,67 @@
-# Progresso — WTK-MEET-5: layout de viewport fixo, grade automática e modal de aprovação
+# Progresso — WTK-MEET-9: modal de configurações de dispositivos (FASE DE ARQUITETURA)
+
+**Status: documento de arquitetura pronto. Implementação NÃO iniciada.**
+Branch `agent/wtk-meet-9-quero-que-seja-poss-vel-ajustar-as-confi`.
+
+## O que foi feito nesta sessão
+
+Esta sessão rodou sob o papel **Arquiteto**, cujo protocolo é produzir o documento
+técnico e parar antes de codar. Entregue:
+
+- `docs/agents/arch-temp-modal-configuracoes-dispositivos.md` — documento completo
+  (contexto, escopo, 10 decisões arquiteturais, componentes afetados, contratos de
+  interface, ordem de implementação, 10 riscos, 15 critérios de aceite numerados em
+  correspondência com o DoD da task).
+
+Nenhum arquivo de código foi tocado.
+
+## O que ainda está pendente
+
+**Toda a implementação.** Os 15 itens do Definition of Done da task continuam
+abertos. A ordem está em §6 do documento; o resumo é: `lib/devices.js` +
+teste → `createLevelMeter` em `audioLevels.js` → `SettingsModal.jsx` →
+`VideoTile` (prop `sinkId`) → `Home.jsx` → `Room.jsx` → `styles.css` →
+harness/E2E → README + ARCHITECTURE.
+
+## Descobertas que o próximo agente deve levar a sério
+
+Foram levantadas lendo o código, não presumidas:
+
+1. **`AudioLevelMonitor.attach` é idempotente por (id, stream)** (`audioLevels.js:87`).
+   Depois de trocar o track de áudio dentro do **mesmo** `MediaStream`, um `attach`
+   sozinho retorna cedo e o analisador fica preso ao track antigo, já parado. Exige
+   `detach('local')` antes. Não gera exceção — falha em silêncio.
+2. **`Room.jsx:326` chama `monitor.retainOnly(valid)`** a cada mudança de
+   `participants`. Qualquer id que não seja peer (ex.: um `'settings-preview'`) é
+   detachado na próxima entrada/saída. Por isso o preview usa um meter isolado.
+3. **Um segundo `AudioContext` quebra a checagem B2 do E2E** (`e2e/run.mjs:288`
+   asserta `AudioContexts === 1`). O modal precisa receber o contexto do monitor.
+4. **`--use-fake-device-for-media-stream` dá exatamente 1 câmera e 1 mic.** Não há
+   flag para uma segunda. O item 13 do DoD é inexecutável sem uma camada de
+   simulação de devices no `INSTRUMENTATION` do harness — contrato em §5.3 do doc.
+5. **O Chrome devolve `'default'` e `'communications'` como devices reais**, que
+   duplicam hardware já listado — é a duplicata que o item 2 do DoD proíbe.
+6. **`.modal-backdrop` já é `z-index: 30`** (`styles.css:493`). Reusar a classe crua
+   empata o modal de configurações com o de aprovação.
+7. **Track recém-adquirido nasce `enabled = true`**: trocar de mic sem
+   `enabled = !muted` **desmuta a pessoa** (item 7 do DoD).
+
+## Bloqueios
+
+Nenhum. Não há dependência externa nem ambiguidade que impeça a implementação —
+o documento resolve as decisões abertas.
+
+## Próximo passo recomendado
+
+Acionar o **agente de desenvolvimento** com
+`docs/agents/arch-temp-modal-configuracoes-dispositivos.md` como referência,
+começando pelo passo 1 de §6 (`lib/devices.js` + `client/test/devices.test.mjs`).
+Validação em §9.3. A receita de ambiente do E2E (`/tmp/pwlibs`) está no fim deste
+arquivo e continua necessária a cada sessão nova.
+
+---
+
+# Histórico — WTK-MEET-5: layout de viewport fixo, grade automática e modal de aprovação
 
 **Status: implementação concluída e validada.** Branch
 `agent/WTK-MEET-5-ajustar-layout-da-sala-para-altura-fixa-`.
