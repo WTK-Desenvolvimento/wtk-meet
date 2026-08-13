@@ -8,6 +8,7 @@ import { closeAudioContext, getAudioContext, resumeAudioContextOnGesture } from 
 import { useMusicRoom } from '../lib/useMusicRoom.js';
 import VideoTile from '../components/VideoTile.jsx';
 import VideoGrid from '../components/VideoGrid.jsx';
+import SpotlightStage from '../components/SpotlightStage.jsx';
 import PeerAudio from '../components/PeerAudio.jsx';
 import ChatPanel from '../components/ChatPanel.jsx';
 import MusicPanel from '../components/MusicPanel.jsx';
@@ -1006,12 +1007,21 @@ export default function Room() {
         {mediaError && <p className="warning">{mediaError}</p>}
 
         <div className="stage">
-          <VideoGrid
-            tiles={tiles}
-            audioLevels={audioLevels}
-            sinkId={preferences.audioOutputId}
-            onSinkError={handleSinkError}
-          />
+          {spotlightScreen ? (
+            <SpotlightStage
+              spotlight={spotlightScreen}
+              thumbnails={thumbnails}
+              audioLevels={audioLevels}
+              onSelectScreen={setPinnedScreenId}
+            />
+          ) : (
+            <VideoGrid
+              tiles={people}
+              audioLevels={audioLevels}
+              sinkId={preferences.audioOutputId}
+              onSinkError={handleSinkError}
+            />
+          )}
 
           {chatOpen && (
             <ChatPanel
