@@ -114,6 +114,7 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
 
   const sessionRef = useRef(session);
   const voteRef = useRef(null);
+  const dismissedVoteRef = useRef(null); // votação dispensada, guardada para validar o anúncio
   const myVoteRef = useRef(null);
   const volumeRef = useRef(volume);
   const engineRef = useRef(null);
@@ -493,15 +494,24 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
 
   const applyVoteResult = useCallback(
     (result) => {
-      const current = voteRef.current;
-      if (!current || current.voteId !== result.voteId) return;
+      // Vale também para a votação que este participante dispensou: abster-se é
+      // não votar, não é ficar de fora do que a sala decidiu.
+      const active = voteRef.current?.voteId === result.voteId ? voteRef.current : null;
+      const known =
+        active || (dismissedVoteRef.current?.voteId === result.voteId ? dismissedVoteRef.current : null);
+      if (!known) return;
+
       if (result.approved) {
         updateSession((prev) => ({ ...prev, enabled: true }));
         pushToast?.('join', 'Player de música liberado pela sala');
       } else {
-        lastRejectedRef.current.set(current.proposerId, performance.now());
+        lastRejectedRef.current.set(known.proposerId, performance.now());
       }
-      const decided = { ...current, result };
+      dismissedVoteRef.current = null;
+      // Dispensou: o efeito vale, mas o card não volta à tela sem ser chamado.
+      if (!active) return;
+
+      const decided = { ...active, result };
       voteRef.current = decided;
       setVote(decided);
       closeVoteLater();
@@ -613,6 +623,12 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
 
   const dismissVote = useCallback(() => {
     // Fechar o card é abster-se, não votar: o prazo resolve.
+    //
+    // A votação continua guardada, e isso importa: quem dispensa o card **não
+    // sai da decisão da sala**. Sem esta memória, o anúncio do árbitro chegaria
+    // sem votação correspondente, seria descartado, e a pessoa ficaria sem o
+    // player que todos os outros acabaram de ligar.
+    dismissedVoteRef.current = voteRef.current;
     voteRef.current = null;
     myVoteRef.current = null;
     setVote(null);
@@ -658,6 +674,14 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
         return false;
       }
 
+      // URL pode não deixar capturar o áudio; descobrir agora evita descobrir
+      // depois, na forma de silêncio para a sala inteira. A sonda é rede, então
+      // **nada de estado é lido antes dela**: uma faixa que outro participante
+      // adicionasse durante a sonda desapareceria da fila deste cliente se ele
+      // publicasse um estado calculado antes de ela chegar.
+      const probeTarget = { kind: parsed.kind, sourceRef: parsed.sourceRef };
+      const delivery = parsed.kind === 'url' ? await ensureEngine().probeDelivery(probeTarget) : 'stream';
+
       const { session: bumped, lamport } = bumpLamport(sessionRef.current);
       const entry = sanitizeEntry(
         {
@@ -675,10 +699,6 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
         return false;
       }
       if (file) localFilesRef.current.set(entry.id, file);
-
-      // URL pode não deixar capturar o áudio; descobrir agora evita descobrir
-      // depois, na forma de silêncio para a sala inteira.
-      const delivery = entry.kind === 'url' ? await ensureEngine().probeDelivery(entry) : 'stream';
 
       const result = addEntry(bumped, entry);
       updateSession(() => result.session);
@@ -838,11 +858,20 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
           registerVote(message.voterId, message.vote);
           break;
 
-        case 'music-vote-result':
-          // Só o árbitro anuncia: um "resultado" de terceiro não vale nada.
-          if (voteRef.current?.proposerId !== message.arbiterId) return;
+        case 'music-vote-result': {
+          // Só o árbitro anuncia: um "resultado" de terceiro não vale nada, e é
+          // por isso que o anúncio é conferido contra a votação que este cliente
+          // conhece — inclusive uma que ele tenha dispensado da tela.
+          const known =
+            voteRef.current?.voteId === message.voteId
+              ? voteRef.current
+              : dismissedVoteRef.current?.voteId === message.voteId
+                ? dismissedVoteRef.current
+                : null;
+          if (known?.proposerId !== message.arbiterId) return;
           applyVoteResult(message);
           break;
+        }
 
         case 'music-queue-add': {
           updateSession((prev) => {
