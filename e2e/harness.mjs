@@ -48,7 +48,38 @@ const MIME = {
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.json': 'application/json',
+  '.wav': 'audio/wav',
 };
+
+/**
+ * Escreve um WAV sintético dentro do `dist` já buildado e devolve a URL dele.
+ *
+ * É a fonte de áudio do roteiro de música: um tom contínuo, servido pelo mesmo
+ * host da aplicação. Same-origin de propósito — assim a sonda de CORS do
+ * `musicEngine` passa e a faixa entra em modo `stream` (retransmitida por quem
+ * adicionou), que é justamente o caminho que o teste precisa exercitar.
+ */
+export function writeAudioFixture(name, { seconds = 30, freq = 440, rate = 8000 } = {}) {
+  const samples = seconds * rate;
+  const buffer = Buffer.alloc(44 + samples * 2);
+  buffer.write('RIFF', 0);
+  buffer.writeUInt32LE(36 + samples * 2, 4);
+  buffer.write('WAVEfmt ', 8);
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);  // PCM
+  buffer.writeUInt16LE(1, 22);  // mono
+  buffer.writeUInt32LE(rate, 24);
+  buffer.writeUInt32LE(rate * 2, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write('data', 36);
+  buffer.writeUInt32LE(samples * 2, 40);
+  for (let i = 0; i < samples; i += 1) {
+    buffer.writeInt16LE(Math.round(Math.sin((2 * Math.PI * freq * i) / rate) * 12000), 44 + i * 2);
+  }
+  fs.writeFileSync(path.join(DIST, name), buffer);
+  return `${CLIENT_ORIGIN}/${name}`;
+}
 
 export function startTurn() {
   const server = new Turn({
@@ -323,6 +354,48 @@ export async function roomLayout(page) {
 /** True quando a página inteira cabe no viewport e não há como rolá-la. */
 export const noPageScroll = (layout) =>
   layout.scrollHeight <= layout.innerHeight && layout.scrollTop === 0;
+
+/**
+ * Geometria do palco em modo destaque, do ponto de vista do DOM.
+ *
+ * O que interessa aqui não é o número exato de pixels — isso está fixado nos
+ * testes unitários de `lib/spotlightLayout.js` — mas a **hierarquia**: existe
+ * exatamente uma tela grande, as outras miniaturas são visivelmente menores, e
+ * quem rola é a coluna. É a tradução no navegador do que o módulo puro promete.
+ */
+export async function spotlightLayout(page) {
+  return page.evaluate(() => {
+    const layout = document.querySelector('.spotlight-layout');
+    const main = document.querySelector('.spotlight-main .video-tile');
+    const rail = document.querySelector('.thumb-rail');
+    const thumbs = [...document.querySelectorAll('.thumb-item')];
+    const rect = (el) => (el ? el.getBoundingClientRect() : null);
+    const mainRect = rect(main);
+    const railRect = rect(rail);
+
+    return {
+      active: !!layout,
+      gridActive: !!document.querySelector('.video-grid'),
+      narrow: layout ? layout.classList.contains('spotlight-narrow') : null,
+      spotlightWidth: mainRect ? mainRect.width : null,
+      spotlightHeight: mainRect ? mainRect.height : null,
+      // Rótulo do tile em destaque: é como o teste sabe **de quem** é a tela em
+      // destaque sem depender de ids internos.
+      spotlightLabel:
+        document.querySelector('.spotlight-main .video-label')?.textContent?.trim() || null,
+      railWidth: railRect ? railRect.width : null,
+      railScrolls: rail ? rail.scrollHeight > rail.clientHeight + 1 : null,
+      thumbCount: thumbs.length,
+      thumbWidth: thumbs[0] ? thumbs[0].getBoundingClientRect().width : null,
+      selectableCount: document.querySelectorAll('.thumb-select').length,
+      // Exatamente uma miniatura pressionada enquanto a coluna é um grupo de
+      // escolha: é o estado que o teclado e o leitor de tela leem.
+      pressedCount: document.querySelectorAll('.thumb-select[aria-pressed="true"]').length,
+      panelOpen: !!document.querySelector('.participants-panel'),
+      toggleCount: document.querySelectorAll('.participants-toggle').length,
+    };
+  });
+}
 
 /** Estado interno das RTCPeerConnections, lido do próprio processo da página. */
 export async function peerStats(page) {

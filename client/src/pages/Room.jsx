@@ -4,9 +4,13 @@ import { createSignalingClient } from '../lib/signaling.js';
 import { WebRTCMesh } from '../lib/webrtcMesh.js';
 import { AudioLevelMonitor } from '../lib/audioLevels.js';
 import { appendMessage, createChatMessage, sanitizeIncomingMessage } from '../lib/chat.js';
+import { closeAudioContext, getAudioContext, resumeAudioContextOnGesture } from '../lib/audioContext.js';
+import { useMusicRoom } from '../lib/useMusicRoom.js';
 import VideoTile from '../components/VideoTile.jsx';
 import VideoGrid from '../components/VideoGrid.jsx';
+import PeerAudio from '../components/PeerAudio.jsx';
 import ChatPanel from '../components/ChatPanel.jsx';
+import MusicPanel from '../components/MusicPanel.jsx';
 import Toasts from '../components/Toasts.jsx';
 import JoinRequestModal from '../components/JoinRequestModal.jsx';
 import SettingsModal from '../components/SettingsModal.jsx';
@@ -18,6 +22,7 @@ import {
   resolvePreferredDevice,
   writePreferences,
 } from '../lib/devices.js';
+import { resolveSpotlightScreen } from '../lib/spotlightLayout.js';
 // import { deriveRoomKey, isInsertableStreamsSupported } from '../lib/e2ee.js';
 import { fetchIceServers, MAX_PARTICIPANTS } from '../config.js';
 
@@ -51,12 +56,18 @@ export default function Room() {
   const [cameraOff, setCameraOff] = useState(false);
   const [sharingScreen, setSharingScreen] = useState(false);
   const [mediaError, setMediaError] = useState(null);
+  // Qual tela **esta aba** vê em destaque. Preferência puramente local: não vai
+  // para o servidor nem para o data channel, e escolher aqui não muda a tela de
+  // mais ninguém.
+  const [pinnedScreenId, setPinnedScreenId] = useState(null);
 
   // Histórico de chat vive só aqui: nenhum storage, nenhum servidor. Desmontar
   // o componente (sair da sala / recarregar) apaga tudo.
   const [chatMessages, setChatMessages] = useState([]);
   const [chatOpen, setChatOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [musicOpen, setMusicOpen] = useState(false);
+  const [selfId, setSelfId] = useState('');
 
   const [toasts, setToasts] = useState([]);
   const [audioLevels, setAudioLevels] = useState({});
@@ -174,6 +185,18 @@ export default function Room() {
     }
   }, []);
 
+  // Toda a máquina de estados da música (fila, votação, quem transmite) vive no
+  // hook; o `Room` só liga os fios e desenha. Ver `lib/useMusicRoom.js`.
+  const music = useMusicRoom({
+    meshRef,
+    participants,
+    getSelfId: () => selfId,
+    displayName,
+    pushToast,
+  });
+  const musicCallbacksRef = useRef(music.meshCallbacks);
+  musicCallbacksRef.current = music.meshCallbacks;
+
   useEffect(() => {
     if (!displayName || !passphrase) return undefined;
 
@@ -233,10 +256,14 @@ export default function Room() {
       }
       // roomKeyRef.current = roomKey;
 
-      const monitor = new AudioLevelMonitor({ onUpdate: setAudioLevels });
+      // O `AudioContext` é um só para a sala e o dono dele é este componente:
+      // nós de contextos diferentes não podem ser conectados, e o grafo da
+      // música precisa do mesmo contexto do indicador de fala. Enquanto o
+      // monitor era o dono, `monitor.close()` mataria a música em silêncio.
+      const monitor = new AudioLevelMonitor({ onUpdate: setAudioLevels, getContext: getAudioContext });
       monitorRef.current = monitor;
       monitor.ensureContext();
-      const stopGestureHook = monitor.resumeOnGesture();
+      const stopGestureHook = resumeAudioContextOnGesture();
       if (localStream) monitor.attach(LOCAL_AUDIO_ID, localStream);
 
       const signaling = createSignalingClient();
@@ -293,6 +320,12 @@ export default function Room() {
             return next;
           });
         },
+        // Música: o quarto canal de mídia e as mensagens `music-*` do data
+        // channel. Os handlers passam por um ref porque o mesh é construído uma
+        // única vez, e o estado musical muda o tempo todo.
+        onRemoteMusic: (peerId, stream) => musicCallbacksRef.current.onRemoteMusic(peerId, stream),
+        onMusicMessage: (peerId, payload) => musicCallbacksRef.current.onMusicMessage(peerId, payload),
+        getMusicSnapshot: () => musicCallbacksRef.current.getMusicSnapshot(),
       });
       meshRef.current = mesh;
       mesh.localState = {
@@ -302,8 +335,11 @@ export default function Room() {
         screenOn: false,
       };
 
-      signaling.socket.on('join-approved', ({ selfId, members }) => {
-        selfIdRef.current = selfId;
+      signaling.socket.on('join-approved', ({ selfId: myId, members }) => {
+        selfIdRef.current = myId;
+        // Também em estado: a identidade da sala é o que decide quem transmite a
+        // música e quem assume quando alguém cai, e isso precisa re-renderizar.
+        setSelfId(myId);
         setPhase(PHASE.IN_CALL);
         setParticipants((prev) => {
           const next = new Map(prev);
@@ -404,9 +440,11 @@ export default function Room() {
       screenStreamRef.current?.getTracks().forEach((t) => t.stop());
       screenStreamRef.current = null;
 
-      // Fecha o AudioContext e cancela o requestAnimationFrame compartilhado.
+      // O monitor solta os analisadores e o rAF; o contexto é fechado aqui, por
+      // quem o possui — e depois do monitor, para não puxar o tapete dele.
       monitorRef.current?.close();
       monitorRef.current = null;
+      closeAudioContext();
 
       toastTimers.forEach((timer) => clearTimeout(timer));
       toastTimers.clear();
@@ -706,34 +744,47 @@ export default function Room() {
     setChatMessages((prev) => appendMessage(prev, { ...message, mine: true }));
   }, []);
 
+  // Chat e música são mutuamente exclusivos: dois painéis abertos espremem a
+  // grade até os tiles baterem no piso de legibilidade.
   const openChat = useCallback(() => {
     setChatOpen(true);
+    setMusicOpen(false);
     setUnreadCount(0);
   }, []);
 
-  const tiles = useMemo(() => {
+  const toggleMusic = useCallback(() => {
+    if (!music.enabled) {
+      // Ligar o player é a única coisa que a sala decide junto: o custo de
+      // ligar para todo mundo é alto, o de pular uma faixa não é (por isso
+      // pular e remover são abertos, sem votação).
+      music.actions.proposeEnable();
+      return;
+    }
+    setMusicOpen((open) => {
+      if (!open) setChatOpen(false);
+      return !open;
+    });
+  }, [music.actions, music.enabled]);
+
+  /**
+   * As pessoas da sala, na ordem de chegada (o `Map` preserva a inserção). As
+   * chaves são as mesmas de sempre (`local`, `<peerId>`): mudar a chave remonta
+   * o `<video>` a cada render.
+   */
+  const people = useMemo(() => {
     const list = [
       {
         key: 'local',
         audioId: LOCAL_AUDIO_ID,
         stream: localStreamRef.current,
         label: `${displayName} (você)`,
-        muted: true,
         mirrored: true,
         cameraOff,
         micOff: muted,
+        local: true,
+        sharing: sharingScreen,
       },
     ];
-    if (sharingScreen) {
-      list.push({
-        key: 'local-screen',
-        stream: screenStreamRef.current,
-        label: `${displayName} — sua tela`,
-        muted: true,
-        contain: true,
-        badge: 'Tela',
-      });
-    }
     for (const [peerId, info] of participants) {
       list.push({
         key: peerId,
@@ -742,28 +793,104 @@ export default function Room() {
         label: info.displayName || 'Participante',
         cameraOff: !!info.cameraOff,
         micOff: !!info.micOff,
+        sharing: !!info.screenStream,
       });
-      if (info.screenStream) {
-        list.push({
-          key: `${peerId}-screen`,
-          stream: info.screenStream,
-          label: `${info.displayName || 'Participante'} — tela`,
-          contain: true,
-          badge: 'Tela',
-        });
-      }
     }
     return list;
-    // localStreamRef/screenStreamRef são refs: as deps abaixo são exatamente os
-    // gatilhos que mudam o conteúdo delas.
+    // localStreamRef é ref: as deps abaixo são exatamente os gatilhos que mudam
+    // o conteúdo dela.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [participants, displayName, cameraOff, muted, sharingScreen]);
+
+  /**
+   * As telas compartilhadas ativas, em ordem determinística: a sua primeiro,
+   * depois as remotas na ordem de chegada dos participantes. A ordem precisa ser
+   * estável entre renders — "o destaque cai para a próxima tela ativa" só
+   * significa alguma coisa com uma ordem definida.
+   *
+   * `screenStream` nulo é "sem tela", não "tela vazia": o peer anuncia
+   * `screenOn: false` e o mesh chama `onRemoteScreen(peerId, null)`. Tratar isso
+   * como uma tela ativa deixaria um destaque preto no lugar do fallback.
+   */
+  const screens = useMemo(() => {
+    const list = [];
+    if (sharingScreen && screenStreamRef.current) {
+      list.push({
+        key: 'local-screen',
+        screenId: 'local-screen',
+        stream: screenStreamRef.current,
+        label: `${displayName} — sua tela`,
+        owner: `${displayName} (você)`,
+        contain: true,
+        badge: 'Tela',
+      });
+    }
+    for (const [peerId, info] of participants) {
+      if (!info.screenStream) continue;
+      const name = info.displayName || 'Participante';
+      list.push({
+        key: `${peerId}-screen`,
+        screenId: `${peerId}-screen`,
+        stream: info.screenStream,
+        label: `${name} — tela`,
+        owner: name,
+        contain: true,
+        badge: 'Tela',
+      });
+    }
+    return list;
+    // screenStreamRef é ref: `sharingScreen` é exatamente o gatilho que muda o
+    // conteúdo dela.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [participants, displayName, sharingScreen]);
+
+  // Derivado no render, nunca "corrigido" por efeito: `pinnedScreenId` pode
+  // apontar para uma tela que já acabou à vontade, porque nunca é lido sem
+  // validação. Um `useEffect` que limpasse o estado custaria um render extra, um
+  // frame com destaque inválido e — quando uma segunda tela entra — roubaria a
+  // escolha deliberada do usuário.
+  const spotlightScreen = resolveSpotlightScreen(screens, pinnedScreenId);
+
+  /**
+   * O conteúdo da coluna: as câmeras de todo mundo e as telas compartilhadas.
+   *
+   * A tela em destaque entra na lista **sem stream**, como marcador, e só quando
+   * há mais de uma tela ativa — isto é, só quando a coluna é de fato um grupo de
+   * escolha. Duas razões:
+   *
+   * - Sem ela, nenhum controle da coluna carregaria `aria-pressed="true"`, e
+   *   quem usa teclado ou leitor de tela não teria como saber qual tela está
+   *   vendo.
+   * - Com ela, o conjunto de botões não muda ao trocar o destaque: o botão
+   *   ativado continua existindo (mesma `key`), então o foco fica onde estava em
+   *   vez de sumir junto com a miniatura que virou destaque.
+   *
+   * Sem stream porque a mesma stream em dois `<video>` dobraria o custo de
+   * decodificação — o tile cai no placeholder, que é o que se quer aqui.
+   */
+  const thumbnails = useMemo(() => {
+    if (!spotlightScreen) return [];
+    const rail = [...people];
+    for (const screen of screens) {
+      if (screen !== spotlightScreen) {
+        rail.push(screen);
+      } else if (screens.length > 1) {
+        rail.push({ ...screen, stream: null, spotlighted: true, badge: 'Em destaque' });
+      }
+    }
+    return rail;
+  }, [people, screens, spotlightScreen]);
 
   // Toasts e modal de aprovação vivem fora do switch de fase, num wrapper comum
   // a todos os `return`: "aparece sobre qualquer estado da tela" só é garantido
   // se a renderização não estiver presa a um dos ramos.
   const overlays = (
     <>
+      {/* Fora do palco de propósito: é o `<audio>` daqui que reproduz o som dos
+          peers, e não o `<video>` do tile. Assim entrar e sair do modo destaque
+          — que move o tile de container e remonta o elemento — não corta o
+          áudio de ninguém. Ver `components/PeerAudio.jsx`. */}
+      <PeerAudio participants={participants} />
       <Toasts toasts={toasts} />
       {/* Montado condicionalmente de propósito: é o desmonte que para o stream
           de preview, então sair do modal por qualquer via (botão, Esc, backdrop,
@@ -856,7 +983,7 @@ export default function Room() {
                 : 'Aguardando aprovação de quem já está na sala…'}
             </h2>
             <div className="local-preview">
-              <VideoTile stream={localStreamRef.current} label={displayName} muted mirrored />
+              <VideoTile stream={localStreamRef.current} label={displayName} mirrored />
             </div>
             {/* Momento certo para descobrir que a câmera errada está ativa: aqui,
                 e não já visível para todo mundo na grade. */}
@@ -873,7 +1000,7 @@ export default function Room() {
   return (
     <>
       {overlays}
-      <main className={`room in-call${chatOpen ? ' with-chat' : ''}`}>
+      <main className={`room in-call${chatOpen ? ' with-chat' : ''}${musicOpen ? ' with-music' : ''}`}>
         {/* E2EE desabilitado por ora */}
 
         {mediaError && <p className="warning">{mediaError}</p>}
@@ -892,6 +1019,30 @@ export default function Room() {
               onSend={sendChat}
               onClose={() => setChatOpen(false)}
               peerCount={participants.size}
+            />
+          )}
+
+          {musicOpen && music.enabled && (
+            <MusicPanel
+              queue={music.queue}
+              currentEntry={music.currentEntry}
+              playback={music.playback}
+              position={music.position}
+              isOwner={music.isOwner}
+              volume={music.volume}
+              onVolume={music.setVolume}
+              onClose={() => setMusicOpen(false)}
+              onAdd={music.actions.addToQueue}
+              onRemove={music.actions.removeFromQueue}
+              onPause={music.actions.requestPause}
+              onResume={music.actions.requestResume}
+              onSkip={music.actions.skipCurrent}
+              youtubeEnabled={music.youtubeEnabled}
+              notice={music.notice}
+              onDismissNotice={music.dismissNotice}
+              audioBlocked={music.audioBlocked}
+              onUnlock={music.unlockAudio}
+              selfId={selfId}
             />
           )}
         </div>

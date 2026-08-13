@@ -118,13 +118,15 @@ after(async () => {
   // Os pipes do processo filho seguram o event loop do runner mesmo depois do
   // kill; sem soltá-los o arquivo termina com "resolution is still pending".
   const exited = new Promise((resolve) => server.once('exit', resolve));
-  // SIGKILL, não o SIGTERM padrão: em ambientes de CI/sandbox onde o sinal de
-  // término não chega ao filho, o `await` abaixo nunca resolve e a suíte inteira
-  // termina em "Promise resolution is still pending" — com todos os casos verdes
-  // e nenhum vermelho para explicar. O processo é descartável; não há teardown
-  // gracioso a preservar.
-  server.kill('SIGKILL');
+  server.kill();
+  // Escalada depois de um prazo curto: há ambientes (sandboxes de CI, contêineres
+  // com PID 1 sem reaper) em que o SIGTERM simplesmente não é entregue ao filho.
+  // Sem isto, `await exited` fica pendente para sempre e o arquivo inteiro trava
+  // depois de todos os casos já terem passado — uma suíte que nunca termina, sem
+  // nenhum caso vermelho para explicar o porquê.
+  const escalate = setTimeout(() => server.kill('SIGKILL'), 2000);
   await exited;
+  clearTimeout(escalate);
   server.stdout.destroy();
   server.stderr.destroy();
 });

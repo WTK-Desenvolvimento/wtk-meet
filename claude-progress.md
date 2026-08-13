@@ -15,6 +15,25 @@ entregava o device **default do sistema**: quem usa webcam ou headset USB ficava
 ao hardware embutido do notebook, e a única saída era trocar o default no sistema
 operacional e recarregar a página. Não havia seleção de saída de áudio, nem preview —
 a pessoa descobria que a câmera errada estava ativa já visível para os outros.
+# Progresso — WTK-MEET-8: player de música colaborativo P2P
+
+**Status: implementação concluída e validada.** Branch
+`agent/wtk-meet-8-quero-adicionar-uma-funcionalidade-de-mu`.
+
+Documento de arquitetura seguido: `docs/agents/arch-temp-player-musica-colaborativo.md`.
+
+> O histórico das entregas anteriores está preservado abaixo, incluindo a receita
+> de ambiente do E2E — que continua necessária **a cada sessão**, porque `/tmp`
+> não persiste.
+
+## Ponto de partida
+
+Uma sessão anterior nesta mesma branch deixou os módulos puros commitados
+(`musicSession`, `musicVote`, `musicSources`, `musicProtocol` + testes),
+`audioContext.js` extraído, e `MusicVoteCard`/`RemoteMusicAudio` criados. O
+`webrtcMesh.js` estava **no meio da edição**: importava `isMusicMessage` sem usar,
+não criava o quarto transceiver, não roteava `music-*` e não tinha `setMusicTrack`.
+Esta sessão continuou dali, seguindo a ordem do §6 do documento a partir do item 4.
 
 ## O que foi implementado
 
@@ -53,6 +72,60 @@ a pessoa descobria que a câmera errada estava ativa já visível para os outros
    `attach` é idempotente por (id, stream) e o `MediaStream` é o mesmo objeto.
 6. **Bloco E2E chamado `S`, não `H`:** o documento pedia "bloco H", mas `H` já existia
    no arquivo (inventário do tráfego do servidor).
+| `client/src/lib/webrtcMesh.js` | Quarto transceiver `sendonly` de áudio criado **depois** do de tela; `_classifyTransceiver` estendido para `['audio','camera','screen','music']` na mesma edição; `rec.musicStream` + `onRemoteMusic`; `setMusicTrack` com `contentHint='music'` e `maxBitrate` de 96 kbps por conexão; roteamento de `music-*` para `onMusicMessage`; snapshot musical no `onopen` do canal |
+| `client/src/lib/musicEngine.js` | **Novo.** Grafo WebAudio (`<audio>` → `MediaElementSource` → `MediaStreamDestination` + ramo de monitoração local), sonda de CORS por `Range: bytes=0-0`, ciclo de vida de `objectURL`, `play()` cuja rejeição vira aviso em vez de silêncio |
+| `client/src/lib/youtubePlayer.js` | **Novo.** IFrame API carregada sob demanda (nada da Google no bundle), atrás de `VITE_ENABLE_YOUTUBE`, com a mesma superfície do motor (`play`/`pause`/`seek`/`positionSec`) |
+| `client/src/lib/useMusicRoom.js` | **Novo.** Orquestração: votação com árbitro, fila convergente, escritor único da reprodução, sucessão determinística, correção de deriva e snapshot para quem entra depois |
+| `client/src/components/MusicPanel.jsx` | **Novo.** Painel irmão do `ChatPanel`: faixa atual, progresso, fila, formulário (link/arquivo) e volume local |
+| `client/src/components/MusicVoteCard.jsx` | Dispensar passou a ser explícito (`Esc` ou ✕) — ver "Desvios conscientes" |
+| `client/src/pages/Room.jsx` | Hook de música ligado ao mesh, botão na barra, painel mutuamente exclusivo com o chat, overlays sempre montados, `selfId` em estado, `AudioContext` injetado no monitor e fechado pelo `Room` |
+| `client/src/styles.css` | Painel, card de votação (z-index 25), fila, barra de progresso, host oculto do YouTube |
+| `client/test/musicProtocol.test.mjs` | **Novo.** 12 casos de entrada hostil e de identidade |
+| `client/test/joinRequestSignaling.test.mjs` | Teardown escala SIGTERM → SIGKILL após 2s (ver "Nota de ambiente") |
+| `e2e/{harness,run}.mjs` | Fixture de áudio WAV sintético; A2 atualizada para 4 canais por sentido; seção **N** com 10 checagens novas |
+| `ARCHITECTURE.md`, `README.md`, `client/.env.example`, `docs/teste-3-participantes.md` | §6.9, limitações, flag do YouTube e checklist manual |
+
+## Decisões que valem registrar
+
+1. **Trocar de faixa é publicado pelo dono da faixa *seguinte*, nunca pelo da que
+   acabou.** O documento fixa "escritor único", mas não diz quem escreve a
+   transição — e as duas escolhas óbvias (o dono que terminou publica "parei"; o
+   próximo publica "comecei") coexistindo dariam dois escritores disputando a
+   mesma versão, com o "parei" podendo vencer por desempate de id. Um escritor
+   por transição resolve; se a fila acabou, quem declara o silêncio é o dono da
+   que terminou.
+2. **A condição de "começar a próxima" é *a faixa corrente não existe mais na
+   fila*, não *`entryId` é nulo*.** Quando alguém pula, o `entryId` continua
+   apontando para uma entrada que já virou tombstone. Testar por nulo deixaria a
+   sala parada com a fila cheia — e o sintoma seria "pular às vezes não faz nada".
+3. **O padrão de entrega é `local`, e `stream` só entra com a sonda de CORS
+   confirmando.** Errar para o lado do `local` custa banda; errar para o outro
+   lado transmite **silêncio sem erro nenhum**, que é o modo de falha mais caro
+   de diagnosticar deste recurso.
+4. **A orquestração virou um hook (`useMusicRoom.js`) em vez de morar em
+   `Room.jsx`.** O documento pede o estado no `Room`; ele já orquestra mídia,
+   chat, toasts e pedidos de entrada, e somar a máquina de estados da música
+   levaria o arquivo a ~1000 linhas. A fronteira é limpa: o hook não conhece JSX,
+   o `Room` não conhece o protocolo.
+5. **O container do player do YouTube é criado fora do React.** `YT.Player`
+   substitui o elemento que recebe por um iframe; um nó trocado por baixo do
+   React estoura no unmount. O React cuida do host, nós cuidamos do filho.
+
+## Desvios conscientes do documento
+
+**§3.6 — o card de votação não fecha mais por "clique fora".** O documento diz
+"fecha por `Esc`/clique fora, sem votar". Implementado ao pé da letra, o efeito
+era o oposto do pretendido: **silenciar o microfone com a votação aberta fazia a
+pessoa perder o voto**, sem entender por quê. Num card fixo de canto, que não
+intercepta clique nenhum, "clique fora" não significa "quis fechar" — significa
+"usou a sala". Dispensar passou a ser explícito (`Esc` ou ✕), o que preserva a
+intenção da decisão (abster-se é legítimo, a tela não é bloqueada) sem o efeito
+colateral. A checagem N2 do E2E fixa isso: usar a sala com o card aberto não pode
+custar o voto.
+
+**Votação para pular não foi implementada**, conforme §3.7 — mas os módulos puros
+já commitados suportam `kind: 'skip'` e o card já sabe renderizá-lo. É código
+morto deliberado, pronto para quando/se a decisão mudar.
 
 ## Verificação executada
 
@@ -129,6 +202,163 @@ esta branch partiu de um ponto que não a tinha.
 
 
 # Histórico — WTK-MEET-5: layout de viewport fixo, grade automática e modal de aprovação
+- `npm --prefix client test` → **95/95** (12 novos de `musicProtocol`; `audioLevels`
+  e `gridLayout` verdes **sem edição**, como o documento exige)
+- `npm --prefix client run build` → ok
+- `node e2e/run.mjs` → **67/67** (57 anteriores + 10 da seção N)
+
+Cobertura das checagens novas do E2E:
+
+| Checagem | O que prova |
+|---|---|
+| N1 | "Música" entra na barra sem alterar o texto de nenhum botão existente |
+| N2 | Card não-bloqueante: silenciar o mic com ele aberto funciona **e não custa o voto** |
+| N3 | 2 sim + 1 não aprovam e habilitam o player nos três |
+| N4 | Abrir a música fecha o chat e a página continua sem rolar (invariante §6.7) |
+| N5 | Faixas de dois participantes na **mesma ordem** nos três |
+| N6 | Áudio real chegando **no 4º canal**, medido por mid (`bytesReceived=4819`) |
+| N7 | Silenciar o mic de quem transmite não interrompe a música (`4819 → 43138`) |
+| N8 | Quem não é dono pula a faixa e a próxima assume nos três |
+| N9 | Nenhuma mensagem de música no protocolo Socket.IO |
+| N10 | Nada de música em `localStorage`/`sessionStorage` |
+
+**A2 foi atualizada de propósito**, e é a única checagem pré-existente alterada:
+ela fixava "3 transceivers por sentido", que é justamente o contrato que esta
+entrega muda. A versão nova verifica também a **ordem** (`audio,video,video,audio`)
+— criar o canal de música em qualquer outra posição embaralha câmera com tela ou
+faz a música cair no stream de voz, e nos dois casos *parece* funcionar.
+
+**N6/N7 medem o transceiver de índice 3**, não o total de áudio da conexão. Se a
+música vazasse para o canal de voz — exatamente o bug que o canal dedicado existe
+para evitar — uma medição do total passaria por acidente.
+
+## Dois erros que a leitura do código pegou (e o teste não pegaria)
+
+1. **A fila era lida antes do `await` da sonda de CORS.** Uma faixa adicionada por
+   outro participante durante a sonda desapareceria: o estado publicado depois do
+   `await` fora calculado antes dela chegar. Corrigido movendo a sonda para antes
+   de qualquer leitura de estado. Só apareceria com duas pessoas adicionando ao
+   mesmo tempo, e com uma URL lenta.
+2. **Dispensar o card excluía a pessoa da decisão da sala.** O anúncio do árbitro
+   era conferido contra a votação ativa; sem ela, era descartado, e quem tinha
+   fechado o card ficava sem o player que todos os outros acabaram de ligar. A
+   votação dispensada passou a ser guardada (só para validar o anúncio — o card
+   não volta à tela sozinho).
+
+## Pendências e débitos identificados
+
+- **Arquivo local, URL sem CORS, YouTube e saída do dono no meio da faixa** não são
+  cobertos por teste automatizado: dependem, respectivamente, do seletor nativo de
+  arquivos, de um host externo, de um terceiro e de temporização de rede real. Estão
+  no checklist manual (`docs/teste-3-participantes.md`, itens 7–11).
+- **`music-vote-cast` que chegue antes do `music-vote-open` correspondente é
+  descartado.** Só afeta a contagem exibida em quem não é árbitro (o resultado
+  oficial vem do anúncio, e o árbitro sempre tem a votação aberta). Um buffer de
+  votos pendentes resolveria; não pareceu valer a complexidade para uma sala de 6.
+- **Decisão de produto em aberto:** manter ou desligar a origem YouTube antes do
+  deploy (§3.4/§7 do documento). Entregue com a flag ligada e aviso na UI.
+
+---
+
+# Progresso — WTK-MEET-6: destaque 80/20 para compartilhamento de tela
+
+**Status: COMPLETED (implementação concluída, testes e lint verdes).** Branch
+`agent/wtk-meet-6-1-quando-algu-m-compartilhar-a-pagina-qu`.
+
+Documento de arquitetura seguido:
+`docs/agents/arch-temp-destaque-compartilhamento-tela.md`.
+
+## O problema
+
+Toda tela compartilhada entrava na grade uniforme do `VideoGrid` como mais um
+tile igual aos outros. Com 3 participantes e 1 tela, o palco virava 2×2 e o
+conteúdo que era o motivo da reunião — um slide, um código — ficava com ~1/4 do
+palco, em 16:9 com letterbox, ilegível. O layout de viewport fixo da WTK-MEET-5
+resolveu "a sala cabe na tela"; não resolvia "o que importa aparece maior".
+
+## O que foi implementado
+
+| Arquivo | Mudança |
+|---|---|
+| `client/src/lib/spotlightLayout.js` | **Novo.** Módulo puro: geometria do destaque + coluna (`computeSpotlightLayout`), fallback do destaque (`resolveSpotlightScreen`) e ordenação da coluna (`orderRailItems`). 80/20 como alvo com trava (160–280px), piso de miniatura, modo estreito por largura de palco medida |
+| `client/test/spotlightLayout.test.mjs` | **Novo.** 32 testes: travas do 80/20, destaque cabendo em janela achatada, virada e não-oscilação do modo estreito, piso da miniatura, zero/uma/várias telas, prioridade de quem fala, congelamento da ordem |
+| `client/src/components/SpotlightStage.jsx` | **Novo.** Mede o palco (`ResizeObserver`), escreve `--spot-w`/`--spot-h`/`--rail-w`/`--thumb-w`/`--thumb-h`, e no modo estreito troca a coluna por botão + painel (fecha por `Esc`, clique fora e pelo botão) |
+| `client/src/components/ThumbnailRail.jsx` | **Novo.** Coluna rolável; telas viram `<button aria-pressed>`, câmeras não são focáveis; congela a ordem quando o usuário rolou para fora do topo |
+| `client/src/components/PeerAudio.jsx` | **Novo.** Sink de áudio por peer, fora do palco |
+| `client/src/pages/Room.jsx` | `people`/`screens` derivados, `pinnedScreenId` local, destaque derivado no render, troca automática de palco, montagem dos sinks |
+| `client/src/components/VideoTile.jsx` | Variante `compact`; `<video>` agora é sempre `muted` |
+| `client/src/styles.css` | Bloco do modo destaque, variante compacta, painel do modo estreito |
+| `e2e/run.mjs`, `e2e/harness.mjs` | Cenário C reescrito: C5–C11 (modo destaque, sem scroll, seleção local, teclado, painel estreito, fallback, volta à grade) + helper `spotlightLayout` |
+| `ARCHITECTURE.md`, `README.md` | Nova §6.8; §8 e o fluxo de chamada atualizados |
+| `client/test/joinRequestSignaling.test.mjs` | Cleanup escala para `SIGKILL` após 2s (ver "Bloqueios" abaixo) |
+
+## Decisões que valem registrar
+
+1. **A escolha do destaque é local e derivada no render.** `pinnedScreenId` pode
+   apontar para uma tela que já acabou à vontade, porque nunca é lido sem
+   validação. Um `useEffect` que "corrigisse" o estado custaria um render extra,
+   um frame com destaque inválido e roubaria a escolha do usuário quando uma
+   segunda tela entrasse. Nenhum evento novo no servidor nem no data channel.
+2. **O áudio saiu do `<video>` do tile.** Entrar/sair do destaque move o tile de
+   container e o React remonta o elemento — o que cortaria o som do peer a cada
+   mudança de layout. `PeerAudio.jsx` desacopla transporte de áudio de
+   posicionamento de vídeo, e entrou **antes** de mexer no palco.
+3. **A tela em destaque continua na coluna, como botão pressionado e sem
+   stream.** Sem isso nenhum controle carregaria `aria-pressed="true"` e o foco
+   sumiria a cada troca (o botão ativado deixava de existir). Sem stream porque a
+   mesma imagem em dois `<video>` dobraria o custo de decodificação.
+4. **A reordenação congela quando o usuário rolou a coluna.** Ver o desvio abaixo.
+
+## Desvio consciente do documento de arquitetura
+
+O doc de arquitetura (§3.7) decidiu **ordem fixa** para a coluna e descartou
+explicitamente ordenar por quem está falando ("miniaturas trocando de lugar no
+meio de um clique — alvo móvel"). O **item 6 do Definition of Done exige o
+contrário**: "quem está falando e quem compartilha reposicionados no topo, sem
+que a rolagem manual do usuário seja sequestrada a cada reordenação".
+
+O DoD é o portão de aceite, então a ordenação por prioridade foi implementada —
+mas com a preocupação de §3.7 endereçada em vez de ignorada: `orderRailItems`
+aceita `frozen`, e a `ThumbnailRail` congela a ordem sempre que a coluna está
+fora do topo. Enquanto o usuário está rolando, nada troca de lugar; novidades
+entram no fim, onde não deslocam o que está sob os olhos dele. A histerese de
+meio segundo de `lib/audioLevels.js` já evita que o indicador de fala pisque.
+
+## Verificação executada
+
+- `npm --prefix client run lint` → limpo
+- `npm --prefix client test` → **71/71** (32 novos de `spotlightLayout`)
+- `npm --prefix client run build` → ok
+- `node e2e/run.mjs` → **61/61**, com o cenário C novo todo verde:
+
+| Checagem | Resultado observado |
+|---|---|
+| C5 | Modo destaque ativo, destaque de **974px** contra miniatura de **236px** (~4,1×), 5 miniaturas, 2 selecionáveis, 1 pressionada |
+| C6 | `scrollHeight=720/720` e destaque inteiro dentro do palco |
+| C7 | Alice: "Bob — tela" → "Carol — tela"; **Bob não se mexeu** ("Bob — sua tela" antes e depois) |
+| C8 | Botões tabuláveis e rotulados, câmeras inertes, ativação por teclado trocou o destaque e **o foco foi preservado** |
+| C9 | Palco estreito: coluna some, botão de participantes aparece, painel abre com 2 itens e **fecha por `Esc`** |
+| C10 | Bob para de compartilhar → destaque migra sozinho para "Carol — tela" |
+| C11 | Última tela encerrada pelo evento `ended` → grade uniforme de volta, track encerrada, botão restaurado |
+
+## Bloqueios e limitações desta sessão
+- **`npm test` travava por um motivo de ambiente.** Os 5 casos de
+  `joinRequestSignaling.test.mjs` passavam, mas o arquivo nunca terminava: o
+  `after()` espera o servidor filho sair, e neste sandbox o **SIGTERM não é
+  entregue a processos filhos** (SIGKILL é). A limpeza passou a escalar para
+  `SIGKILL` depois de 2s — hardening legítimo, que também protege CI com PID 1
+  sem reaper. Com isso `npm test` termina: **71/71 verdes**.
+- **Não houve inspeção visual humana / screenshot.** O comportamento foi
+  verificado por medição no navegador real (o E2E lê as caixas dos elementos),
+  não por olho: aparência (contraste da miniatura selecionada, legibilidade do
+  rótulo compacto) continua sem validação estética.
+- **Fora do escopo, por decisão do documento:** botão de sair do destaque com
+  compartilhamento ativo, fixar câmera, destaque por quem fala, fullscreen
+  nativo, e áudio de sistema no `getDisplayMedia`.
+
+---
+
+# Progresso — WTK-MEET-5: layout de viewport fixo, grade automática e modal de aprovação
 
 **Status: implementação concluída e validada.** Branch
 `agent/WTK-MEET-5-ajustar-layout-da-sala-para-altura-fixa-`.
@@ -333,6 +563,78 @@ evento `ended`). **Cada uma foi validada por mutação.**
 O que não dá para cobrir em headless está listado como checklist manual em
 `docs/teste-3-participantes.md` (LED físico da webcam, `chrome://webrtc-internals`,
 barra nativa "Parar compartilhamento", diálogo de escolha de tela, Firefox/Safari).
+
+## Passada de QA do player de música (2026-08-13)
+
+Os módulos puros do player já vinham com teste. O que faltava era tudo o que toca
+DOM, WebAudio e `RTCPeerConnection` — que é exatamente onde as falhas deste
+recurso são **silenciosas**. Três arquivos novos, 53 casos, nenhuma linha de
+produção alterada:
+
+- `client/test/musicEngine.test.mjs` (22) — sonda de CORS nas quatro respostas
+  possíveis, os **dois** ramos do grafo (sem o de monitoração, só o dono não
+  ouve), ordem `crossOrigin` → `src`, modo `local` sem WebAudio, `objectURL`
+  revogado ao trocar de faixa/parar/destruir, autoplay bloqueado virando aviso, e
+  o track de saída estável entre faixas.
+- `client/test/musicMeshRouting.test.mjs` (17) — a ordem dos quatro transceivers,
+  a classificação por posição das m-lines remotas, música no `musicStream` (nunca
+  no de voz), autoria pela conexão e não pelo payload, snapshot no `onopen`, teto
+  de 96 kbps e microfone intocado ao assumir a faixa.
+- `client/test/youtubePlayer.test.mjs` (14) — API carregada sob demanda e uma vez
+  só, hook global encadeado, erro do player virando "faixa pulada com aviso",
+  volume 0–1 → 0–100.
+
+`npm --prefix client test` → **148/148**; `npm --prefix client run lint` → limpo.
+
+**Validação por mutação:** 10 mutantes plantados nos três módulos de produção
+(ramo de monitoração removido, `crossOrigin` depois do `src`, falha de CORS
+tratada como capturável, música criada antes da tela, lista de classificação sem
+`'music'`, música roteada para o stream de voz, autoria vinda do payload,
+snapshot não enviado no `onopen`, teto de banda não aplicado, erro do YouTube
+engolido) — **10 detectados**.
+
+### E2E: verde, mas intermitente **nas duas pontas**
+
+`node e2e/run.mjs` na branch → **67/67** (os 57 do roteiro existente + N1–N10 da
+música). O roteiro de música passou em todas as execuções que chegaram até ele.
+
+A primeira execução da sessão falhou com o mesh sem fechar ICE, o que levantou a
+suspeita da quarta m-line (risco §7 do documento de arquitetura). Não é: rodando
+em série e sem contenção, **o merge-base falha na mesma proporção**.
+
+| | passou | falhou |
+|---|---|---|
+| branch (com música) | 67/67, 67/67 | 1× mesh não reconectou após reload de Bob |
+| merge-base / `main` | 57/57, 61/61 | 1× `B3` (contagem de `requestAnimationFrame`) |
+
+Duas observações que valem mais que a estatística:
+
+1. **Execuções concorrentes contaminam a medição.** Duas rodadas simultâneas
+   disputam CPU e portas, e o sintoma é ICE que nunca conecta — idêntico ao de
+   uma regressão de negociação. Antes de concluir qualquer coisa a partir de uma
+   falha de mesh, varrer `/proc/*/cmdline` por `e2e/run.mjs` órfão (não há `ps`
+   aqui) e repetir em primeiro plano.
+2. As falhas da branch foram de ICE e a do base foi de temporização, então um
+   efeito marginal da quarta m-line sobre o TURN local **não está descartado** —
+   só não há evidência dele. Com `iceTransportPolicy: 'relay'` e o `node-turn`
+   em `debugLevel: 'ERROR'`, um TURN que não sobe não aparece no log: some a
+   malha inteira, sem mensagem.
+
+### O que ficou sem cobertura automatizada
+
+Tudo o que resta mora em `lib/useMusicRoom.js`, um hook React — o projeto não tem
+infraestrutura de teste de componente (nem `jsdom` nem testing-library nas
+devDependencies), e adicionar dependência não cabia a esta passada:
+
+- §8.8 — proponente que fecha a aba durante a votação (o código existe, em
+  `useMusicRoom.js`, no efeito que reage a quem saiu).
+- §8.20 — fim da faixa avançando para a próxima e fila vazia virando "nada
+  tocando".
+- §8.21 — sucessão do dono que fecha a aba no meio da faixa.
+- §8.23 — desvio de posição do YouTube abaixo de 2s após 60s.
+
+Os quatro estão no checklist manual de `docs/teste-3-participantes.md` (itens 7 a
+11), junto de arquivo local pelo seletor nativo e URL sem CORS.
 
 ## Notas para rodar o E2E neste ambiente
 

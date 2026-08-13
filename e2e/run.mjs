@@ -4,11 +4,13 @@
  *
  *   A. conexão do mesh (3 participantes, 2 peers cada)
  *   B. indicador de fala (anel azul) sem tráfego de nível de áudio
- *   C. compartilhamento de tela + glare (dois compartilhando ao mesmo tempo)
+ *   C. compartilhamento de tela + glare (dois compartilhando ao mesmo tempo) e o
+ *      modo destaque 80/20 que ele ativa, com seleção local da tela destacada
  *   D. chat P2P via data channel, sem passar pelo servidor
  *   E. desligar/religar câmera com track.stop() e replaceTrack, sem renegociar
  *   S. modal de configurações: listagem, troca de câmera/mic em chamada,
  *      saída de áudio, cancelamento e devicechange
+ *   N. player de música: votação, fila convergente e áudio no quarto canal
  *   F. saída da sala sem vazar tracks/AudioContext/rAF
  *
  * Rodar: node e2e/run.mjs   (o próprio script builda o client)
@@ -27,9 +29,11 @@ import {
   setInputValue,
   setSelectValue,
   sleep,
+  spotlightLayout,
   startClientServer,
   startSignaling,
   startTurn,
+  writeAudioFixture,
 } from './harness.mjs';
 
 const results = [];
@@ -94,12 +98,12 @@ try {
   check(
     'L1. Com 1 participante a página não rola e o tile não excede a área da grade',
     noPageScroll(soloLayout) &&
-      soloLayout.cols === 1 &&
-      soloLayout.tileWidth > 0 &&
-      soloLayout.tileFitsStage === true,
+    soloLayout.cols === 1 &&
+    soloLayout.tileWidth > 0 &&
+    soloLayout.tileFitsStage === true,
     `scrollHeight=${soloLayout.scrollHeight} innerHeight=${soloLayout.innerHeight} ` +
-      `cols=${soloLayout.cols} tile=${Math.round(soloLayout.tileWidth)}px ` +
-      `cabe no palco=${soloLayout.tileFitsStage}`,
+    `cols=${soloLayout.cols} tile=${Math.round(soloLayout.tileWidth)}px ` +
+    `cabe no palco=${soloLayout.tileFitsStage}`,
   );
   check(
     'L2. Os controles ficam dentro do viewport, sem depender de scroll',
@@ -151,11 +155,11 @@ try {
   check(
     'M2. O modal é acessível: role=dialog, aria-modal, título associado e foco em "Aprovar"',
     modal.role === 'dialog' &&
-      modal.ariaModal === 'true' &&
-      modal.hasLabel &&
-      modal.focusOnApprove,
+    modal.ariaModal === 'true' &&
+    modal.hasLabel &&
+    modal.focusOnApprove,
     `role=${modal.role} aria-modal=${modal.ariaModal} rotulado=${modal.hasLabel} ` +
-      `foco em Aprovar=${modal.focusOnApprove}`,
+    `foco em Aprovar=${modal.focusOnApprove}`,
   );
   // Se o empilhamento inverter, o clique em "Aprovar" é interceptado e ninguém
   // entra na sala — falha longe da causa.
@@ -221,17 +225,23 @@ try {
   await waitFor(everyoneConnected, { timeout: 45000, label: 'mesh conectado (2 peers por participante)' });
   check('A1. Mesh conecta: 3 participantes, 2 RTCPeerConnection "connected" cada', true);
 
-  // Layout esperado por conexão: 3 canais de envio (mic, câmera, tela) e os 3
-  // espelhos de recepção criados pelo navegador ao aplicar a oferta remota.
+  // Layout esperado por conexão: 4 canais de envio (mic, câmera, tela, música) e
+  // os 4 espelhos de recepção criados pelo navegador ao aplicar a oferta remota.
+  //
+  // A **ordem** é verificada junto, e não por preciosismo: ela é o contrato que
+  // permite ao outro lado classificar as m-lines que chegam. Criar o canal de
+  // música em qualquer outra posição embaralha câmera com tela, ou faz a música
+  // cair no stream de voz — onde ela acende o anel de "falando" no tile de quem
+  // toca e deixa de ter volume próprio. Nos dois casos *parece* funcionar.
   const aliceTx = (await peerStats(alice.page))[0].transceivers;
   const send = aliceTx.filter((t) => t.currentDirection === 'sendonly');
   const recv = aliceTx.filter((t) => t.currentDirection === 'recvonly');
+  const sendOrder = send.map((t) => t.kind).join(',');
   check(
-    'A2. Cada conexão tem 2 canais de vídeo por sentido (câmera + tela) e 1 de áudio',
-    send.filter((t) => t.kind === 'video').length === 2 &&
-      send.filter((t) => t.kind === 'audio').length === 1 &&
-      recv.filter((t) => t.kind === 'video').length === 2 &&
-      recv.filter((t) => t.kind === 'audio').length === 1,
+    'A2. Cada conexão tem 4 canais por sentido, na ordem mic, câmera, tela, música',
+    sendOrder === 'audio,video,video,audio' &&
+    recv.filter((t) => t.kind === 'video').length === 2 &&
+    recv.filter((t) => t.kind === 'audio').length === 2,
     `transceivers=${JSON.stringify(aliceTx.map((t) => `${t.kind}:${t.currentDirection}`))}`,
   );
 
@@ -245,13 +255,13 @@ try {
     'L3. Com 3 participantes a grade vira 2 colunas e a página continua sem rolar',
     noPageScroll(trioLayout) && trioLayout.cols === 2 && !trioLayout.overflowing,
     `cols=${trioLayout.cols} scrollHeight=${trioLayout.scrollHeight}/${trioLayout.innerHeight} ` +
-      `overflowing=${trioLayout.overflowing}`,
+    `overflowing=${trioLayout.overflowing}`,
   );
   check(
     'L4. O tile é 16:9 e o vídeo usa letterbox (object-fit: contain), sem corte nem deformação',
     Math.abs(trioLayout.tileRatio - 16 / 9) < 0.02 && trioLayout.videoFit === 'contain',
     `proporção=${trioLayout.tileRatio?.toFixed(3)} (alvo ${(16 / 9).toFixed(3)}) ` +
-      `object-fit=${trioLayout.videoFit}`,
+    `object-fit=${trioLayout.videoFit}`,
   );
 
   // ------------------------------------------------- A4. toasts de entrada
@@ -374,7 +384,7 @@ try {
     'B5. O anel apaga dentro da janela de histerese, nunca instantaneamente',
     hysteresis.maxReleaseMs <= 700 && hysteresis.maxReleaseMs >= 200,
     `release observado: ${Math.round(hysteresis.minReleaseMs)}–${Math.round(hysteresis.maxReleaseMs)}ms ` +
-      '(o limite exato de 500ms é verificado nos testes unitários de audioLevels)',
+    '(o limite exato de 500ms é verificado nos testes unitários de audioLevels)',
   );
 
   // A aplicação não transmite nível de áudio. O filtro olha os payloads de
@@ -402,9 +412,12 @@ try {
     carol.page.getByRole('button', { name: 'Compartilhar tela' }).click(),
   ]);
 
+  // Com duas telas ativas a coluna vira um grupo de escolha: uma miniatura por
+  // tela, a da tela em destaque marcada com `aria-pressed`. Esperar pelas duas
+  // miniaturas selecionáveis é esperar pelas duas telas de uma vez.
   await waitFor(
-    async () => (await alice.page.locator('.tile-badge').count()) >= 2,
-    { timeout: 25000, label: 'dois tiles de tela na grade de Alice' },
+    async () => (await alice.page.locator('.thumb-select').count()) >= 2,
+    { timeout: 25000, label: 'as duas telas no palco de Alice (uma em destaque, uma na coluna)' },
   );
   check('C1. Dois participantes compartilham tela ao mesmo tempo (glare)', true);
 
@@ -423,16 +436,166 @@ try {
     `setLocalDescription: ${sldBefore} → ${sldAfter}`,
   );
 
+  // O ponto da entrega: com tela compartilhada o palco **não** é mais uma grade
+  // uniforme. A tela em destaque é várias vezes maior que qualquer miniatura,
+  // em vez de dividir o palco em partes iguais com as câmeras.
+  const spotAlice = await spotlightLayout(alice.page);
   const aliceTilesWithScreen = await alice.page.locator('.video-tile').count();
-  check('C5. Grade de Alice cresce para 5 tiles (3 câmeras + 2 telas)', aliceTilesWithScreen === 5, `tiles=${aliceTilesWithScreen}`);
-
-  // Sair do compartilhamento restaura a grade.
-  await bob.page.getByRole('button', { name: 'Parar compartilhamento' }).click();
-  await waitFor(
-    async () => (await alice.page.locator('.video-tile').count()) === 4,
-    { timeout: 15000, label: 'grade sem a tela de Bob' },
+  check(
+    'C5. Com tela compartilhada o palco entra em modo destaque, e o destaque é ≥ 3× a miniatura',
+    spotAlice.active &&
+    !spotAlice.gridActive &&
+    // 1 destaque + 3 câmeras + 2 miniaturas de tela (a em destaque entra na
+    // coluna como marcador pressionado, sem stream — ver `Room.jsx`).
+    aliceTilesWithScreen === 6 &&
+    spotAlice.thumbCount === 5 &&
+    spotAlice.selectableCount === 2 &&
+    spotAlice.pressedCount === 1 &&
+    spotAlice.spotlightWidth >= spotAlice.thumbWidth * 3,
+    `destaque=${Math.round(spotAlice.spotlightWidth || 0)}px ` +
+    `miniatura=${Math.round(spotAlice.thumbWidth || 0)}px ` +
+    `miniaturas=${spotAlice.thumbCount} selecionáveis=${spotAlice.selectableCount} ` +
+    `pressionadas=${spotAlice.pressedCount} tiles=${aliceTilesWithScreen}`,
   );
-  check('C6. Sair do compartilhamento remove a track e restaura a grade', true);
+
+  const spotLayout = await roomLayout(alice.page);
+  check(
+    'C6. O modo destaque não gera scroll de página nem empurra os controles',
+    noPageScroll(spotLayout) &&
+    spotLayout.tileFitsStage &&
+    spotLayout.controlsBottom <= spotLayout.innerHeight + 1,
+    `scrollHeight=${spotLayout.scrollHeight}/${spotLayout.innerHeight} ` +
+    `destaque cabe no palco=${spotLayout.tileFitsStage}`,
+  );
+
+  // A escolha do destaque é **local**: Alice clicar na miniatura não pode mexer
+  // no que Bob está vendo. Sincronizar isso exigiria um evento novo na rede, que
+  // é justamente o que esta entrega não faz.
+  const bobBeforeSelect = await spotlightLayout(bob.page);
+  // A que **não** está pressionada: a pressionada é a que já está em destaque, e
+  // clicar nela seria um no-op.
+  await alice.page.locator('.thumb-select[aria-pressed="false"]').first().click();
+  const aliceAfterSelect = await waitFor(
+    async () => {
+      const now = await spotlightLayout(alice.page);
+      return now.spotlightLabel && now.spotlightLabel !== spotAlice.spotlightLabel ? now : null;
+    },
+    { timeout: 5000, label: 'o destaque de Alice trocar de tela' },
+  ).catch(() => null);
+  const bobAfterSelect = await spotlightLayout(bob.page);
+  check(
+    'C7. Clicar na miniatura troca o destaque só na aba que clicou',
+    !!aliceAfterSelect && bobAfterSelect.spotlightLabel === bobBeforeSelect.spotlightLabel,
+    `Alice: ${JSON.stringify(spotAlice.spotlightLabel)} → ${JSON.stringify(aliceAfterSelect?.spotlightLabel)} | ` +
+    `Bob: ${JSON.stringify(bobBeforeSelect.spotlightLabel)} → ${JSON.stringify(bobAfterSelect.spotlightLabel)}`,
+  );
+
+  // Teclado e leitor de tela: a miniatura de tela é um `<button>` de verdade,
+  // com rótulo e `aria-pressed`; a de câmera não é clicável nem focável.
+  //
+  // Enter/Espaço não são injetados aqui: neste headless o teclado via CDP não
+  // chega ao renderer (ver `setInputValue` no harness). O que se verifica é a
+  // razão de a tecla funcionar — o controle é um `<button>` nativo, focável e na
+  // ordem de tabulação, e não um `div` com `onClick` — mais a ativação pelo
+  // mesmo caminho que Enter dispara.
+  const railA11y = await alice.page.evaluate(() => {
+    const selectable = [...document.querySelectorAll('.thumb-select')];
+    const cameras = [...document.querySelectorAll('.thumb-item:not(.thumb-select)')];
+    const target = selectable.find((el) => el.getAttribute('aria-pressed') === 'false');
+    target?.focus();
+    return {
+      buttons: selectable.every(
+        (el) => el.tagName === 'BUTTON' && el.type === 'button' && el.hasAttribute('aria-pressed'),
+      ),
+      // `tabIndex === 0` sem atributo: é o padrão do `<button>` habilitado, o que
+      // prova que ninguém o tirou da tabulação.
+      tabbable: selectable.every((el) => el.tabIndex === 0 && !el.disabled),
+      labelled: selectable.every((el) => (el.getAttribute('aria-label') || '').includes('destaque')),
+      camerasInert: cameras.every(
+        (el) => el.tagName !== 'BUTTON' && !el.hasAttribute('tabindex') && !el.hasAttribute('role'),
+      ),
+      focused: !!target && document.activeElement === target,
+    };
+  });
+  const labelBeforeKeyboard = (await spotlightLayout(alice.page)).spotlightLabel;
+  // `click()` no elemento focado é exatamente o que a ativação por Enter faz.
+  await alice.page.evaluate(() => document.activeElement?.click());
+  const keyboardSwitched = await waitFor(
+    async () => (await spotlightLayout(alice.page)).spotlightLabel !== labelBeforeKeyboard,
+    { timeout: 5000, label: 'o destaque trocar pela ativação do botão focado' },
+  ).catch(() => false);
+  // O botão ativado continua existindo (agora pressionado) e o foco fica nele:
+  // é o ganho de manter a tela em destaque na coluna em vez de removê-la.
+  const focusKept = await alice.page.evaluate(
+    () => document.activeElement?.getAttribute('aria-pressed') === 'true',
+  );
+  check(
+    'C8. A miniatura de tela é operável por teclado; a de câmera não entra na tabulação',
+    railA11y.buttons &&
+    railA11y.tabbable &&
+    railA11y.labelled &&
+    railA11y.camerasInert &&
+    railA11y.focused &&
+    keyboardSwitched &&
+    focusKept,
+    `botões=${railA11y.buttons} tabuláveis=${railA11y.tabbable} rotulados=${railA11y.labelled} ` +
+    `câmeras inertes=${railA11y.camerasInert} focou=${railA11y.focused} ` +
+    `ativação trocou=${keyboardSwitched} foco preservado=${focusKept}`,
+  );
+
+  // Palco estreito: o destaque toma a largura inteira e a coluna vira um painel
+  // sob demanda. O limiar é medido no palco, não no viewport — por isso o teste
+  // encolhe a janela e depois devolve o tamanho, em vez de confiar numa media
+  // query.
+  const wideViewport = alice.page.viewportSize();
+  await alice.page.setViewportSize({ width: 500, height: 820 });
+  await sleep(400);
+  const narrowStage = await spotlightLayout(alice.page);
+  const narrowLayout = await roomLayout(alice.page);
+  await alice.page.locator('.participants-toggle').click();
+  await alice.page.locator('.participants-panel').waitFor({ timeout: 5000 });
+  const withPanel = await spotlightLayout(alice.page);
+  // Ao contrário do modal de aprovação, o painel fecha por Esc: aqui não há
+  // ninguém esperando uma decisão do outro lado. O evento é despachado de dentro
+  // da página pelo mesmo motivo da checagem M4 — o teclado via CDP não chega ao
+  // renderer neste headless.
+  await alice.page.evaluate(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  });
+  await alice.page.locator('.participants-panel').waitFor({ state: 'detached', timeout: 5000 });
+  const afterEscape = await spotlightLayout(alice.page);
+  check(
+    'C9. Em palco estreito o destaque ocupa a largura inteira e a coluna vira painel sob demanda',
+    narrowStage.narrow === true &&
+    narrowStage.railWidth === null && // nenhuma coluna no fluxo
+    narrowStage.toggleCount === 1 &&
+    withPanel.panelOpen === true &&
+    withPanel.selectableCount === 2 && // a mesma lista, no painel
+    afterEscape.panelOpen === false &&
+    noPageScroll(narrowLayout) &&
+    narrowLayout.controlsBottom <= narrowLayout.innerHeight + 1,
+    `estreito=${narrowStage.narrow} coluna=${narrowStage.railWidth} ` +
+    `botão=${narrowStage.toggleCount} painel abriu=${withPanel.panelOpen} ` +
+    `itens no painel=${withPanel.selectableCount} Esc fechou=${!afterEscape.panelOpen}`,
+  );
+  await alice.page.setViewportSize(wideViewport);
+  await sleep(400);
+
+  // Uma das telas acaba: o destaque migra para a que restou, sem tela em branco
+  // e sem voltar para a grade — ainda há o que destacar.
+  await bob.page.getByRole('button', { name: 'Parar compartilhamento' }).click();
+  const afterBobStopped = await waitFor(
+    async () => {
+      const now = await spotlightLayout(alice.page);
+      return now.active && now.selectableCount === 0 && !now.gridActive ? now : null;
+    },
+    { timeout: 15000, label: 'o destaque migrar para a tela que restou' },
+  ).catch(() => null);
+  check(
+    'C10. Com a tela em destaque encerrada, o destaque migra para a outra tela ativa',
+    !!afterBobStopped && (afterBobStopped.spotlightLabel || '').includes('Carol'),
+    `destaque agora: ${JSON.stringify(afterBobStopped?.spotlightLabel)}`,
+  );
 
   // Carol para pelo outro caminho: a barra nativa "Parar compartilhamento" do
   // navegador não é clicável em headless, mas o que ela faz com a página é
@@ -446,20 +609,24 @@ try {
   // O timeout vira `false` em vez de exceção: se este caminho quebrar, o certo é
   // a checagem reportar a falha com nome, não a suíte inteira abortar aqui.
   const gridRestored = await waitFor(
-    async () => (await alice.page.locator('.video-tile').count()) === 3,
-    { timeout: 15000, label: 'grade sem telas' },
+    async () => {
+      const now = await spotlightLayout(alice.page);
+      const tiles = await alice.page.locator('.video-tile').count();
+      return now.gridActive && !now.active && tiles === 3;
+    },
+    { timeout: 15000, label: 'a grade uniforme de volta, sem telas' },
   ).catch(() => false);
   // A track precisa ter sido efetivamente encerrada pelo handler, não só sumido
-  // da grade: é o que garante que a captura de tela realmente parou.
+  // do palco: é o que garante que a captura de tela realmente parou.
   const carolScreenEnded = await carol.page.evaluate(() =>
     [...window.__wtkDisplayTracks].every((t) => t.readyState === 'ended'),
   );
   const carolButtonBack = await carol.page.getByRole('button', { name: 'Compartilhar tela' }).count();
   check(
-    'C7. "Parar compartilhamento" do navegador (evento ended) também encerra a tela',
+    'C11. Sem nenhuma tela ativa o palco volta à grade uniforme (inclusive pelo evento ended)',
     endedDispatched && gridRestored && carolScreenEnded && carolButtonBack === 1,
     `ended disparado=${endedDispatched} grade restaurada=${gridRestored} ` +
-      `track encerrada=${carolScreenEnded} botão restaurado=${carolButtonBack === 1}`,
+    `track encerrada=${carolScreenEnded} botão restaurado=${carolButtonBack === 1}`,
   );
 
   // ------------------------------------------------------------- D. chat
@@ -473,10 +640,10 @@ try {
   check(
     'L5. Abrir o chat encolhe a grade e não gera scroll de página',
     noPageScroll(withChat) &&
-      withChat.tileWidth < beforeChat.tileWidth &&
-      withChat.controlsBottom <= withChat.innerHeight + 1,
+    withChat.tileWidth < beforeChat.tileWidth &&
+    withChat.controlsBottom <= withChat.innerHeight + 1,
     `tile ${Math.round(beforeChat.tileWidth)}px → ${Math.round(withChat.tileWidth)}px, ` +
-      `scrollHeight=${withChat.scrollHeight}/${withChat.innerHeight}`,
+    `scrollHeight=${withChat.scrollHeight}/${withChat.innerHeight}`,
   );
 
   await bob.page.getByRole('button', { name: /^Chat/ }).click();
@@ -654,29 +821,29 @@ try {
   check(
     'S1. O modal lista os três kinds com rótulos reais, sem duplicatas e com "Padrão do sistema" na frente',
     modalState.video.length === 3 &&
-      modalState.audio.length === 3 &&
-      modalState.output.length === 3 &&
-      [modalState.video, modalState.audio, modalState.output].every(
-        (l) => noDupes(l) && l[0].value === '' && /Padrão do sistema/.test(l[0].label),
-      ) &&
-      modalState.video.some((o) => o.value === 'cam-b' && /Câmera Falsa B/.test(o.label)) &&
-      modalState.audio.some((o) => o.value === 'mic-b' && /Microfone Falso B/.test(o.label)) &&
-      modalState.output.some((o) => o.value === 'spk-b' && /Saída Falsa B/.test(o.label)),
+    modalState.audio.length === 3 &&
+    modalState.output.length === 3 &&
+    [modalState.video, modalState.audio, modalState.output].every(
+      (l) => noDupes(l) && l[0].value === '' && /Padrão do sistema/.test(l[0].label),
+    ) &&
+    modalState.video.some((o) => o.value === 'cam-b' && /Câmera Falsa B/.test(o.label)) &&
+    modalState.audio.some((o) => o.value === 'mic-b' && /Microfone Falso B/.test(o.label)) &&
+    modalState.output.some((o) => o.value === 'spk-b' && /Saída Falsa B/.test(o.label)),
     `câmeras=${JSON.stringify(modalState.video.map((o) => o.label))} ` +
-      `mics=${JSON.stringify(modalState.audio.map((o) => o.label))} ` +
-      `saídas=${JSON.stringify(modalState.output.map((o) => o.label))}`,
+    `mics=${JSON.stringify(modalState.audio.map((o) => o.label))} ` +
+    `saídas=${JSON.stringify(modalState.output.map((o) => o.label))}`,
   );
   check(
     'S2. O modal é acessível, tem preview ao vivo e não cria um segundo AudioContext',
     modalState.role === 'dialog' &&
-      modalState.ariaModal === 'true' &&
-      modalState.hasLabel &&
-      modalState.focusOnFirstField &&
-      modalState.previewPlaying &&
-      modalState.audioContexts === 1 &&
-      modalState.backdropZ === 28,
+    modalState.ariaModal === 'true' &&
+    modalState.hasLabel &&
+    modalState.focusOnFirstField &&
+    modalState.previewPlaying &&
+    modalState.audioContexts === 1 &&
+    modalState.backdropZ === 28,
     `role=${modalState.role} foco no 1º campo=${modalState.focusOnFirstField} ` +
-      `preview=${modalState.previewPlaying} AudioContexts=${modalState.audioContexts} z=${modalState.backdropZ}`,
+    `preview=${modalState.previewPlaying} AudioContexts=${modalState.audioContexts} z=${modalState.backdropZ}`,
   );
 
   const selects = alice.page.locator('.settings-modal select');
@@ -705,23 +872,23 @@ try {
   check(
     'S3. Salvar troca o track em TODOS os senders do mesh (câmera e microfone)',
     tracksAfterSwap.length === 2 &&
-      tracksAfterSwap.every(
-        (peer) =>
-          peer.filter((t) => t.kind === 'video').length === 1 &&
-          peer.filter((t) => t.kind === 'audio').length === 1,
-      ) &&
-      videoAfter.size === 1 &&
-      audioAfter.size === 1 &&
-      disjoint(videoBefore, videoAfter) &&
-      disjoint(audioBefore, audioAfter),
+    tracksAfterSwap.every(
+      (peer) =>
+        peer.filter((t) => t.kind === 'video').length === 1 &&
+        peer.filter((t) => t.kind === 'audio').length === 1,
+    ) &&
+    videoAfter.size === 1 &&
+    audioAfter.size === 1 &&
+    disjoint(videoBefore, videoAfter) &&
+    disjoint(audioBefore, audioAfter),
     `vídeo ${JSON.stringify([...videoBefore])} → ${JSON.stringify([...videoAfter])}, ` +
-      `áudio ${JSON.stringify([...audioBefore])} → ${JSON.stringify([...audioAfter])}`,
+    `áudio ${JSON.stringify([...audioBefore])} → ${JSON.stringify([...audioAfter])}`,
   );
   check(
     'S4. A troca de dispositivo não renegocia SDP (replaceTrack em transceiver já negociado)',
     sdpAfterSwap.local === sdpBeforeSwap.local && sdpAfterSwap.remote === sdpBeforeSwap.remote,
     `setLocalDescription: ${sdpBeforeSwap.local} → ${sdpAfterSwap.local}, ` +
-      `setRemoteDescription: ${sdpBeforeSwap.remote} → ${sdpAfterSwap.remote}`,
+    `setRemoteDescription: ${sdpBeforeSwap.remote} → ${sdpAfterSwap.remote}`,
   );
   check('S5. Nenhuma conexão cai na troca de dispositivo', await everyoneConnected());
 
@@ -736,10 +903,10 @@ try {
   check(
     'S7. A preferência é gravada em localStorage["wtk-meet:devices"] com exatamente as quatro chaves',
     savedPrefs &&
-      savedPrefs.videoInputId === 'cam-b' &&
-      savedPrefs.audioInputId === 'mic-b' &&
-      Object.keys(savedPrefs).sort().join() ===
-        'audioInputId,audioOutputId,soundsEnabled,videoInputId',
+    savedPrefs.videoInputId === 'cam-b' &&
+    savedPrefs.audioInputId === 'mic-b' &&
+    Object.keys(savedPrefs).sort().join() ===
+    'audioInputId,audioOutputId,soundsEnabled,videoInputId',
     JSON.stringify(savedPrefs),
   );
 
@@ -761,12 +928,12 @@ try {
   check(
     'S8. Esc descarta a seleção, para o stream de preview e mantém os devices em uso',
     afterCancel.videoInputId === 'cam-b' &&
-      disjoint(kindIds(sendersAfterCancel, 'video'), videoBefore) &&
-      kindIds(sendersAfterCancel, 'video').size === 1 &&
-      [...kindIds(sendersAfterCancel, 'video')][0] === [...videoAfter][0] &&
-      liveAfterCancel < previewTracksOpen,
+    disjoint(kindIds(sendersAfterCancel, 'video'), videoBefore) &&
+    kindIds(sendersAfterCancel, 'video').size === 1 &&
+    [...kindIds(sendersAfterCancel, 'video')][0] === [...videoAfter][0] &&
+    liveAfterCancel < previewTracksOpen,
     `preferência=${afterCancel.videoInputId} tracks vivas: ${previewTracksOpen} (modal aberto) → ` +
-      `${liveAfterCancel} (fechado)`,
+    `${liveAfterCancel} (fechado)`,
   );
 
   // Clique no backdrop é a terceira via de saída (junto de "Cancelar" e Esc). O
@@ -816,11 +983,11 @@ try {
   check(
     'S10. Trocar de microfone estando mudo gera track novo já com enabled=false (continua mudo)',
     mutedSwap.length === 2 &&
-      mutedSwap.every((peer) => peer.some((t) => t.kind === 'audio' && t.enabled === false)) &&
-      disjoint(kindIds(mutedSwap, 'audio'), audioAfter) &&
-      stillMuted === 1,
+    mutedSwap.every((peer) => peer.some((t) => t.kind === 'audio' && t.enabled === false)) &&
+    disjoint(kindIds(mutedSwap, 'audio'), audioAfter) &&
+    stillMuted === 1,
     `áudio ${JSON.stringify([...audioAfter])} → ${JSON.stringify([...kindIds(mutedSwap, 'audio')])}, ` +
-      `botão "Ativar mic" presente=${stillMuted === 1}`,
+    `botão "Ativar mic" presente=${stillMuted === 1}`,
   );
   await alice.page.getByRole('button', { name: 'Ativar mic' }).click();
   await alice.page.getByRole('button', { name: 'Silenciar' }).waitFor({ timeout: 5000 });
@@ -848,7 +1015,7 @@ try {
     'S11. Com a câmera desligada, trocar de câmera só grava a preferência — o LED não acende',
     camOffSwap.gum === gumBeforeSave && camOffSwap.liveVideo === 0 && camOffSwap.saved === 'cam-a',
     `getUserMedia ${gumBeforeSave} → ${camOffSwap.gum}, tracks de vídeo vivas=${camOffSwap.liveVideo}, ` +
-      `preferência=${camOffSwap.saved}`,
+    `preferência=${camOffSwap.saved}`,
   );
 
   await alice.page.getByRole('button', { name: 'Ativar câmera' }).click();
@@ -884,12 +1051,12 @@ try {
   check(
     'S15. A preferência é lida do localStorage num documento novo, e o modal abre na seleção salva',
     restored.stored &&
-      restored.video === restored.stored.videoInputId &&
-      restored.audio === restored.stored.audioInputId &&
-      restored.output === restored.stored.audioOutputId &&
-      restored.video === 'cam-a' &&
-      restored.output === 'spk-b' &&
-      restored.labelled,
+    restored.video === restored.stored.videoInputId &&
+    restored.audio === restored.stored.audioInputId &&
+    restored.output === restored.stored.audioOutputId &&
+    restored.video === 'cam-a' &&
+    restored.output === 'spk-b' &&
+    restored.labelled,
     `gravado=${JSON.stringify(restored.stored)} seletores=${restored.video}/${restored.audio}/${restored.output}`,
   );
   await homePage.close();
@@ -940,11 +1107,217 @@ try {
     recovered === false
       ? 'a preferência não voltou ao padrão ou nenhum aviso foi exibido'
       : `preferência="${recovered.saved}" aviso=${JSON.stringify(recovered.warning)} ` +
-        `tracks de áudio vivas=${recovered.audioLive}`,
+      `tracks de áudio vivas=${recovered.audioLive}`,
   );
 
   await alice.page.getByRole('button', { name: 'Cancelar' }).click();
   await alice.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
+  // ----------------------------------------------------------- N. música
+  // O roteiro cobre o caminho que só existe com três pessoas de verdade:
+  // votação da sala, fila convergente e áudio saindo pelo quarto canal.
+
+  const controlButtons = await alice.page.locator('.controls button').allTextContents();
+  check(
+    'N1. Botão "Música" entra na barra sem alterar o texto dos botões existentes',
+    controlButtons.includes('Música') &&
+    controlButtons.includes('Silenciar') &&
+    controlButtons.some((t) => t === 'Chat' || t.startsWith('Chat')),
+    JSON.stringify(controlButtons),
+  );
+
+  // Alice propõe. Em Bob e Carol tem que aparecer um card — e a tela **não**
+  // pode ficar bloqueada: música não é pedido de entrada, ignorar não deixa
+  // ninguém preso do lado de fora.
+  await alice.page.getByRole('button', { name: 'Música' }).click();
+  await waitFor(
+    async () =>
+      (await bob.page.locator('.music-vote-card').count()) === 1 &&
+      (await carol.page.locator('.music-vote-card').count()) === 1,
+    { timeout: 10000, label: 'card de votação em Bob e Carol' },
+  );
+  const cardText = await bob.page.locator('.music-vote-card').innerText();
+  // Usar a sala com a votação aberta não pode custar o voto: o card fica no
+  // canto, não intercepta clique nenhum, e "cliquei em Silenciar" não é
+  // "quis fechar a votação".
+  await bob.page.getByRole('button', { name: 'Silenciar', exact: true }).click();
+  const micToggled = await bob.page.getByRole('button', { name: 'Ativar mic' }).count();
+  await bob.page.getByRole('button', { name: 'Ativar mic' }).click();
+  await sleep(300);
+  const cardSurvived = await bob.page.locator('.music-vote-card').count();
+  check(
+    'N2. Votação é um card não-bloqueante: dá para usar a sala sem perder o voto',
+    cardText.includes('Alice') &&
+    /\d+s para votar/.test(cardText) &&
+    micToggled === 1 &&
+    cardSurvived === 1,
+    `${JSON.stringify(cardText.replace(/\n/g, ' | '))} mic clicável=${micToggled === 1} ` +
+    `card sobreviveu=${cardSurvived === 1}`,
+  );
+
+  // 2 sim (Alice, Bob) e 1 não (Carol): maioria dos válidos com quórum. O "não"
+  // fecha a votação antes do prazo, porque todo mundo já se manifestou.
+  await bob.page.locator('.music-vote-card').getByRole('button', { name: 'Sim' }).click();
+  await carol.page.locator('.music-vote-card').getByRole('button', { name: 'Não' }).click();
+
+  const musicFixture = writeAudioFixture('e2e-music-a.wav', { seconds: 40, freq: 440 });
+  const musicFixtureB = writeAudioFixture('e2e-music-b.wav', { seconds: 40, freq: 660 });
+
+  async function openMusicPanel(participant) {
+    await waitFor(
+      async () => {
+        if ((await participant.page.locator('.music-panel').count()) === 1) return true;
+        await participant.page.getByRole('button', { name: 'Música' }).click();
+        await sleep(300);
+        return (await participant.page.locator('.music-panel').count()) === 1;
+      },
+      { timeout: 15000, label: `painel de música de ${participant.name}` },
+    );
+  }
+
+  await openMusicPanel(alice);
+  await openMusicPanel(bob);
+  await openMusicPanel(carol);
+  check('N3. Aprovada por maioria, a votação habilita o player nos três participantes', true);
+
+  // Abrir o player fecha o chat e não pode ressuscitar o scroll de página: dois
+  // painéis no palco espremeriam os tiles até o piso de legibilidade.
+  const withMusic = await roomLayout(alice.page);
+  const chatStillOpen = await alice.page.locator('.chat-panel').count();
+  check(
+    'N4. Abrir a música fecha o chat e a página continua sem rolar',
+    chatStillOpen === 0 &&
+    noPageScroll(withMusic) &&
+    withMusic.controlsBottom <= withMusic.innerHeight + 1,
+    `chat aberto=${chatStillOpen} scrollHeight=${withMusic.scrollHeight}/${withMusic.innerHeight} ` +
+    `controls.bottom=${Math.round(withMusic.controlsBottom)}`,
+  );
+
+  // Alice e Bob adicionam uma faixa cada, quase ao mesmo tempo. Os três têm que
+  // exibir as duas na **mesma** ordem — é a ordem total por (lamport, autor, id).
+  await setInputValue(alice.page.getByLabel('Adicionar faixa por link'), musicFixture);
+  await setInputValue(bob.page.getByLabel('Adicionar faixa por link'), musicFixtureB);
+  await alice.page.locator('.music-composer').getByRole('button', { name: 'Adicionar' }).click();
+  await bob.page.locator('.music-composer').getByRole('button', { name: 'Adicionar' }).click();
+
+  const queueOf = async (participant) =>
+    participant.page.locator('.music-queue-item .music-queue-title').allTextContents();
+  const queues = await waitFor(
+    async () => {
+      const all = await Promise.all([queueOf(alice), queueOf(bob), queueOf(carol)]);
+      return all.every((q) => q.length === 2) ? all : false;
+    },
+    { timeout: 20000, label: 'as duas faixas na fila dos três participantes' },
+  );
+  check(
+    'N5. Faixas adicionadas por dois participantes aparecem na mesma ordem nos três',
+    JSON.stringify(queues[0]) === JSON.stringify(queues[1]) &&
+    JSON.stringify(queues[1]) === JSON.stringify(queues[2]),
+    queues.map((q) => JSON.stringify(q)).join(' vs '),
+  );
+
+  // O áudio da faixa de Alice tem que chegar pelo **quarto** canal (o dedicado a
+  // música), não pelo do microfone. Medir por mid é o que distingue os dois: se a
+  // música vazasse para o canal de voz, o teste passaria por acidente.
+  const musicBytes = await waitFor(
+    async () => {
+      const value = await bob.page.evaluate(async () => {
+        const pcs = (window.__wtkPeers || []).filter((pc) => pc.connectionState === 'connected');
+        let best = 0;
+        for (const pc of pcs) {
+          const recv = pc.getTransceivers().filter((t) => t.currentDirection === 'recvonly');
+          // Ordem das m-lines: mic, câmera, tela, música.
+          const music = recv[3];
+          if (!music?.receiver.track) continue;
+          const stats = await pc.getStats(music.receiver.track);
+          stats.forEach((report) => {
+            if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+              best = Math.max(best, report.bytesReceived || 0);
+            }
+          });
+        }
+        return best;
+      });
+      return value > 2000 ? value : false;
+    },
+    { timeout: 30000, label: 'áudio de música chegando no quarto canal de Bob' },
+  );
+  check(
+    'N6. O áudio da faixa chega a outro participante pelo canal dedicado de música',
+    musicBytes > 2000,
+    `bytesReceived no 4º canal=${musicBytes}`,
+  );
+
+  // Silenciar o microfone durante a música: o canal é outro, então a música não
+  // pode parar. Este é o bug que a decisão do canal dedicado existe para evitar.
+  const bytesBeforeMute = musicBytes;
+  await alice.page.getByRole('button', { name: 'Silenciar', exact: true }).click();
+  await sleep(3000);
+  const bytesAfterMute = await bob.page.evaluate(async () => {
+    const pcs = (window.__wtkPeers || []).filter((pc) => pc.connectionState === 'connected');
+    let best = 0;
+    for (const pc of pcs) {
+      const music = pc.getTransceivers().filter((t) => t.currentDirection === 'recvonly')[3];
+      if (!music?.receiver.track) continue;
+      const stats = await pc.getStats(music.receiver.track);
+      stats.forEach((report) => {
+        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+          best = Math.max(best, report.bytesReceived || 0);
+        }
+      });
+    }
+    return best;
+  });
+  await alice.page.getByRole('button', { name: 'Ativar mic' }).click();
+  check(
+    'N7. Silenciar o microfone de quem transmite não interrompe a música',
+    bytesAfterMute > bytesBeforeMute,
+    `bytesReceived ${bytesBeforeMute} → ${bytesAfterMute}`,
+  );
+
+  // Pular é aberto: quem não é dono da faixa também pode, e o estado converge.
+  const currentBefore = await alice.page.locator('.music-now-title').innerText();
+  await carol.page.locator('.music-now').getByRole('button', { name: 'Pular' }).click();
+  const currentAfter = await waitFor(
+    async () => {
+      const titles = await Promise.all(
+        [alice, bob, carol].map(async (p) => {
+          const n = await p.page.locator('.music-now-title').count();
+          return n === 1 ? p.page.locator('.music-now-title').innerText() : null;
+        }),
+      );
+      if (titles.some((t) => t === null || t === currentBefore)) return false;
+      return titles.every((t) => t === titles[0]) ? titles[0] : false;
+    },
+    { timeout: 20000, label: 'a próxima faixa assumindo em todos os participantes' },
+  );
+  check(
+    'N8. Qualquer participante pula a faixa, e a próxima assume nos três',
+    currentAfter && currentAfter !== currentBefore,
+    `"${currentBefore}" → "${currentAfter}"`,
+  );
+
+  const musicWire = (await wire(alice.page)).filter((f) => /music-|"entry"|queue-add/i.test(f.data));
+  check(
+    'N9. Nenhuma mensagem de música existe no protocolo Socket.IO',
+    musicWire.length === 0,
+    musicWire.slice(0, 2).map((f) => f.data.slice(0, 120)).join(' | '),
+  );
+
+  const musicStorage = await bob.page.evaluate(() => [
+    ...Object.keys(localStorage),
+    ...Object.keys(sessionStorage),
+  ]);
+  check(
+    'N10. Nada de música em localStorage/sessionStorage',
+    musicStorage.filter((k) => /music|queue|track|playlist/i.test(k)).length === 0,
+    JSON.stringify(musicStorage),
+  );
+
+  // Fecha o player nos três: a seção F mede toasts e vazamentos, e um painel
+  // aberto muda o palco medido.
+  for (const p of [alice, bob, carol]) {
+    await p.page.locator('.music-panel').getByRole('button', { name: 'Fechar player' }).click();
+  }
 
   // ------------------------------------------------ F. saída e vazamentos
   // Zera a fila de toasts antes de medir: o reload de Bob (seção D) gera um
@@ -1092,14 +1465,14 @@ try {
   check(
     'S16. Preferência salva para um device inexistente cai no padrão sem erro visível, e se corrige',
     stale !== false &&
-      stale.warnings === 0 &&
-      stale.liveTracks > 0 &&
-      stale.askedFor?.video === 'cam-de-outra-maquina' &&
-      stale.prefs.audioInputId !== 'mic-de-outra-maquina',
+    stale.warnings === 0 &&
+    stale.liveTracks > 0 &&
+    stale.askedFor?.video === 'cam-de-outra-maquina' &&
+    stale.prefs.audioInputId !== 'mic-de-outra-maquina',
     stale === false
       ? 'a preferência obsoleta continuou gravada'
       : `pedido inicial=${JSON.stringify(stale.askedFor)} → gravado=${JSON.stringify(stale.prefs)}, ` +
-        `avisos na tela=${stale.warnings} tracks vivas=${stale.liveTracks}`,
+      `avisos na tela=${stale.warnings} tracks vivas=${stale.liveTracks}`,
   );
 
   const queued = await waitFor(
@@ -1113,8 +1486,8 @@ try {
   check(
     'M5. O modal lista múltiplos pedidos simultâneos, um por linha',
     queued === 2 &&
-      queuedNames.some((t) => /Dave/.test(t)) &&
-      queuedNames.some((t) => /Erin/.test(t)),
+    queuedNames.some((t) => /Dave/.test(t)) &&
+    queuedNames.some((t) => /Erin/.test(t)),
     `pedidos=${queued} ${JSON.stringify(queuedNames.map((t) => t.replace(/\n/g, ' ')))}`,
   );
 
@@ -1148,7 +1521,7 @@ try {
     'L6. Em viewport móvel a página continua sem rolar e os controles seguem visíveis',
     noPageScroll(mobile) && mobile.controlsBottom <= mobile.innerHeight + 1,
     `scrollHeight=${mobile.scrollHeight}/${mobile.innerHeight} ` +
-      `controls.bottom=${Math.round(mobile.controlsBottom)}`,
+    `controls.bottom=${Math.round(mobile.controlsBottom)}`,
   );
 
   await alice.page.getByRole('button', { name: /^Chat/ }).click();
@@ -1168,13 +1541,13 @@ try {
   check(
     'L7. Em ≤720px o chat empilha abaixo da grade, a grade se reduz e a página continua sem rolar',
     noPageScroll(mobileChat) &&
-      stacked &&
-      mobileChat.stageHeight < mobile.stageHeight &&
-      mobileChat.tileFitsStage === true &&
-      mobileChat.controlsBottom <= mobileChat.innerHeight + 1,
+    stacked &&
+    mobileChat.stageHeight < mobile.stageHeight &&
+    mobileChat.tileFitsStage === true &&
+    mobileChat.controlsBottom <= mobileChat.innerHeight + 1,
     `empilhado=${stacked} área da grade ${Math.round(mobile.stageHeight)}px → ` +
-      `${Math.round(mobileChat.stageHeight)}px, tile cabe=${mobileChat.tileFitsStage}, ` +
-      `scrollHeight=${mobileChat.scrollHeight}/${mobileChat.innerHeight}`,
+    `${Math.round(mobileChat.stageHeight)}px, tile cabe=${mobileChat.tileFitsStage}, ` +
+    `scrollHeight=${mobileChat.scrollHeight}/${mobileChat.innerHeight}`,
   );
 
   // ---------------------------------------------- G. nada de erro no console
