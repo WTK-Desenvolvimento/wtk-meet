@@ -838,10 +838,10 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
       const player = activePlayer();
       switch (message.action) {
         case 'pause':
-          publishPlayback({ playing: false, positionSec: player?.positionSec ?? playback.positionSec });
+          publishPlayback({ playing: false, positionSec: currentPositionSec() });
           break;
         case 'resume':
-          publishPlayback({ playing: true, positionSec: player?.positionSec ?? playback.positionSec });
+          publishPlayback({ playing: true, positionSec: currentPositionSec() });
           break;
         case 'seek':
           if (Number.isFinite(message.positionSec)) {
@@ -853,7 +853,7 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
           break;
       }
     },
-    [activePlayer, isOwner, publishPlayback],
+    [activePlayer, currentPositionSec, isOwner, publishPlayback],
   );
 
   // -------------------------------------------------- recepção do data channel
@@ -963,9 +963,10 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
     const snapshot = buildSnapshot(current);
     if (snapshot.playback.entryId) {
       const player = current.playback.ownerId === selfIdRef.current ? activePlayer() : null;
-      snapshot.playback.positionSec = player
-        ? player.positionSec
-        : estimatePosition(current.playback, performance.now());
+      // Player carregando responde `0`: quem entrasse na sala durante uma troca
+      // de faixa começaria do início dela.
+      snapshot.playback.positionSec =
+        player && !player.loading ? player.positionSec : estimatePosition(current.playback, performance.now());
     }
     return snapshot;
   }, [activePlayer]);
@@ -1062,8 +1063,12 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
   useEffect(() => {
     const update = () => {
       const player = activePlayer();
+      // Durante a troca de faixa a estimativa é melhor que o `0` do player que
+      // ainda está subindo — senão a barra pisca no começo a cada faixa.
       setPosition(
-        player ? player.positionSec : estimatePosition(sessionRef.current.playback, performance.now()),
+        player && !player.loading
+          ? player.positionSec
+          : estimatePosition(sessionRef.current.playback, performance.now()),
       );
     };
     update();
