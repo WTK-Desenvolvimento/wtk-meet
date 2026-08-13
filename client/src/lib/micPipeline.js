@@ -73,18 +73,19 @@ function ensureModule(context) {
  */
 function passthrough(rawTrack, mode) {
   let stopped = false;
-  return {
+  const pipeline = {
     mode,
     processing: false,
     track: rawTrack,
     rawTrack,
-    setEnabled: async () => false,
+    release: () => pipeline,
     stop() {
       if (stopped) return;
       stopped = true;
       rawTrack?.stop();
     },
   };
+  return pipeline;
 }
 
 /**
@@ -157,34 +158,40 @@ export async function createMicPipeline({ rawTrack, enabled, mode, context } = {
   // O mute vive no track que vai para o mesh; o destino nasce habilitado e quem
   // instala ajusta antes do `replaceTrack`.
   let stopped = false;
+  const teardown = () => {
+    try {
+      source.disconnect();
+      node.disconnect();
+      destination.disconnect();
+    } catch {
+      // já desconectado
+    }
+  };
+
   return {
     mode,
     processing: true,
     track: processed,
     rawTrack,
     /**
-     * Liga/desliga o ganho sem desmontar nada: o processador continua no
-     * caminho, com ganho fixo 1.0. Desmontar mudaria o objeto do track e
-     * reconectar produziria um clique audível na transição.
+     * Desmonta o grafo e devolve um pipeline sobre o **mesmo track cru**, que
+     * continua vivo.
+     *
+     * É o desligamento do toggle em chamada: quem chama faz o `replaceTrack`
+     * para o track cru **antes**, e só então chama isto. Parar o processado
+     * primeiro abriria uma janela de silêncio audível para todos os peers.
      */
-    async setEnabled(value) {
-      try {
-        node.port.postMessage({ type: 'enabled', value: !!value });
-        return true;
-      } catch {
-        return false;
-      }
+    release() {
+      if (stopped) return passthrough(rawTrack, mode);
+      stopped = true;
+      teardown();
+      processed.stop();
+      return passthrough(rawTrack, mode);
     },
     stop() {
       if (stopped) return;
       stopped = true;
-      try {
-        source.disconnect();
-        node.disconnect();
-        destination.disconnect();
-      } catch {
-        // já desconectado
-      }
+      teardown();
       // Os **dois**: parar só o destino deixaria o `getUserMedia` vivo, com o
       // LED do microfone aceso depois de sair da sala.
       processed.stop();

@@ -1,4 +1,3 @@
-/* global AudioWorkletProcessor, registerProcessor, sampleRate */
 /**
  * Supressão de ruído por porta espectral — o motor de fallback.
  *
@@ -392,6 +391,10 @@ export function pushQuantum(state, input, output, { enabled = true } = {}) {
 // precisa **avaliar** nos dois mundos, e é só no worklet que a classe base
 // existe.
 const ProcessorBase = typeof AudioWorkletProcessor === 'function' ? AudioWorkletProcessor : class {};
+
+// `sampleRate` é global no escopo do `AudioWorkletGlobalScope`, e só lá — não é
+// um global de `window`, então o lint precisa ser avisado.
+/* global sampleRate */
 
 export class NoiseSuppressorProcessor extends ProcessorBase {
   constructor(options) {
