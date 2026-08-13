@@ -114,21 +114,34 @@ export function resolvePreferredDevice(list, savedId) {
   return found ? { deviceId: savedId, fellBack: false } : { deviceId: '', fellBack: true };
 }
 
-function constraintFor(wanted, deviceId) {
+function constraintFor(wanted, deviceId, extra = null) {
   if (!wanted) return false;
   // `ideal`, nunca `exact`: um device que sumiu entre o enumerateDevices e o
   // getUserMedia daria OverconstrainedError com `exact`, e a aplicação teria que
   // capturar, interpretar e reexecutar. Com `ideal` o navegador entrega o melhor
   // disponível e `getSettings()` diz qual foi (ver `reconcilePreferences`).
-  return deviceId ? { deviceId: { ideal: deviceId } } : true;
+  const hasExtra = extra && typeof extra === 'object' && Object.keys(extra).length > 0;
+  if (!deviceId && !hasExtra) return true;
+  return {
+    ...(deviceId ? { deviceId: { ideal: deviceId } } : null),
+    ...(hasExtra ? extra : null),
+  };
 }
 
-/** Constraints de `getUserMedia` a partir das preferências. */
-export function buildConstraints(prefs, { video = false, audio = false } = {}) {
+/**
+ * Constraints de `getUserMedia` a partir das preferências.
+ *
+ * `audioProcessing` é injetado por quem chama, e não lido daqui, porque a
+ * preferência de supressão mora em outra chave de storage e este módulo é puro
+ * (ver `lib/noiseSuppression.js`). Ramificar aqui por feature detection —
+ * `if (getSupportedConstraints().noiseSuppression)` — quebraria justamente a
+ * pureza que torna `devices.test.mjs` executável em `node:test`.
+ */
+export function buildConstraints(prefs, { video = false, audio = false, audioProcessing = null } = {}) {
   const safe = prefs || DEFAULT_PREFERENCES;
   return {
     video: constraintFor(video, safe.videoInputId),
-    audio: constraintFor(audio, safe.audioInputId),
+    audio: constraintFor(audio, safe.audioInputId, audioProcessing),
   };
 }
 

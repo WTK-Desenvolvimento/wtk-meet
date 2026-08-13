@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import SettingsModal from '../components/SettingsModal.jsx';
 import { readPreferences, writePreferences } from '../lib/devices.js';
+import { readAudioPreferences, writeAudioPreferences } from '../lib/noiseSuppression.js';
+import { detectNoiseMode } from '../lib/micPipeline.js';
 import { SIGNALING_URL } from '../config.js';
 import {
   MAX_ROOM_PATH_LENGTH,
@@ -54,6 +56,9 @@ export default function Home() {
   // Única exceção à regra de zero persistência do produto: preferência de
   // hardware (ver `lib/devices.js`).
   const [preferences, setPreferences] = useState(() => readPreferences(window.localStorage));
+  // Chave separada de `wtk-meet:devices` — o porquê está em `lib/noiseSuppression.js`.
+  const [audioPrefs, setAudioPrefs] = useState(() => readAudioPreferences(window.localStorage));
+  const noiseMode = useMemo(() => detectNoiseMode(), []);
 
   // O endereço é slugificado enquanto se digita, não rejeitado: quem escreve
   // "Sala do Nícolas" escreve assim porque é assim que se escreve, e descobrir
@@ -235,12 +240,15 @@ export default function Home() {
       {settingsOpen && (
         <SettingsModal
           preferences={preferences}
+          noiseSuppression={audioPrefs.noiseSuppression}
+          noiseMode={noiseMode}
           audioContext={null}
           onClose={() => setSettingsOpen(false)}
-          onSave={(next) => {
+          onSave={({ noiseSuppression, ...devicePrefs }) => {
             // Aqui não há chamada ativa: salvar só persiste. Quem aplica é o
             // primeiro getUserMedia da sala.
-            setPreferences(writePreferences(window.localStorage, next));
+            setPreferences(writePreferences(window.localStorage, devicePrefs));
+            setAudioPrefs(writeAudioPreferences(window.localStorage, { noiseSuppression }));
             setSettingsOpen(false);
           }}
         />
