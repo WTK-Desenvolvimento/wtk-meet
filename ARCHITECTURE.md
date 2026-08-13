@@ -296,7 +296,80 @@ explícita em vez de silêncio. O backdrop fica em `z-index` 30 e o conteúdo em
 acima dos toasts (20) — se esse empilhamento inverter, o clique em "Aprovar" é
 interceptado e ninguém entra na sala.
 
-### 6.8 Player de música colaborativo
+### 6.8 Destaque de compartilhamento de tela (80/20)
+
+A grade uniforme de §6.7 resolve "a sala cabe na tela"; ela não resolve "o que
+importa aparece maior". Com 3 participantes e 1 tela compartilhada, o palco vira
+2×2 e o slide recebe o mesmo retângulo de uma cabeça falante. São problemas
+diferentes, e a solução do segundo é **hierarquia visual**.
+
+**Ativação automática, reversão automática.** Basta uma tela ativa — local ou
+remota — para o palco trocar de `VideoGrid` para `SpotlightStage`, sem nenhuma
+ação do usuário; quando a última tela termina, a grade volta. Em `Room.jsx` os
+tiles viraram duas listas derivadas: `people` (câmeras) e `screens` (telas
+ativas, a sua primeiro e depois as remotas na ordem de chegada). `screenStream`
+nulo é "sem tela", não "tela vazia" — o peer anuncia `screenOn: false` e o mesh
+chama `onRemoteScreen(peerId, null)`.
+
+**A escolha do destaque é local e derivada, sem nada na rede.** Com duas ou mais
+telas, cada participante clica na miniatura para escolher qual vê em destaque, e
+isso não muda a tela de mais ninguém: a preferência vive num `useState`
+(`pinnedScreenId`) e o destaque **efetivo** é derivado a cada render por
+`resolveSpotlightScreen` — se a escolhida ainda está ativa ela vence, senão vence
+a primeira da lista. Nenhum evento novo no Socket.IO e nenhum `type` novo no data
+channel; a tabela de §5 continua verdadeira sem alteração. Derivar em vez de
+"corrigir" com um `useEffect` elimina a classe inteira de bugs de sincronização:
+`pinnedScreenId` pode apontar para uma tela que já acabou à vontade, porque nunca
+é lido sem validação, e uma segunda tela entrando não sobrescreve a escolha
+deliberada de quem já escolheu.
+
+**A geometria é calculada em JS**, pela mesma razão da grade:
+`client/src/lib/spotlightLayout.js` é puro e sem DOM. O "80/20" é um **alvo com
+trava** — a coluna fica em `clamp(RAIL_MIN_WIDTH, 20%, RAIL_MAX_WIDTH)` (160–280px),
+porque em ultrawide 20% viram uma miniatura desperdiçada e num laptop com o chat
+aberto viram 110px ilegíveis. O destaque recebe o resto, em 16:9 e reduzido para
+caber na altura: `flex: 4 / flex: 1` entrega a proporção mas estoura
+verticalmente numa janela achatada, ressuscitando o scroll que §6.7 eliminou. A
+miniatura tem piso de legibilidade (`MIN_THUMB_WIDTH`), e quando 20% ficariam
+abaixo dele quem engorda é a coluna, não o contrário.
+
+**O modo estreito é decidido pela caixa medida, não por media query.** Abaixo de
+`NARROW_STAGE_WIDTH` (720px de **palco**, não de viewport) o destaque vai a
+largura cheia e a coluna vira um painel sob demanda, sobreposto ao destaque. O
+palco encolhe quando o chat abre — uma media query de viewport diria "desktop"
+com 400px reais de palco. O painel fecha por `Esc`, por clique fora e pelo próprio
+botão: a regra oposta do modal de aprovação (§6.7) existe porque lá outra pessoa
+depende da decisão, e aqui não depende ninguém.
+
+**A coluna é um grupo de escolha acessível.** Cada tela é um `<button>` com
+`aria-pressed` e rótulo "Ver a tela de Fulano em destaque" — teclado e leitor de
+tela saem de graça, sem `tabindex`/`role`/handlers de Enter manuais. A tela que
+está em destaque continua listada, marcada como pressionada e **sem stream** (o
+tile cai no placeholder): renderizar a mesma imagem em dois `<video>` dobraria o
+custo de decodificação, e manter o botão no lugar preserva o foco ao trocar de
+destaque. Miniaturas de câmera não são clicáveis nem focáveis (fixar câmera está
+fora de escopo).
+
+**Ordem da coluna.** Sobem ao topo, nesta ordem: telas não destacadas, quem está
+falando, quem está compartilhando, você, e o resto na ordem de chegada; dentro de
+cada faixa a ordem de origem é preservada. Reordenar debaixo da mão de quem está
+rolando a coluna moveria o item que a pessoa está olhando, então fora do topo a
+ordem **congela** (`orderRailItems({ frozen })`) e as novidades entram no fim.
+Quem rola é sempre a coluna — nunca o destaque, nunca a página.
+
+**O áudio saiu do tile** (`components/PeerAudio.jsx`). Entrar e sair do destaque
+move o tile de container na árvore React, e mover um elemento entre pais o
+desmonta e remonta — o que cortaria o som do peer a cada início de
+compartilhamento e a cada troca de destaque. Todos os `<video>` são `muted` e o
+som sai de um `<audio>` por participante, montado uma única vez fora do palco.
+Separar transporte de áudio de posicionamento de vídeo torna qualquer rearranjo
+futuro de layout gratuito.
+
+A aritmética, o fallback e a ordenação estão fixados em
+`client/test/spotlightLayout.test.mjs`; o comportamento no navegador, no cenário C
+de `e2e/run.mjs`.
+
+### 6.9 Player de música colaborativo
 
 A sala tem um player estilo Spotify com fila colaborativa: qualquer participante
 adiciona faixas (arquivo local, URL direta de áudio ou link do YouTube) e a sala
@@ -392,8 +465,9 @@ fala. O dono passou a ser o `Room` (`lib/audioContext.js`): enquanto era o
 server/        signaling server (Express + Socket.IO, estado em memória)
 client/        app React (Vite) — UI, WebRTC mesh, E2EE via insertable streams
 client/test/   testes unitários (node:test): histerese de áudio, modelo de chat,
-               cálculo da grade de vídeos (§6.7) e o estado musical — fila,
-               votação, parsing de origens e sanitização do protocolo (§6.8)
+               cálculo da grade de vídeos (§6.7), do palco em destaque (§6.8)
+               e o estado musical — fila, votação, parsing de origens e
+               sanitização do protocolo (§6.9)
 e2e/           teste ponta a ponta com 3 participantes Chromium + TURN local
 infra/coturn/  config de referência para STUN/TURN self-hosted
 ```

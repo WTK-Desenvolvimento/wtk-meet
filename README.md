@@ -59,8 +59,10 @@ docker compose up -d
    tela e assumir a faixa que está tocando são trocas de track nesses canais, sem
    renegociar SDP. Quem já está na sala é avisado por um toast com bipe curto
    (silenciável).
-6. Durante a chamada: **compartilhamento de tela** aparece como um tile próprio (quem
-   compartilha continua na grade), **chat de texto** trafega P2P pelo data channel, e
+6. Durante a chamada: **compartilhar tela** coloca a sala em modo destaque — a tela
+   ocupa ~80% do palco e as câmeras (mais as outras telas) ficam numa coluna lateral
+   rolável; com mais de uma tela, cada participante escolhe localmente qual vê em
+   destaque, clicando na miniatura. **Chat de texto** trafega P2P pelo data channel, e
    o tile de quem está falando ganha um anel azul reativo ao volume.
 7. **Música (opcional):** o botão "Música" abre uma votação da sala; aprovada, libera
    um player com fila colaborativa. Qualquer participante adiciona faixas de arquivo
@@ -68,7 +70,7 @@ docker compose up -d
    visível). O áudio de arquivo local é retransmitido pelo canal de música de quem
    adicionou a faixa — o arquivo em si nunca sai da máquina dele. O volume é de cada
    ouvinte e nunca trafega.
-7. Cada frame de áudio/vídeo é cifrado com AES-GCM (chave derivada da passphrase via
+8. Cada frame de áudio/vídeo é cifrado com AES-GCM (chave derivada da passphrase via
    PBKDF2) antes de sair, usando Insertable Streams — funciona plenamente em navegadores
    Chromium; em Firefox/Safari a UI avisa que só a criptografia padrão do WebRTC está ativa.
 

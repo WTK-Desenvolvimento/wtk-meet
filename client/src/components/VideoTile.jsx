@@ -1,18 +1,24 @@
 import { useEffect, useRef } from 'react';
 
 /**
- * Um tile da grade. Serve tanto para câmera quanto para compartilhamento de
- * tela, e tanto para o participante local quanto para os remotos.
+ * Um tile de vídeo. Serve tanto para câmera quanto para compartilhamento de
+ * tela, tanto para o participante local quanto para os remotos, e tanto na
+ * grade uniforme quanto no destaque e na coluna de miniaturas (`compact`).
  *
  * O anel azul de "está falando" é puramente derivado do nível de áudio medido
  * localmente (ver `lib/audioLevels.js`) — nenhum dado de volume chega pela rede.
+ *
+ * O `<video>` é **sempre** `muted`: quem reproduz o áudio dos peers é o sink
+ * dedicado de `PeerAudio.jsx`. Um tile muda de container quando o palco entra ou
+ * sai do modo destaque, e o remonte do elemento cortaria o som do peer a cada
+ * mudança de layout — desacoplar as duas coisas é o que impede esse bug.
  */
 export default function VideoTile({
   stream,
   label,
-  muted = false,
   mirrored = false,
   contain = false,
+  compact = false,
   speaking = false,
   level = 0,
   cameraOff = false,
@@ -46,17 +52,20 @@ export default function VideoTile({
 
   return (
     <div
-      className={`video-tile${speaking ? ' speaking' : ''}${contain ? ' contain' : ''}`}
+      className={
+        `video-tile${speaking ? ' speaking' : ''}${contain ? ' contain' : ''}` +
+        `${compact ? ' compact' : ''}`
+      }
       style={{ '--speak-level': level.toFixed(2) }}
     >
-      {/* O <video> nunca é desmontado nem escondido com `display:none`: ele
-          continua reproduzindo o áudio do peer mesmo com a câmera desligada.
-          O placeholder é uma camada por cima. */}
+      {/* O <video> nunca é escondido com `display:none`: o placeholder é uma
+          camada por cima, e o elemento continua decodificando o que chega.
+          `muted` é fixo — o som dos peers sai por `PeerAudio.jsx`. */}
       <video
         ref={videoRef}
         autoPlay
         playsInline
-        muted={muted}
+        muted
         className={mirrored ? 'mirrored' : undefined}
       />
       {!showVideo && (

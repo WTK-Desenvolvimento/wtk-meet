@@ -4,7 +4,8 @@
  *
  *   A. conexão do mesh (3 participantes, 2 peers cada)
  *   B. indicador de fala (anel azul) sem tráfego de nível de áudio
- *   C. compartilhamento de tela + glare (dois compartilhando ao mesmo tempo)
+ *   C. compartilhamento de tela + glare (dois compartilhando ao mesmo tempo) e o
+ *      modo destaque 80/20 que ele ativa, com seleção local da tela destacada
  *   D. chat P2P via data channel, sem passar pelo servidor
  *   E. desligar/religar câmera com track.stop() e replaceTrack, sem renegociar
  *   N. player de música: votação, fila convergente e áudio no quarto canal
@@ -23,6 +24,7 @@ import {
   roomLayout,
   setInputValue,
   sleep,
+  spotlightLayout,
   startClientServer,
   startSignaling,
   startTurn,
@@ -405,9 +407,12 @@ try {
     carol.page.getByRole('button', { name: 'Compartilhar tela' }).click(),
   ]);
 
+  // Com duas telas ativas a coluna vira um grupo de escolha: uma miniatura por
+  // tela, a da tela em destaque marcada com `aria-pressed`. Esperar pelas duas
+  // miniaturas selecionáveis é esperar pelas duas telas de uma vez.
   await waitFor(
-    async () => (await alice.page.locator('.tile-badge').count()) >= 2,
-    { timeout: 25000, label: 'dois tiles de tela na grade de Alice' },
+    async () => (await alice.page.locator('.thumb-select').count()) >= 2,
+    { timeout: 25000, label: 'as duas telas no palco de Alice (uma em destaque, uma na coluna)' },
   );
   check('C1. Dois participantes compartilham tela ao mesmo tempo (glare)', true);
 
@@ -426,16 +431,166 @@ try {
     `setLocalDescription: ${sldBefore} → ${sldAfter}`,
   );
 
+  // O ponto da entrega: com tela compartilhada o palco **não** é mais uma grade
+  // uniforme. A tela em destaque é várias vezes maior que qualquer miniatura,
+  // em vez de dividir o palco em partes iguais com as câmeras.
+  const spotAlice = await spotlightLayout(alice.page);
   const aliceTilesWithScreen = await alice.page.locator('.video-tile').count();
-  check('C5. Grade de Alice cresce para 5 tiles (3 câmeras + 2 telas)', aliceTilesWithScreen === 5, `tiles=${aliceTilesWithScreen}`);
-
-  // Sair do compartilhamento restaura a grade.
-  await bob.page.getByRole('button', { name: 'Parar compartilhamento' }).click();
-  await waitFor(
-    async () => (await alice.page.locator('.video-tile').count()) === 4,
-    { timeout: 15000, label: 'grade sem a tela de Bob' },
+  check(
+    'C5. Com tela compartilhada o palco entra em modo destaque, e o destaque é ≥ 3× a miniatura',
+    spotAlice.active &&
+      !spotAlice.gridActive &&
+      // 1 destaque + 3 câmeras + 2 miniaturas de tela (a em destaque entra na
+      // coluna como marcador pressionado, sem stream — ver `Room.jsx`).
+      aliceTilesWithScreen === 6 &&
+      spotAlice.thumbCount === 5 &&
+      spotAlice.selectableCount === 2 &&
+      spotAlice.pressedCount === 1 &&
+      spotAlice.spotlightWidth >= spotAlice.thumbWidth * 3,
+    `destaque=${Math.round(spotAlice.spotlightWidth || 0)}px ` +
+      `miniatura=${Math.round(spotAlice.thumbWidth || 0)}px ` +
+      `miniaturas=${spotAlice.thumbCount} selecionáveis=${spotAlice.selectableCount} ` +
+      `pressionadas=${spotAlice.pressedCount} tiles=${aliceTilesWithScreen}`,
   );
-  check('C6. Sair do compartilhamento remove a track e restaura a grade', true);
+
+  const spotLayout = await roomLayout(alice.page);
+  check(
+    'C6. O modo destaque não gera scroll de página nem empurra os controles',
+    noPageScroll(spotLayout) &&
+      spotLayout.tileFitsStage &&
+      spotLayout.controlsBottom <= spotLayout.innerHeight + 1,
+    `scrollHeight=${spotLayout.scrollHeight}/${spotLayout.innerHeight} ` +
+      `destaque cabe no palco=${spotLayout.tileFitsStage}`,
+  );
+
+  // A escolha do destaque é **local**: Alice clicar na miniatura não pode mexer
+  // no que Bob está vendo. Sincronizar isso exigiria um evento novo na rede, que
+  // é justamente o que esta entrega não faz.
+  const bobBeforeSelect = await spotlightLayout(bob.page);
+  // A que **não** está pressionada: a pressionada é a que já está em destaque, e
+  // clicar nela seria um no-op.
+  await alice.page.locator('.thumb-select[aria-pressed="false"]').first().click();
+  const aliceAfterSelect = await waitFor(
+    async () => {
+      const now = await spotlightLayout(alice.page);
+      return now.spotlightLabel && now.spotlightLabel !== spotAlice.spotlightLabel ? now : null;
+    },
+    { timeout: 5000, label: 'o destaque de Alice trocar de tela' },
+  ).catch(() => null);
+  const bobAfterSelect = await spotlightLayout(bob.page);
+  check(
+    'C7. Clicar na miniatura troca o destaque só na aba que clicou',
+    !!aliceAfterSelect && bobAfterSelect.spotlightLabel === bobBeforeSelect.spotlightLabel,
+    `Alice: ${JSON.stringify(spotAlice.spotlightLabel)} → ${JSON.stringify(aliceAfterSelect?.spotlightLabel)} | ` +
+      `Bob: ${JSON.stringify(bobBeforeSelect.spotlightLabel)} → ${JSON.stringify(bobAfterSelect.spotlightLabel)}`,
+  );
+
+  // Teclado e leitor de tela: a miniatura de tela é um `<button>` de verdade,
+  // com rótulo e `aria-pressed`; a de câmera não é clicável nem focável.
+  //
+  // Enter/Espaço não são injetados aqui: neste headless o teclado via CDP não
+  // chega ao renderer (ver `setInputValue` no harness). O que se verifica é a
+  // razão de a tecla funcionar — o controle é um `<button>` nativo, focável e na
+  // ordem de tabulação, e não um `div` com `onClick` — mais a ativação pelo
+  // mesmo caminho que Enter dispara.
+  const railA11y = await alice.page.evaluate(() => {
+    const selectable = [...document.querySelectorAll('.thumb-select')];
+    const cameras = [...document.querySelectorAll('.thumb-item:not(.thumb-select)')];
+    const target = selectable.find((el) => el.getAttribute('aria-pressed') === 'false');
+    target?.focus();
+    return {
+      buttons: selectable.every(
+        (el) => el.tagName === 'BUTTON' && el.type === 'button' && el.hasAttribute('aria-pressed'),
+      ),
+      // `tabIndex === 0` sem atributo: é o padrão do `<button>` habilitado, o que
+      // prova que ninguém o tirou da tabulação.
+      tabbable: selectable.every((el) => el.tabIndex === 0 && !el.disabled),
+      labelled: selectable.every((el) => (el.getAttribute('aria-label') || '').includes('destaque')),
+      camerasInert: cameras.every(
+        (el) => el.tagName !== 'BUTTON' && !el.hasAttribute('tabindex') && !el.hasAttribute('role'),
+      ),
+      focused: !!target && document.activeElement === target,
+    };
+  });
+  const labelBeforeKeyboard = (await spotlightLayout(alice.page)).spotlightLabel;
+  // `click()` no elemento focado é exatamente o que a ativação por Enter faz.
+  await alice.page.evaluate(() => document.activeElement?.click());
+  const keyboardSwitched = await waitFor(
+    async () => (await spotlightLayout(alice.page)).spotlightLabel !== labelBeforeKeyboard,
+    { timeout: 5000, label: 'o destaque trocar pela ativação do botão focado' },
+  ).catch(() => false);
+  // O botão ativado continua existindo (agora pressionado) e o foco fica nele:
+  // é o ganho de manter a tela em destaque na coluna em vez de removê-la.
+  const focusKept = await alice.page.evaluate(
+    () => document.activeElement?.getAttribute('aria-pressed') === 'true',
+  );
+  check(
+    'C8. A miniatura de tela é operável por teclado; a de câmera não entra na tabulação',
+    railA11y.buttons &&
+      railA11y.tabbable &&
+      railA11y.labelled &&
+      railA11y.camerasInert &&
+      railA11y.focused &&
+      keyboardSwitched &&
+      focusKept,
+    `botões=${railA11y.buttons} tabuláveis=${railA11y.tabbable} rotulados=${railA11y.labelled} ` +
+      `câmeras inertes=${railA11y.camerasInert} focou=${railA11y.focused} ` +
+      `ativação trocou=${keyboardSwitched} foco preservado=${focusKept}`,
+  );
+
+  // Palco estreito: o destaque toma a largura inteira e a coluna vira um painel
+  // sob demanda. O limiar é medido no palco, não no viewport — por isso o teste
+  // encolhe a janela e depois devolve o tamanho, em vez de confiar numa media
+  // query.
+  const wideViewport = alice.page.viewportSize();
+  await alice.page.setViewportSize({ width: 500, height: 820 });
+  await sleep(400);
+  const narrowStage = await spotlightLayout(alice.page);
+  const narrowLayout = await roomLayout(alice.page);
+  await alice.page.locator('.participants-toggle').click();
+  await alice.page.locator('.participants-panel').waitFor({ timeout: 5000 });
+  const withPanel = await spotlightLayout(alice.page);
+  // Ao contrário do modal de aprovação, o painel fecha por Esc: aqui não há
+  // ninguém esperando uma decisão do outro lado. O evento é despachado de dentro
+  // da página pelo mesmo motivo da checagem M4 — o teclado via CDP não chega ao
+  // renderer neste headless.
+  await alice.page.evaluate(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  });
+  await alice.page.locator('.participants-panel').waitFor({ state: 'detached', timeout: 5000 });
+  const afterEscape = await spotlightLayout(alice.page);
+  check(
+    'C9. Em palco estreito o destaque ocupa a largura inteira e a coluna vira painel sob demanda',
+    narrowStage.narrow === true &&
+      narrowStage.railWidth === null && // nenhuma coluna no fluxo
+      narrowStage.toggleCount === 1 &&
+      withPanel.panelOpen === true &&
+      withPanel.selectableCount === 2 && // a mesma lista, no painel
+      afterEscape.panelOpen === false &&
+      noPageScroll(narrowLayout) &&
+      narrowLayout.controlsBottom <= narrowLayout.innerHeight + 1,
+    `estreito=${narrowStage.narrow} coluna=${narrowStage.railWidth} ` +
+      `botão=${narrowStage.toggleCount} painel abriu=${withPanel.panelOpen} ` +
+      `itens no painel=${withPanel.selectableCount} Esc fechou=${!afterEscape.panelOpen}`,
+  );
+  await alice.page.setViewportSize(wideViewport);
+  await sleep(400);
+
+  // Uma das telas acaba: o destaque migra para a que restou, sem tela em branco
+  // e sem voltar para a grade — ainda há o que destacar.
+  await bob.page.getByRole('button', { name: 'Parar compartilhamento' }).click();
+  const afterBobStopped = await waitFor(
+    async () => {
+      const now = await spotlightLayout(alice.page);
+      return now.active && now.selectableCount === 0 && !now.gridActive ? now : null;
+    },
+    { timeout: 15000, label: 'o destaque migrar para a tela que restou' },
+  ).catch(() => null);
+  check(
+    'C10. Com a tela em destaque encerrada, o destaque migra para a outra tela ativa',
+    !!afterBobStopped && (afterBobStopped.spotlightLabel || '').includes('Carol'),
+    `destaque agora: ${JSON.stringify(afterBobStopped?.spotlightLabel)}`,
+  );
 
   // Carol para pelo outro caminho: a barra nativa "Parar compartilhamento" do
   // navegador não é clicável em headless, mas o que ela faz com a página é
@@ -449,17 +604,21 @@ try {
   // O timeout vira `false` em vez de exceção: se este caminho quebrar, o certo é
   // a checagem reportar a falha com nome, não a suíte inteira abortar aqui.
   const gridRestored = await waitFor(
-    async () => (await alice.page.locator('.video-tile').count()) === 3,
-    { timeout: 15000, label: 'grade sem telas' },
+    async () => {
+      const now = await spotlightLayout(alice.page);
+      const tiles = await alice.page.locator('.video-tile').count();
+      return now.gridActive && !now.active && tiles === 3;
+    },
+    { timeout: 15000, label: 'a grade uniforme de volta, sem telas' },
   ).catch(() => false);
   // A track precisa ter sido efetivamente encerrada pelo handler, não só sumido
-  // da grade: é o que garante que a captura de tela realmente parou.
+  // do palco: é o que garante que a captura de tela realmente parou.
   const carolScreenEnded = await carol.page.evaluate(() =>
     [...window.__wtkDisplayTracks].every((t) => t.readyState === 'ended'),
   );
   const carolButtonBack = await carol.page.getByRole('button', { name: 'Compartilhar tela' }).count();
   check(
-    'C7. "Parar compartilhamento" do navegador (evento ended) também encerra a tela',
+    'C11. Sem nenhuma tela ativa o palco volta à grade uniforme (inclusive pelo evento ended)',
     endedDispatched && gridRestored && carolScreenEnded && carolButtonBack === 1,
     `ended disparado=${endedDispatched} grade restaurada=${gridRestored} ` +
       `track encerrada=${carolScreenEnded} botão restaurado=${carolButtonBack === 1}`,
