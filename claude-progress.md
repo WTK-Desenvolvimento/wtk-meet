@@ -344,6 +344,78 @@ O que não dá para cobrir em headless está listado como checklist manual em
 `docs/teste-3-participantes.md` (LED físico da webcam, `chrome://webrtc-internals`,
 barra nativa "Parar compartilhamento", diálogo de escolha de tela, Firefox/Safari).
 
+## Passada de QA do player de música (2026-08-13)
+
+Os módulos puros do player já vinham com teste. O que faltava era tudo o que toca
+DOM, WebAudio e `RTCPeerConnection` — que é exatamente onde as falhas deste
+recurso são **silenciosas**. Três arquivos novos, 53 casos, nenhuma linha de
+produção alterada:
+
+- `client/test/musicEngine.test.mjs` (22) — sonda de CORS nas quatro respostas
+  possíveis, os **dois** ramos do grafo (sem o de monitoração, só o dono não
+  ouve), ordem `crossOrigin` → `src`, modo `local` sem WebAudio, `objectURL`
+  revogado ao trocar de faixa/parar/destruir, autoplay bloqueado virando aviso, e
+  o track de saída estável entre faixas.
+- `client/test/musicMeshRouting.test.mjs` (17) — a ordem dos quatro transceivers,
+  a classificação por posição das m-lines remotas, música no `musicStream` (nunca
+  no de voz), autoria pela conexão e não pelo payload, snapshot no `onopen`, teto
+  de 96 kbps e microfone intocado ao assumir a faixa.
+- `client/test/youtubePlayer.test.mjs` (14) — API carregada sob demanda e uma vez
+  só, hook global encadeado, erro do player virando "faixa pulada com aviso",
+  volume 0–1 → 0–100.
+
+`npm --prefix client test` → **148/148**; `npm --prefix client run lint` → limpo.
+
+**Validação por mutação:** 10 mutantes plantados nos três módulos de produção
+(ramo de monitoração removido, `crossOrigin` depois do `src`, falha de CORS
+tratada como capturável, música criada antes da tela, lista de classificação sem
+`'music'`, música roteada para o stream de voz, autoria vinda do payload,
+snapshot não enviado no `onopen`, teto de banda não aplicado, erro do YouTube
+engolido) — **10 detectados**.
+
+### E2E: verde, mas intermitente **nas duas pontas**
+
+`node e2e/run.mjs` na branch → **67/67** (os 57 do roteiro existente + N1–N10 da
+música). O roteiro de música passou em todas as execuções que chegaram até ele.
+
+A primeira execução da sessão falhou com o mesh sem fechar ICE, o que levantou a
+suspeita da quarta m-line (risco §7 do documento de arquitetura). Não é: rodando
+em série e sem contenção, **o merge-base falha na mesma proporção**.
+
+| | passou | falhou |
+|---|---|---|
+| branch (com música) | 67/67, 67/67 | 1× mesh não reconectou após reload de Bob |
+| merge-base / `main` | 57/57, 61/61 | 1× `B3` (contagem de `requestAnimationFrame`) |
+
+Duas observações que valem mais que a estatística:
+
+1. **Execuções concorrentes contaminam a medição.** Duas rodadas simultâneas
+   disputam CPU e portas, e o sintoma é ICE que nunca conecta — idêntico ao de
+   uma regressão de negociação. Antes de concluir qualquer coisa a partir de uma
+   falha de mesh, varrer `/proc/*/cmdline` por `e2e/run.mjs` órfão (não há `ps`
+   aqui) e repetir em primeiro plano.
+2. As falhas da branch foram de ICE e a do base foi de temporização, então um
+   efeito marginal da quarta m-line sobre o TURN local **não está descartado** —
+   só não há evidência dele. Com `iceTransportPolicy: 'relay'` e o `node-turn`
+   em `debugLevel: 'ERROR'`, um TURN que não sobe não aparece no log: some a
+   malha inteira, sem mensagem.
+
+### O que ficou sem cobertura automatizada
+
+Tudo o que resta mora em `lib/useMusicRoom.js`, um hook React — o projeto não tem
+infraestrutura de teste de componente (nem `jsdom` nem testing-library nas
+devDependencies), e adicionar dependência não cabia a esta passada:
+
+- §8.8 — proponente que fecha a aba durante a votação (o código existe, em
+  `useMusicRoom.js`, no efeito que reage a quem saiu).
+- §8.20 — fim da faixa avançando para a próxima e fila vazia virando "nada
+  tocando".
+- §8.21 — sucessão do dono que fecha a aba no meio da faixa.
+- §8.23 — desvio de posição do YouTube abaixo de 2s após 60s.
+
+Os quatro estão no checklist manual de `docs/teste-3-participantes.md` (itens 7 a
+11), junto de arquivo local pelo seletor nativo e URL sem CORS.
+
 ## Notas para rodar o E2E neste ambiente
 
 Num ambiente normal, `npx playwright install-deps chromium` resolve tudo — o que
