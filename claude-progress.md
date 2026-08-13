@@ -1,3 +1,20 @@
+# Progresso — WTK-MEET-9: modal de configurações de câmera, microfone e saída de áudio
+
+**Status: implementação concluída e validada.** Branch
+`agent/wtk-meet-9-quero-que-seja-poss-vel-ajustar-as-confi`.
+
+Documento de arquitetura seguido:
+`docs/agents/arch-temp-modal-configuracoes-dispositivos.md` (produzido na fase de
+arquitetura desta mesma task).
+
+## O problema
+
+`Room.jsx` chamava `getUserMedia({ video: true, audio: true })` sem restrição de
+`deviceId`, e `toggleCamera` reaquiria com `{ video: true }`. O navegador sempre
+entregava o device **default do sistema**: quem usa webcam ou headset USB ficava preso
+ao hardware embutido do notebook, e a única saída era trocar o default no sistema
+operacional e recarregar a página. Não havia seleção de saída de áudio, nem preview —
+a pessoa descobria que a câmera errada estava ativa já visível para os outros.
 # Progresso — WTK-MEET-8: player de música colaborativo P2P
 
 **Status: implementação concluída e validada.** Branch
@@ -22,6 +39,39 @@ Esta sessão continuou dali, seguindo a ordem do §6 do documento a partir do it
 
 | Arquivo | Mudança |
 |---|---|
+| `client/src/lib/devices.js` | **Novo.** Módulo puro (sem DOM, sem `navigator`): normalização/dedup/rotulagem de `enumerateDevices`, `resolvePreferredDevice` com fallback, `buildConstraints` com `deviceId: { ideal }`, leitura/escrita validada de `wtk-meet:devices` e `reconcilePreferences` |
+| `client/src/lib/audioLevels.js` | `createLevelMeter({ stream, context, onLevel })` para o preview, fora do registro do monitor da sala; RMS→nível extraído para helper compartilhado com `_tick` |
+| `client/src/components/SettingsModal.jsx` | **Novo.** Modal único: listagem, seleção pendente, preview de vídeo, medidor de mic, seletor de saída, toggle de avisos sonoros, salvar/cancelar, `Esc`/backdrop, `devicechange` |
+| `client/src/components/VideoTile.jsx` | Prop `sinkId` + aplicação de `setSinkId` com `catch` (feature-detect, no-op sem suporte) |
+| `client/src/components/VideoGrid.jsx` | Repassa `sinkId`/`onSinkError` aos tiles |
+| `client/src/pages/Home.jsx` | Botão "Configurações" e modal; salvar aqui **só persiste** (não há chamada ativa) |
+| `client/src/pages/Room.jsx` | Preferências hidratadas no primeiro render; cadeia de fallback do `getLocalStream` em 3 passos; reconciliação pós-`getUserMedia`; `toggleCamera` respeita a câmera preferida; `applyDeviceSelection` (tabela §3.8); recuperação por `ended`/`devicechange`; botão em `.controls` e na fase de espera; toggle de avisos removido da barra |
+| `client/src/styles.css` | `.modal-backdrop.settings` (z-index 28, modificadora de camada), `.settings-modal`, preview 16:9, `.mic-meter` dirigido por custom property, seletor desabilitado |
+| `client/test/devices.test.mjs` | **Novo.** 27 casos: dedup, aliases do Chrome, rotulagem sintética, resolução/fallback, storage corrompido, reconciliação |
+| `e2e/harness.mjs` | Camada de simulação de dispositivos (registro mutável, `enumerateDevices`, `gumRequests`, `setSinkId`, `__wtkAddDevice`/`__wtkRemoveDevice`), helpers `openSettings`/`setSelectValue`/`senderTracks`, semente de preferências em `openParticipant` |
+| `e2e/run.mjs` | Bloco **S** novo (S1–S16) e F4a/F4b para o toggle de avisos que mudou de lugar |
+| `README.md`, `ARCHITECTURE.md` | Fluxo de seleção, chave `wtk-meet:devices` e a exceção à regra de zero persistência (nova §6.8, §1, §8, §9) |
+
+## Decisões que valem registrar
+
+1. **`deviceId: { ideal }` + reconciliação, nunca `{ exact }`.** `exact` transformaria
+   "o device sumiu" em `OverconstrainedError` a ser capturado e reexecutado. Com
+   `ideal`, o caminho feliz já satisfaz o item 6 do DoD.
+2. **A reconciliação só corrige um id que foi pedido e não atendido.** Reconciliar um
+   id vazio fixaria "Padrão do sistema" no device do momento — transformando uma
+   escolha explícita de seguir o sistema numa escolha concreta pelas costas do usuário.
+3. **Com a câmera desligada, o modal não pede vídeo no preview.** O documento previa
+   preview sempre ligado; abrir a câmera para pré-visualizar uma câmera que a pessoa
+   acabou de desligar acende o LED sem pedido. O modal recebe `videoPreview={!cameraOff}`
+   e mostra uma explicação no lugar do vídeo. Foi o E2E (S11) que cobrou a consequência:
+   a seleção de câmera também saiu das dependências do preview nesse estado, senão
+   trocar de câmera dispararia um `getUserMedia` para reabrir o mesmo stream de mic.
+4. **`enabled = !muted` antes do `replaceTrack`.** Depois seria tarde: existe uma
+   janela de frames em que o áudio vazaria. Coberto por S10.
+5. **`detach('local')` antes do `attach('local', stream)`** na troca de mic — o
+   `attach` é idempotente por (id, stream) e o `MediaStream` é o mesmo objeto.
+6. **Bloco E2E chamado `S`, não `H`:** o documento pedia "bloco H", mas `H` já existia
+   no arquivo (inventário do tráfego do servidor).
 | `client/src/lib/webrtcMesh.js` | Quarto transceiver `sendonly` de áudio criado **depois** do de tela; `_classifyTransceiver` estendido para `['audio','camera','screen','music']` na mesma edição; `rec.musicStream` + `onRemoteMusic`; `setMusicTrack` com `contentHint='music'` e `maxBitrate` de 96 kbps por conexão; roteamento de `music-*` para `onMusicMessage`; snapshot musical no `onopen` do canal |
 | `client/src/lib/musicEngine.js` | **Novo.** Grafo WebAudio (`<audio>` → `MediaElementSource` → `MediaStreamDestination` + ramo de monitoração local), sonda de CORS por `Range: bytes=0-0`, ciclo de vida de `objectURL`, `play()` cuja rejeição vira aviso em vez de silêncio |
 | `client/src/lib/youtubePlayer.js` | **Novo.** IFrame API carregada sob demanda (nada da Google no bundle), atrás de `VITE_ENABLE_YOUTUBE`, com a mesma superfície do motor (`play`/`pause`/`seek`/`positionSec`) |
@@ -80,6 +130,78 @@ morto deliberado, pronto para quando/se a decisão mudar.
 ## Verificação executada
 
 - `npm --prefix client run lint` → limpo
+- `npm --prefix client test` → **66/66** (27 novos em `devices.test.mjs`;
+  `audioLevels`, `gridLayout`, `chat` e sinalização sem regressão)
+- `npm --prefix client run build` → ok
+- `node e2e/run.mjs` → **76/76**, com o bloco S cobrindo: listagem sem duplicatas,
+  troca de câmera+mic em chamada com track novo em todos os senders e SDP inalterado,
+  cancelamento por `Esc` e por clique no backdrop, `setSinkId` em todos os tiles, troca
+  de mic estando mudo, troca de câmera com a câmera desligada, releitura da preferência
+  num documento novo, `devicechange` (conectar e arrancar em uso) e preferência
+  obsoleta se corrigindo.
+
+Quatro execuções da suíte no total. Uma delas (a segunda) abortou em **"mesh
+reconectado após reload de Bob"**, na seção D — passo que existe desde a entrega
+anterior e que não é tocado por esta: todas as conexões apareceram em
+`failed`/`disconnected`, e as outras três execuções passaram no mesmo commit. É
+intermitência do TURN local sob carga, não regressão. Vale rodar de novo antes de
+investigar.
+
+**A intermitência do TURN foi isolada, não presumida.** Numa sessão em que a suíte
+abortou duas vezes seguidas em "mesh conectado (2 peers por participante)" — a
+primeira checagem que depende de ICE, com `conn: failed` / `ice: disconnected` em
+todos os participantes e **nenhum erro de console** —, o experimento decisivo foi
+rodar a suíte no estado anterior à task (`git checkout 6bc3129 -- client e2e`, rodar,
+`git checkout HEAD -- client e2e` para restaurar): o código **sem nada desta entrega
+falhou exatamente no mesmo ponto**. Na execução seguinte, com a máquina ociosa, o
+mesmo commit passou 76/76. Duas coisas para a próxima pessoa:
+
+- O sintoma se agrava quando **duas suítes rodam ao mesmo tempo** no sandbox (4
+  núcleos, dois TURN, seis contextos Chromium). Se houver outra execução em voo,
+  espere-a terminar antes de concluir qualquer coisa sobre uma falha de ICE.
+- UDP em loopback continua funcionando no Node quando isso acontece (testável com um
+  `dgram` de 5 linhas), então "a rede caiu" não é a explicação — é alocação de TURN
+  sob contenção de CPU. Rodar de novo é mais barato que investigar.
+
+O bloco S foi o que cobrou a decisão 3 acima: a primeira execução falhou em S11
+porque trocar a câmera com a câmera desligada ainda reiniciava o preview (só de
+áudio) e gastava um `getUserMedia`. Hoje o contador não se move.
+
+### Correção de ambiente incluída
+
+`client/test/joinRequestSignaling.test.mjs` e `e2e/harness.mjs` passaram a matar o
+processo de sinalização com `SIGKILL`. Onde o `SIGTERM` não é entregue ao filho (é o
+caso deste sandbox), o `await` pelo evento `exit` nunca resolvia e o `npm test`
+terminava em *"Promise resolution is still pending"* — com todos os casos verdes e
+nenhum vermelho para explicar. A mesma correção já existia na branch da WTK-MEET-6;
+esta branch partiu de um ponto que não a tinha.
+
+## O que ficou fora (e por quê)
+
+- Controles de qualidade de áudio (`echoCancellation`, `noiseSuppression`, ganho) e
+  resolução/framerate de câmera: são constraints de qualidade, não seleção de
+  hardware — demanda separada (§2 do documento).
+- Botão "Testar saída" e "Restaurar padrões": §9.4 do documento os classifica como
+  fora do DoD, a propor e não a implementar por conta própria.
+- Sincronizar a preferência entre abas (evento `storage`): cada aba é uma sessão de
+  chamada independente.
+- Seleção de fonte para compartilhamento de tela: `getDisplayMedia` já tem o seletor
+  nativo do navegador.
+
+## Checklist manual que o navegador headless não cobre
+
+- LED físico da webcam ao trocar de câmera com a câmera desligada (S11 prova que
+  nenhum `getUserMedia` de vídeo acontece, que é a causa; o LED em si é físico).
+- `setSinkId` de verdade mudando o alto-falante que emite o som (o harness registra a
+  chamada, o headless não tem saída de áudio real).
+- Seletor de saída desabilitado com explicação no Firefox (que não implementa
+  `setSinkId` por padrão) — o teste cobre a feature detection, não o navegador.
+- Conectar/desconectar um headset USB físico com o modal aberto.
+
+---
+
+
+# Histórico — WTK-MEET-5: layout de viewport fixo, grade automática e modal de aprovação
 - `npm --prefix client test` → **95/95** (12 novos de `musicProtocol`; `audioLevels`
   e `gridLayout` verdes **sem edição**, como o documento exige)
 - `npm --prefix client run build` → ok

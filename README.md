@@ -1,8 +1,10 @@
 # wtk-meet
 
 Videochamadas em grupo (até 6 pessoas) em mesh P2P via WebRTC, com uma camada extra de
-E2EE por cima do DTLS-SRTP nativo. Sem persistência de dados, sem infraestrutura de
-terceiros: sinalização própria (Node.js) e STUN/TURN self-hosted (coturn).
+E2EE por cima do DTLS-SRTP nativo. Nada do que acontece numa chamada é gravado — a
+única preferência que sobrevive à aba é qual câmera/microfone/saída você escolheu usar
+(veja abaixo). Sem infraestrutura de terceiros: sinalização própria (Node.js) e
+STUN/TURN self-hosted (coturn).
 
 Veja `ARCHITECTURE.md` para as decisões de arquitetura e trade-offs.
 
@@ -79,7 +81,7 @@ docker compose up -d
 - **Chat**: nenhum evento de chat existe no servidor Socket.IO. As mensagens vão pelo
   `RTCDataChannel` de cada conexão do mesh.
 - **Histórico**: só existe na memória da aba. Recarregar a página ou sair da sala apaga
-  a conversa por completo — não há `localStorage`, `sessionStorage` nem banco.
+  a conversa por completo — o chat não usa `localStorage`, `sessionStorage` nem banco.
 - **Indicador de fala**: os níveis de áudio são medidos localmente com
   `AudioContext` + `AnalyserNode`. Nenhum nível é transmitido.
 - **Câmera desligada / tela ligada**: anunciados pelo data channel, não pelo servidor.
@@ -87,6 +89,29 @@ docker compose up -d
   trafegam pelo mesmo data channel, com snapshot para quem entra depois. Nenhuma rota
   nem evento novo no servidor, e nada em storage — a fila morre com a sala.
 
+### Escolher câmera, microfone e saída de áudio
+
+O botão **Configurações** abre o mesmo modal em três lugares: na Home, na tela de
+espera e na barra de controles da sala. Ele lista os dispositivos com os rótulos do
+sistema, mostra preview de vídeo ao vivo e um medidor do microfone, e traz também o
+toggle de avisos sonoros (que saiu da barra de controles).
+
+- Salvar em chamada troca o track em todos os peers por `replaceTrack`, **sem
+  renegociar SDP** e sem derrubar a mídia que não mudou. Trocar de microfone estando
+  mudo não desmuta; trocar de câmera com a câmera desligada só guarda a escolha, sem
+  acender o LED.
+- A escolha é gravada em `localStorage`, sob a chave `wtk-meet:devices`
+  (`videoInputId`, `audioInputId`, `audioOutputId`, `soundsEnabled`). **É a única
+  exceção à regra de zero persistência** — ela vale para conteúdo e metadado de
+  chamada, não para qual periférico do seu próprio equipamento usar. Limpar os dados
+  do site apaga a preferência.
+- Se o dispositivo salvo não existir mais (outra máquina, dock desconectada), a
+  chamada abre pelo padrão do sistema **sem erro na tela** e a preferência se corrige
+  sozinha. Desconectar um dispositivo em uso volta ao padrão e avisa.
+- A saída de áudio depende de `setSinkId`: onde o navegador não implementa (Firefox
+  por padrão), o seletor aparece desabilitado com a explicação.
+
+Ver `ARCHITECTURE.md` §6 para o desenho e os trade-offs (§6.8 para dispositivos).
 Ver `ARCHITECTURE.md` §6 para o desenho e os trade-offs (§6.8 para a música).
 
 ### Uma exceção declarada: YouTube
@@ -108,6 +133,8 @@ da sessão. Se a promessa de privacidade for absoluta na sua instalação, desli
 ## Testes
 
 ```bash
+cd client && npm test     # unitários (node:test): histerese do indicador, modelo de
+                          # chat, grade de vídeos e seleção de dispositivos
 cd client && npm test     # unitários (node:test): histerese do indicador, modelo de chat,
                           # grade de vídeos e o estado do player de música
 cd client && npm run lint
@@ -120,6 +147,14 @@ O E2E sobe um TURN em `127.0.0.1` (o client usa `iceTransportPolicy: 'relay'`, e
 sem TURN nenhuma conexão fecha nem em loopback), builda o client apontando para uma
 porta sorteada, abre três contextos Chromium isolados com câmera/microfone falsos e
 percorre o roteiro completo: conectar, falar, compartilhar tela (inclusive dois ao
+mesmo tempo, para exercitar glare), trocar mensagens, desligar/religar a câmera, trocar
+de câmera e microfone pelo modal de configurações e sair da sala. Requer as
+dependências de sistema do Chromium (`npx playwright install-deps`).
+
+A flag de câmera falsa do Chromium expõe **um** dispositivo de cada tipo, e não existe
+flag para um segundo — então o harness simula um registro de dispositivos
+(`enumerateDevices`, `devicechange`, `setSinkId`) por cima dele. Sem isso, "trocar de
+câmera" seria inexecutável no navegador.
 mesmo tempo, para exercitar glare), trocar mensagens, desligar/religar a câmera, ligar
 o player de música por votação (fila colaborativa, áudio no quarto canal, pular faixa)
 e sair da sala. Requer as dependências de sistema do Chromium

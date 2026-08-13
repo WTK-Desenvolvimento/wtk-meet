@@ -1,16 +1,20 @@
 # wtk-meet — Arquitetura
 
 Videochamadas em grupo (até 6 pessoas), mesh P2P via WebRTC, com camada extra de E2EE
-client-side e zero persistência. Documento mantido por Winston (Arquiteto).
+client-side e zero persistência de **conteúdo e metadado de chamada** — a única
+exceção é a preferência de dispositivos de mídia, delimitada e justificada em §6.8.
+Documento mantido por Winston (Arquiteto).
 
 ## 1. Objetivos e restrições
 
 - Até 6 participantes por sala.
 - Mídia nunca passa por um servidor de aplicação — apenas P2P (mesh) com fallback de
   relay via TURN self-hosted quando NAT/firewall impede conexão direta.
-- Nenhuma persistência: sem banco de dados, sem gravação de chamadas, sem logs de
-  conteúdo. O processo de sinalização mantém estado apenas em memória, por sala, e o
-  descarta quando a sala esvazia ou o servidor reinicia.
+- Nenhuma persistência de conteúdo ou metadado de chamada: sem banco de dados, sem
+  gravação de chamadas, sem logs de conteúdo. O processo de sinalização mantém estado
+  apenas em memória, por sala, e o descarta quando a sala esvazia ou o servidor
+  reinicia. A **única** coisa gravada no navegador é qual câmera/microfone/saída a
+  pessoa escolheu usar (§6.8) — não é conteúdo, não é identidade, e nunca sai da aba.
 - Entrar numa sala exige aprovação explícita de alguém que já está presente
   (sem "salas abertas" por padrão).
 - Nenhuma dependência de infraestrutura de terceiros: sinalização própria (Node.js) e
@@ -187,7 +191,7 @@ receptor levaria segundos no Chromium, enquanto o anúncio pelo data channel é
 imediato — e continua sendo P2P.
 
 **Histórico é efêmero por construção.** As mensagens vivem apenas no estado do
-React: não há `localStorage`, `sessionStorage`, IndexedDB nem servidor.
+React: **o chat** não usa `localStorage`, `sessionStorage`, IndexedDB nem servidor.
 Recarregar a página ou sair da sala apaga a conversa por completo. Quem entra
 depois não recebe o que foi dito antes — não existe backlog para entregar.
 
@@ -448,6 +452,79 @@ ser conectados, então o grafo da música precisa do mesmo contexto do indicador
 fala. O dono passou a ser o `Room` (`lib/audioContext.js`): enquanto era o
 `AudioLevelMonitor`, um `monitor.close()` mataria a música em silêncio.
 
+### 6.10 Seleção de dispositivos de mídia
+
+Um modal único de configurações (`components/SettingsModal.jsx`), alcançável em três
+pontos — Home, tela de espera/conexão e barra de controles da sala — escolhe **entrada
+de vídeo, entrada de áudio e saída de áudio**, com preview ao vivo e medidor de nível
+do microfone. Antes desta entrega o app chamava `getUserMedia({ video: true, audio:
+true })` sem restrição: quem usa webcam ou headset USB ficava preso ao hardware
+embutido, e a única saída era trocar o default no sistema operacional e recarregar.
+
+**Exceção nomeada e delimitada à regra de zero persistência.** As preferências
+(`videoInputId`, `audioInputId`, `audioOutputId`, `soundsEnabled`) são gravadas em
+`localStorage`, sob a chave `wtk-meet:devices`. Elas não são conteúdo nem metadado de
+chamada: nunca são enviadas ao servidor de sinalização nem trafegam pelo data channel,
+não dizem com quem se falou nem quando, e um `deviceId` é escopado à origem e ao
+perfil do navegador (rotaciona quando os dados do site são limpos). A alternativa —
+reescolher o headset a cada chamada — é um custo real e recorrente, cobrado justamente
+de quem investiu em hardware melhor. `sessionStorage` (usado para o nome de exibição)
+não serve: ele morre ao fechar a aba. **Nada além dessas quatro chaves ganha
+persistência**; o histórico de chat continua estritamente em memória (§6.3).
+
+A lógica vive em `client/src/lib/devices.js`, um módulo **puro, sem DOM** — mesmo
+padrão de `gridLayout.js`. Ele recebe a lista crua de `enumerateDevices` e um objeto
+storage-like e devolve estruturas; quem faz I/O é o componente. Isso é o que torna
+dedup, rotulagem e fallback verificáveis em `client/test/devices.test.mjs`, sem
+navegador.
+
+Quatro decisões carregam o resto:
+
+- **`deviceId: { ideal }`, nunca `{ exact }`.** Com `exact`, um device que sumiu entre
+  o `enumerateDevices` e o `getUserMedia` provoca `OverconstrainedError`, que a
+  aplicação teria que capturar, interpretar e reexecutar. Com `ideal` o navegador
+  entrega o melhor disponível, `track.getSettings().deviceId` diz qual foi, e a
+  preferência é **reconciliada** com esse valor. Uma preferência que aponta para
+  hardware de outra máquina se conserta sozinha, sem nenhuma mensagem de erro na
+  entrada da sala — ninguém pode agir sobre esse aviso no momento em que está
+  entrando numa chamada. A reconciliação só corrige um id que foi *pedido e não
+  atendido*: um id vazio ("Padrão do sistema") nunca é fixado no device do momento.
+- **A lista é normalizada.** Entradas sem `deviceId` (que é o que `enumerateDevices`
+  devolve antes da permissão) são descartadas, assim como os aliases reservados do
+  Chrome `default` e `communications` — sem isso o mesmo microfone aparece três vezes,
+  e salvar `'default'` seria uma armadilha: o id nunca fica inválido, então o fallback
+  nunca dispara, mas o hardware por trás dele muda sem aviso. A dedup é por
+  `deviceId` e, como segunda barreira, por `(groupId, label)` — nunca só por rótulo,
+  que colapsaria duas webcams idênticas em uma.
+- **Preview primeiro, enumeração depois.** É o `getUserMedia` do preview que concede a
+  permissão; sem ela os rótulos vêm vazios. O preview usa um medidor de nível
+  **isolado** (`createLevelMeter`), fora do registro do `AudioLevelMonitor` da sala:
+  o `retainOnly` do `Room` detacha qualquer id que não seja um peer, então um preview
+  registrado lá morreria na próxima entrada ou saída de alguém. O medidor reusa o
+  `AudioContext` da sala — a invariante de um contexto por aba (§6.4) continua valendo.
+- **Trocar de device em chamada é `replaceTrack`, não renegociação.** A troca reusa
+  `setCameraTrack`/`setAudioTrack` do mesh (§6.1): nenhum SDP novo, nenhum
+  `setLocalDescription`. Duas regras não óbvias: o track novo nasce com
+  `enabled = true`, então trocar de microfone estando mudo **desmutaria a pessoa** se
+  o `enabled = !muted` não viesse *antes* do `replaceTrack`; e trocar de câmera com a
+  câmera desligada apenas grava a preferência — reacender o LED da webcam para aplicar
+  algo que ninguém pediu não é aceitável, e a escolha passa a valer no próximo "Ativar
+  câmera".
+
+A saída de áudio é aplicada por elemento de mídia, com `HTMLMediaElement.setSinkId`
+em cada tile. Onde a API não existe (Firefox por padrão), o seletor aparece
+**desabilitado com explicação** em vez de escondido — esconder faz quem viu o recurso
+em outro navegador procurar o que não está lá. Toda chamada é embrulhada em `catch`:
+uma rejeição não tratada dentro de um efeito viraria `unhandledrejection`.
+
+Quando um device em uso é arrancado, o navegador encerra o track e **não** migra
+sozinho: o `ended` do track local dispara a recuperação (volta ao padrão do sistema,
+readquire o microfone e avisa na tela). Com o modal aberto, `devicechange` só
+reenumera — reiniciar o preview a cada evento faria a câmera piscar, já que um único
+headset USB dispara vários eventos seguidos. O E2E simula múltiplos dispositivos no
+harness (o Chromium expõe uma câmera e um microfone falsos e não há flag para um
+segundo), no bloco `S` de `e2e/run.mjs`.
+
 ## 7. Stack
 
 - **Frontend:** React + Vite. `RTCPeerConnection` nativo (sem SDK de terceiros tipo
@@ -496,3 +573,8 @@ infra/coturn/  config de referência para STUN/TURN self-hosted
   total — deve ser uma decisão consciente do produto, não uma otimização silenciosa.
 - Insertable Streams: sem suporte pleno em Firefox/Safari no momento; UI comunica
   quando a chamada está rodando apenas com a criptografia padrão do WebRTC.
+- Seleção de dispositivos (§6.8) cobre **escolha de hardware**, não qualidade: não há
+  controle de `echoCancellation`, `noiseSuppression`, ganho de entrada nem resolução
+  de câmera. Também não há botão de "testar saída", nem seletor de fonte para
+  compartilhamento de tela (`getDisplayMedia` já traz o seletor nativo do navegador), e
+  a preferência não é sincronizada entre abas — cada aba é uma sessão independente.
