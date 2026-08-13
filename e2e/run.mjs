@@ -234,6 +234,18 @@ try {
   await waitFor(everyoneConnected, { timeout: 45000, label: 'mesh conectado (2 peers por participante)' });
   check('A1. Mesh conecta: 3 participantes, 2 RTCPeerConnection "connected" cada', true);
 
+  // Aferido aqui, com todo mundo dentro: mais adiante Bob e Carol saem da sala
+  // (seção F) e a URL deles vira a da Home. O que esta checagem prova é o
+  // essencial do endereço novo — navegadores diferentes, abrindo o mesmo
+  // endereço personalizado na raiz, terminam na mesma sala, com mídia fluindo
+  // (é o que A1–A3 mediram no mesmo instante).
+  const urlEsperada = `${CLIENT_ORIGIN}/${roomId}#${passphrase}`;
+  check(
+    'R1. Os três navegadores estão no endereço personalizado, na raiz e sem /room/',
+    [alice, bob, carol].every((p) => p.page.url() === urlEsperada),
+    [alice, bob, carol].map((p) => `${p.name}=${p.page.url()}`).join(' '),
+  );
+
   // Layout esperado por conexão: 4 canais de envio (mic, câmera, tela, música) e
   // os 4 espelhos de recepção criados pelo navegador ao aplicar a oferta remota.
   //
@@ -978,7 +990,10 @@ try {
   );
 
   // ------------------------------------- S. trocar de mic estando silenciado
-  await alice.page.getByRole('button', { name: 'Silenciar' }).click();
+  // `exact` obrigatório: a barra tem "Silenciar" (microfone) e "Silenciar
+  // avisos" (bipe), e o seletor solto casa os dois — erro de strict mode que
+  // aborta a suíte inteira aqui, longe da causa.
+  await alice.page.getByRole('button', { name: 'Silenciar', exact: true }).click();
   await alice.page.getByRole('button', { name: 'Ativar mic' }).waitFor({ timeout: 5000 });
   await openSettings(alice.page);
   await setSelectValue(alice.page.locator('.settings-modal select').nth(1), 'mic-a');
@@ -999,7 +1014,7 @@ try {
     `botão "Ativar mic" presente=${stillMuted === 1}`,
   );
   await alice.page.getByRole('button', { name: 'Ativar mic' }).click();
-  await alice.page.getByRole('button', { name: 'Silenciar' }).waitFor({ timeout: 5000 });
+  await alice.page.getByRole('button', { name: 'Silenciar', exact: true }).waitFor({ timeout: 5000 });
 
   // ------------------------------ S. trocar de câmera com a câmera desligada
   await alice.page.getByRole('button', { name: 'Desligar câmera' }).click();
@@ -1564,13 +1579,6 @@ try {
   // chave no fragmento. Estas checagens cobrem o que só o navegador prova — a
   // barra de endereço, o histórico e o que sai no fio — enquanto a gramática em
   // si vive em `client/test/roomSlug.test.mjs` e `roomRouting.test.mjs`.
-  const urlEsperada = `${CLIENT_ORIGIN}/${roomId}#${passphrase}`;
-  check(
-    'R1. Os dois navegadores estão no endereço personalizado, na raiz e sem /room/',
-    alice.page.url() === urlEsperada && bob.page.url() === urlEsperada,
-    `alice=${alice.page.url()} bob=${bob.page.url()}`,
-  );
-
   const joinFrames = (await wire(alice.page))
     .map((f) => /^\d+\["join-request",(.*)\]$/.exec(f.data)?.[1])
     .filter(Boolean)
@@ -1608,11 +1616,22 @@ try {
     async () => (await alice.page.locator('.video-label').allInnerTexts()).some((t) => /Frank/.test(t)),
     { timeout: 25000, label: 'Frank aparecer na grade de Alice' },
   ).catch(() => false);
+  // Nesta altura da suíte só Alice continua na sala (Bob e Carol saíram na
+  // seção F), então o mesh de Frank é uma conexão só — o que precisa valer é
+  // que ela **conecta**: mesma sala de sinalização, mídia negociada.
+  const frankMesh = await waitFor(
+    async () => {
+      const stats = await peerStats(frank.page);
+      return stats.filter((s) => s.connectionState === 'connected').length >= 1;
+    },
+    { timeout: 45000, label: 'o mesh de Frank conectar' },
+  ).catch(() => false);
   const frankTiles = await frank.page.locator('.video-tile').count();
   check(
     'R4. Quem entrou pelo link legado caiu na MESMA sala, com mídia fluindo',
-    frankNaSala === true && frankTiles >= 4,
-    `Frank visível para Alice=${frankNaSala}, tiles na tela de Frank=${frankTiles}`,
+    frankNaSala === true && frankMesh === true && frankTiles >= 2,
+    `Frank visível para Alice=${frankNaSala}, mesh conectado=${frankMesh}, ` +
+    `tiles na tela de Frank=${frankTiles}`,
   );
   await frank.context.close();
 
