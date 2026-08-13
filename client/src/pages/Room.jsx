@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { createSignalingClient } from '../lib/signaling.js';
 import { WebRTCMesh } from '../lib/webrtcMesh.js';
 import { AudioLevelMonitor } from '../lib/audioLevels.js';
@@ -26,6 +26,8 @@ import {
   writePreferences,
 } from '../lib/devices.js';
 import { resolveSpotlightScreen } from '../lib/spotlightLayout.js';
+import { buildRoomUrl, generatePassphrase } from '../lib/roomSlug.js';
+import { roomPathFromLocation } from '../lib/roomRouting.js';
 // import { deriveRoomKey, isInsertableStreamsSupported } from '../lib/e2ee.js';
 import { fetchIceServers, MAX_PARTICIPANTS } from '../config.js';
 
@@ -40,10 +42,40 @@ const TOAST_MS = 4000;
 const LOCAL_AUDIO_ID = 'local';
 
 export default function Room() {
-  const { roomId } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
+  // O id da sala **é** o path, canonicalizado: minúsculo, slugificado, sem
+  // barra final. Vem de `location.pathname` e não de `useParams`, porque o
+  // valor cru é o que o servidor usaria como chave de sala e o que o PBKDF2
+  // usaria como salt — entrar por `/Daily` e por `/daily` seriam duas salas
+  // diferentes, cada uma parecendo vazia, sem nenhum erro na tela.
+  // `''` significa "não é sala" (raiz, rota reservada, multi-segmento).
+  const roomId = roomPathFromLocation(location.pathname);
   const passphrase = location.hash.slice(1);
+  // Enquanto isto for verdade, nada de getUserMedia e nada de socket: o efeito
+  // de setup faz early-return e espera o redirect terminar.
+  const redirectPending = !roomId || location.pathname !== `/${roomId}` || !passphrase;
+
+  // Canonicalização e chave, **antes** de qualquer conexão.
+  useEffect(() => {
+    if (!roomId) {
+      // Path que não é sala: `/assets`, `/a/b`, `/!!!`. Volta para a Home.
+      navigate('/', { replace: true });
+      return;
+    }
+    if (location.pathname !== `/${roomId}`) {
+      navigate(`/${roomId}${location.hash}`, { replace: true });
+      return;
+    }
+    if (!passphrase) {
+      // Abrir `/daily` na barra de endereço **é** criar a sala: a chave nasce
+      // aqui e vai para o fragmento. Sempre `replace` — um `push` deixaria no
+      // histórico um path sem chave, e o Voltar geraria outra chave a cada
+      // volta, em laço. Consequência documentada: duas pessoas que abrem o
+      // mesmo path sem `#` recebem chaves diferentes (ver README).
+      navigate(`/${roomId}#${generatePassphrase()}`, { replace: true });
+    }
+  }, [roomId, passphrase, location.pathname, location.hash, navigate]);
 
   const [displayName, setDisplayName] = useState(
     () => sessionStorage.getItem('displayName') || '',
@@ -201,6 +233,10 @@ export default function Room() {
   musicCallbacksRef.current = music.meshCallbacks;
 
   useEffect(() => {
+    // O redirect de canonicalização/chave roda primeiro (efeito acima). Sem
+    // este early-return a câmera acenderia duas vezes e dois sockets entrariam
+    // na mesma sala com o mesmo nome — um deles com o path errado.
+    if (redirectPending) return undefined;
     if (!displayName || !passphrase) return undefined;
 
     let cancelled = false;
@@ -236,6 +272,10 @@ export default function Room() {
         getLocalStream(),
         fetchIceServers(),
         // deriveRoomKey(passphrase, roomId), // E2EE desabilitado por ora
+        // Quando religar: `roomId` aqui já é o path **canônico** (ver o efeito
+        // de canonicalização no topo), e é isso que o salt do PBKDF2 exige —
+        // derivar de um path não canonicalizado daria chaves diferentes para
+        // quem entrou por `/Daily` e por `/daily`.
       ]);
       if (cancelled) {
         localStream?.getTracks().forEach((t) => t.stop());
@@ -453,7 +493,7 @@ export default function Room() {
       toastTimers.clear();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId, passphrase, displayName]);
+  }, [roomId, passphrase, displayName, redirectPending]);
 
   // Mantém um analisador por stream de áudio presente na sala (local + remotos),
   // todos no mesmo AudioContext e no mesmo loop de rAF.
@@ -980,7 +1020,9 @@ export default function Room() {
                 ? 'A sala já está com 6 participantes.'
                 : denyReason === 'setup-error'
                   ? 'Erro ao inicializar a conexão. Verifique sua rede e tente novamente.'
-                  : 'Seu pedido de entrada foi negado.'}
+                  : denyReason === 'invalid-room'
+                    ? 'Esse endereço de sala não é válido. Confira o link — ele vai até o final, incluindo a parte depois do #.'
+                    : 'Seu pedido de entrada foi negado.'}
             </p>
             <button onClick={() => navigate('/')}>Voltar</button>
           </div>
@@ -1012,7 +1054,7 @@ export default function Room() {
     );
   }
 
-  const inviteLink = `${window.location.origin}/room/${roomId}#${passphrase}`;
+  const inviteLink = buildRoomUrl(window.location.origin, roomId, passphrase);
   const roomSize = participants.size + 1;
 
   return (
@@ -1115,7 +1157,8 @@ export default function Room() {
         {/* Linha única e truncada: com `word-break` a URL virava 3–4 linhas em
             janela estreita e roubava altura do palco a cada resize. */}
         <p className="invite-hint" title={inviteLink}>
-          Link do convite: <code>{inviteLink}</code> — compartilhe por outro canal.
+          Link do convite: <code>{inviteLink}</code> — copie inteiro, inclusive depois do{' '}
+          <code>#</code>, e compartilhe por outro canal.
           {roomSize >= MAX_PARTICIPANTS && ' Sala no limite de participantes.'}
         </p>
       </main>

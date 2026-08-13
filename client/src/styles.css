@@ -109,6 +109,40 @@ code {
   margin: 0;
 }
 
+.optional {
+  color: var(--muted-text);
+  font-weight: normal;
+}
+
+/* O preview do endereço fica sob o campo e muda a cada tecla: reservar a altura
+   evita que a página inteira pule entre "sorteamos um endereço" e o link. */
+.field .hint {
+  display: block;
+  min-height: 2.4em;
+}
+
+.field input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+/* Aviso de sala ocupada: não bloqueia a criação, oferece as duas saídas
+   (entrar junto ou trocar de endereço) lado a lado. */
+.occupied-room {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.occupied-room p {
+  margin: 0;
+}
+
+.occupied-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
 /* Room */
 
 /* A sala ocupa exatamente o viewport e nunca rola: os controles e o modal de

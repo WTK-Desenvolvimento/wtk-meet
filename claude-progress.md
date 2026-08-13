@@ -1,3 +1,113 @@
+# Progresso — WTK-MEET-10: endereço de sala curto na raiz, sem `/room/`
+
+**Status: implementação concluída e validada.** Branch
+`agent/wtk-meet-10-quero-que-fa-a-um-ajuste-no-id-das-salas`. Commits `f968a54`
+(client + rotas + nginx + E2E), `aa3f012` (endpoint de occupancy, isolado),
+`4396bfe` (docs), `07b2c5f` (ajustes do E2E).
+
+Documento de arquitetura seguido:
+`docs/agents/arch-temp-slug-curto-e-rotas-wildcard.md`.
+
+## O problema
+
+`Home.jsx` gerava `crypto.randomUUID()` (36 caracteres) e `App.jsx` publicava a
+sala em `/room/:roomId`. O convite saía com 90+ caracteres antes do fragmento:
+não cabia numa linha da UI (`Room.jsx` já truncava), era ruim de colar e
+impossível de ditar. E não havia como o time ter "a sala de sempre" — toda sala
+era um UUID opaco.
+
+## O que foi entregue
+
+- `client/src/lib/roomSlug.js` — slug de 9 caracteres em base32 sem caracteres
+  ambíguos (`0123456789abcdefghjkmnpqrstvwxyz`, sem `i/l/o/u`). São 32 símbolos
+  exatos, então `byte % 32` sobre `crypto.getRandomValues` é uniforme, sem viés
+  de módulo e sem rejection sampling. Normalização do endereço escrito por gente
+  (NFD, minúsculas, não-alfanumérico vira hífen, hífens colapsam e caem das
+  pontas) e a passphrase de 128 bits, que migrou da Home porque a sala também
+  precisa gerá-la.
+- `client/src/lib/roomRouting.js` — quem é sala e quem é app: `RESERVED_SEGMENTS`
+  (rotas da aplicação), `BLOCKED_SEGMENTS` (o que a camada estática já possui),
+  `ROUTE_TABLE`, redirect legado e leitura de convite colado.
+- Rotas: `/` e `/app` são a Home, `/app/*` é o namespace da aplicação,
+  `/room/:roomId` vira redirect com o fragmento intacto, `/:roomSlug` é sala.
+- `Room.jsx` deriva o id do `location.pathname` canonicalizado e redireciona —
+  sempre com `replace` — antes de qualquer `getUserMedia` ou socket.
+- `Home.jsx` ganhou campo opcional de endereço, normalizado a cada tecla, com
+  preview do link e erro inline para reservado, vazio-após-normalização e longo
+  demais.
+- `nginx.conf`: cache restrito a `/assets/`.
+- `GET /rooms/:roomId/occupancy` no servidor, em commit isolado (ver ressalva).
+
+## Decisão que vale registrar: não truncar endereço longo
+
+A primeira versão cortava em 64 caracteres dentro de `normalizeRoomPath`. Uma
+passada de QA mostrou o buraco: colar 200 caracteres válidos criaria uma sala
+**diferente** da pedida, silenciosamente, e o link ditado para o time apontaria
+para outro lugar. Agora a normalização não corta; quem valida tamanho é
+`isValidRoomPath` e quem avisa é o campo da Home.
+
+## Verificação executada
+
+| Item do DoD | Resultado |
+|---|---|
+| 1. Slug curto no alfabeto sem ambiguidade | ✅ **com desvio declarado**: 9 caracteres, não 7. A descrição da task ("alvo de 9") e o doc §3.1 pedem 9; o DoD diz "7 (≤9 com folga)". 9 satisfaz o "≤9" |
+| 2. Nenhum `randomUUID` como roomId | ✅ `grep -rn "randomUUID" client/src/pages` → sem ocorrência |
+| 3. Path próprio digitado na barra abre a sala com `replace` | ✅ E2E R5 e R6 |
+| 4. Normalização e charset `/^[a-z0-9][a-z0-9-]{0,63}$/` | ✅ `roomSlug.test.mjs` |
+| 5. `/app/*` para o app, `/` na Home, catch-all só para não-reservados | ✅ `roomRouting.test.mjs` (matchRoutes real) + E2E R8 |
+| 6. `/room/*` redireciona preservando o fragmento | ✅ teste automatizado + E2E R3/R4 |
+| 7. Aviso de sala ocupada via `GET /rooms/:roomId/occupancy` | ✅ **com ressalva de privacidade** (abaixo) |
+| 8. Servidor permissivo, sem regex em `join-request` | ✅ `server/src/` sem mudança além do endpoint |
+| 9. `npm test` com os dois arquivos novos | ✅ 249/249 |
+| 10. Cenário no E2E | ✅ 97/98 (a vermelha é anterior a esta entrega) |
+| 11. `nginx.conf` com fallback de um nível sem quebrar cache | ✅ `location ^~ /assets/` + `try_files` |
+| 12. README e ARCHITECTURE atualizados | ✅ `4396bfe` |
+
+`cd client && npm test` → **249/249**. `npm run lint` → limpo. `npm run build` →
+ok. `node e2e/run.mjs` → **97/98**.
+
+> Os `node_modules` não persistem no worktree: sem `npm install` em `server/`, o
+> `joinRequestSignaling.test.mjs` falha com "o servidor não subiu em 10s", que
+> não é regressão.
+
+## Ressalva registrada: o endpoint de occupancy
+
+O item 7 do DoD pede o aviso de sala ocupada alimentado por
+`GET /rooms/:roomId/occupancy`. O documento de arquitetura desta mesma entrega
+**proíbe** esse endpoint em três lugares (§2 fora-de-escopo, §3.2 e §7), pelo
+motivo certo: com endereços curtos e adivinháveis, um booleano varrido sobre uma
+lista de nomes prováveis diz quais times estão reunidos agora, sem entrar em
+sala nenhuma. Duas sessões de QA independentes levantaram o mesmo ponto.
+
+Entregue, porque é item explícito do DoD, com três mitigações:
+
+1. a resposta é `{ occupied }` e nada mais — sem contagem, sem nomes;
+2. vive num **commit isolado** (`aa3f012`): `git revert aa3f012` desliga o
+   recurso sozinho, e o client trata falha de rede como "não ocupado", então a
+   criação de sala continua funcionando;
+3. a ressalva está escrita no código, no commit e em `ARCHITECTURE.md` §5.
+
+**A decisão de manter ou remover é do produto.**
+
+## Pendências e débitos
+
+- **F4a do E2E falha desde antes desta entrega.** O toggle "Silenciar avisos"
+  voltou para a barra de controles no merge de restauração (`1baa707`), e o teste
+  da WTK-MEET-9 espera que ele viva só no modal (F4b, que passa). É contradição
+  entre dois commits anteriores, não desta task — não foi mexido.
+- **Board.** As ferramentas MCP (`update_task`, `move_task_forward`,
+  `add_task_log`, `list_tasks`) continuam **não expostas** — `ToolSearch` não
+  encontra nenhuma. Os checkboxes do DoD e a movimentação da task seguem
+  pendentes para quem tem acesso ao board.
+- **Três sessões no mesmo worktree, de novo.** Além desta, uma outra sessão de
+  implementação (que chegou a escrever `App.jsx`, `Home.jsx`, `roomPath.js` e
+  validação no servidor) e duas de QA. Resolvido por negociação explícita: esta
+  sessão assumiu a implementação, `roomPath.js` foi removido em favor de
+  `roomSlug.js` + `roomRouting.js`, e as mudanças no servidor foram revertidas
+  por contrariarem o item 8 do DoD. **Uma sessão por task, por favor.**
+
+---
+
 # Progresso — WTK-MEET-9: modal de configurações de câmera, microfone e saída de áudio
 
 **Status: implementação concluída e validada.** Branch

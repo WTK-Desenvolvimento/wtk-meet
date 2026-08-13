@@ -57,9 +57,18 @@ async function waitFor(fn, { timeout = 20000, interval = 250, label = 'condiçã
   throw new Error(`timeout esperando ${label} (último valor: ${JSON.stringify(last)})`);
 }
 
-const roomId = crypto.randomUUID();
+// Endereço personalizado, na raiz e sem `/room/` — o formato que a
+// WTK-MEET-10 entregou. O sufixo aleatório usa o mesmo alfabeto base32 sem
+// ambiguidade do client (`lib/roomSlug.js`): um caractere fora dele seria
+// normalizado pela sala, o redirect mudaria a URL no meio do teste e as falhas
+// apareceriam longe da causa.
+const ALFABETO = '0123456789abcdefghjkmnpqrstvwxyz';
+const sufixo = Array.from(crypto.getRandomValues(new Uint8Array(6)))
+  .map((b) => ALFABETO[b % ALFABETO.length])
+  .join('');
+const roomId = `uma-sala-so-minha-${sufixo}`;
 const passphrase = 'e2e-passphrase-nao-vai-ao-servidor';
-const roomUrl = `${CLIENT_ORIGIN}/room/${roomId}#${passphrase}`;
+const roomUrl = `${CLIENT_ORIGIN}/${roomId}#${passphrase}`;
 
 await buildClient();
 
@@ -224,6 +233,18 @@ try {
   };
   await waitFor(everyoneConnected, { timeout: 45000, label: 'mesh conectado (2 peers por participante)' });
   check('A1. Mesh conecta: 3 participantes, 2 RTCPeerConnection "connected" cada', true);
+
+  // Aferido aqui, com todo mundo dentro: mais adiante Bob e Carol saem da sala
+  // (seção F) e a URL deles vira a da Home. O que esta checagem prova é o
+  // essencial do endereço novo — navegadores diferentes, abrindo o mesmo
+  // endereço personalizado na raiz, terminam na mesma sala, com mídia fluindo
+  // (é o que A1–A3 mediram no mesmo instante).
+  const urlEsperada = `${CLIENT_ORIGIN}/${roomId}#${passphrase}`;
+  check(
+    'R1. Os três navegadores estão no endereço personalizado, na raiz e sem /room/',
+    [alice, bob, carol].every((p) => p.page.url() === urlEsperada),
+    [alice, bob, carol].map((p) => `${p.name}=${p.page.url()}`).join(' '),
+  );
 
   // Layout esperado por conexão: 4 canais de envio (mic, câmera, tela, música) e
   // os 4 espelhos de recepção criados pelo navegador ao aplicar a oferta remota.
@@ -969,7 +990,10 @@ try {
   );
 
   // ------------------------------------- S. trocar de mic estando silenciado
-  await alice.page.getByRole('button', { name: 'Silenciar' }).click();
+  // `exact` obrigatório: a barra tem "Silenciar" (microfone) e "Silenciar
+  // avisos" (bipe), e o seletor solto casa os dois — erro de strict mode que
+  // aborta a suíte inteira aqui, longe da causa.
+  await alice.page.getByRole('button', { name: 'Silenciar', exact: true }).click();
   await alice.page.getByRole('button', { name: 'Ativar mic' }).waitFor({ timeout: 5000 });
   await openSettings(alice.page);
   await setSelectValue(alice.page.locator('.settings-modal select').nth(1), 'mic-a');
@@ -990,7 +1014,7 @@ try {
     `botão "Ativar mic" presente=${stillMuted === 1}`,
   );
   await alice.page.getByRole('button', { name: 'Ativar mic' }).click();
-  await alice.page.getByRole('button', { name: 'Silenciar' }).waitFor({ timeout: 5000 });
+  await alice.page.getByRole('button', { name: 'Silenciar', exact: true }).waitFor({ timeout: 5000 });
 
   // ------------------------------ S. trocar de câmera com a câmera desligada
   await alice.page.getByRole('button', { name: 'Desligar câmera' }).click();
@@ -1549,6 +1573,127 @@ try {
     `${Math.round(mobileChat.stageHeight)}px, tile cabe=${mobileChat.tileFitsStage}, ` +
     `scrollHeight=${mobileChat.scrollHeight}/${mobileChat.innerHeight}`,
   );
+
+  // ------------------------------------------------- R. endereço da sala
+  // O link é o produto: um endereço de um segmento na raiz, sem `/room/`, com a
+  // chave no fragmento. Estas checagens cobrem o que só o navegador prova — a
+  // barra de endereço, o histórico e o que sai no fio — enquanto a gramática em
+  // si vive em `client/test/roomSlug.test.mjs` e `roomRouting.test.mjs`.
+  const joinFrames = (await wire(alice.page))
+    .map((f) => /^\d+\["join-request",(.*)\]$/.exec(f.data)?.[1])
+    .filter(Boolean)
+    .map((json) => JSON.parse(json))
+    // O servidor também **emite** `join-request` para quem aprova; só o payload
+    // com `roomId` é o que este cliente pediu.
+    .filter((payload) => 'roomId' in payload);
+  check(
+    'R2. O join-request no fio carrega o path canônico, e nada mais',
+    joinFrames.length > 0 && joinFrames.every((p) => p.roomId === roomId),
+    `${joinFrames.length} pedido(s): ${JSON.stringify(joinFrames.map((p) => p.roomId))}`,
+  );
+
+  // Link antigo, do jeito que ainda circula em conversa — precisa cair na mesma
+  // sala de sinalização, não numa sala nova de path "room".
+  const frank = await openParticipant(browser, {
+    roomUrl: `${CLIENT_ORIGIN}/room/${roomId}#${passphrase}`,
+    name: 'Frank',
+  });
+  const frankUrl = await waitFor(
+    async () => {
+      const url = frank.page.url();
+      return url.includes('/room/') ? false : url;
+    },
+    { timeout: 15000, label: 'o redirect do link legado' },
+  ).catch(() => frank.page.url());
+  check(
+    'R3. /room/<id>#chave redireciona para /<id>#chave com o fragmento intacto',
+    frankUrl === urlEsperada,
+    `url=${frankUrl}`,
+  );
+
+  await waitInCall(frank, alice);
+  const frankNaSala = await waitFor(
+    async () => (await alice.page.locator('.video-label').allInnerTexts()).some((t) => /Frank/.test(t)),
+    { timeout: 25000, label: 'Frank aparecer na grade de Alice' },
+  ).catch(() => false);
+  // Nesta altura da suíte só Alice continua na sala (Bob e Carol saíram na
+  // seção F), então o mesh de Frank é uma conexão só — o que precisa valer é
+  // que ela **conecta**: mesma sala de sinalização, mídia negociada.
+  const frankMesh = await waitFor(
+    async () => {
+      const stats = await peerStats(frank.page);
+      return stats.filter((s) => s.connectionState === 'connected').length >= 1;
+    },
+    { timeout: 45000, label: 'o mesh de Frank conectar' },
+  ).catch(() => false);
+  const frankTiles = await frank.page.locator('.video-tile').count();
+  check(
+    'R4. Quem entrou pelo link legado caiu na MESMA sala, com mídia fluindo',
+    frankNaSala === true && frankMesh === true && frankTiles >= 2,
+    `Frank visível para Alice=${frankNaSala}, mesh conectado=${frankMesh}, ` +
+    `tiles na tela de Frank=${frankTiles}`,
+  );
+  await frank.context.close();
+
+  // Abrir um endereço sem `#` **é** criar a sala: a chave nasce no client e a
+  // URL é reescrita com `replace`.
+  const semChave = await browser.newContext();
+  const semChavePage = await semChave.newPage();
+  await semChavePage.goto(`${CLIENT_ORIGIN}/e2e-sala-sem-chave-${sufixo}`);
+  const comChave = await waitFor(
+    async () => {
+      const url = new URL(semChavePage.url());
+      return url.hash.length > 1 ? url : false;
+    },
+    { timeout: 15000, label: 'a passphrase nascer no fragmento' },
+  ).catch(() => new URL(semChavePage.url()));
+  check(
+    'R5. Path sem fragmento ganha passphrase e mantém o mesmo endereço',
+    comChave.pathname === `/e2e-sala-sem-chave-${sufixo}` && comChave.hash.length > 1,
+    `url=${comChave.href}`,
+  );
+  // `replace`, não `push`: um Voltar que devolvesse o path sem chave geraria
+  // outra chave, e outra, em laço.
+  const voltou = await semChavePage.goBack({ timeout: 5000 }).catch(() => null);
+  const urlAposVoltar = semChavePage.url();
+  check(
+    'R6. O redirect da passphrase não deixa entrada no histórico (replace)',
+    voltou === null || !urlAposVoltar.endsWith(`/e2e-sala-sem-chave-${sufixo}`),
+    `voltou=${voltou !== null} url=${urlAposVoltar}`,
+  );
+
+  // Maiúscula na barra de endereço (teclado de celular com autocapitalize) tem
+  // que convergir para o mesmo path — senão são duas salas, cada uma vazia.
+  await semChavePage.goto(`${CLIENT_ORIGIN}/E2E-Sala-Maiuscula#k`);
+  const canonico = await waitFor(
+    async () => {
+      const url = new URL(semChavePage.url());
+      return url.pathname === '/e2e-sala-maiuscula' ? url : false;
+    },
+    { timeout: 15000, label: 'a canonicalização para minúsculas' },
+  ).catch(() => new URL(semChavePage.url()));
+  check(
+    'R7. Endereço com maiúsculas cai no path canônico, preservando a chave',
+    canonico.pathname === '/e2e-sala-maiuscula' && canonico.hash === '#k',
+    `url=${canonico.href}`,
+  );
+
+  // Rota reservada e multi-segmento não são sala: voltam para a Home.
+  const naoSala = [];
+  for (const path of ['/assets', '/a/b', '/app/tela-que-nao-existe']) {
+    await semChavePage.goto(`${CLIENT_ORIGIN}${path}`);
+    const final = await waitFor(
+      async () => (new URL(semChavePage.url()).pathname === '/' ? '/' : false),
+      { timeout: 10000, label: `${path} voltar para a Home` },
+    ).catch(() => new URL(semChavePage.url()).pathname);
+    naoSala.push([path, final]);
+  }
+  check(
+    'R8. Reservado e multi-segmento voltam para a Home, sem virar sala',
+    naoSala.every(([, final]) => final === '/'),
+    naoSala.map(([path, final]) => `${path}→${final}`).join(' '),
+  );
+  await semChave.close();
 
   // ---------------------------------------------- G. nada de erro no console
   for (const p of [alice, bob]) {

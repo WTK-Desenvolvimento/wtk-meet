@@ -32,6 +32,29 @@ const io = new Server(server, {
 });
 
 const rooms = new RoomStore();
+
+/**
+ * "Já tem gente nesse endereço agora?" — booleano, e nada além disso.
+ *
+ * Existe para o aviso da Home quando alguém escolhe um endereço personalizado
+ * (`/daily`) que já está em uso: sem ele, marcar uma reunião num nome óbvio cai
+ * no meio da conversa de outro time, e a única pista é a fila de aprovação
+ * deles. Responde `{ occupied }` e mais nada: sem nomes, sem contagem, sem
+ * histórico — nada que diga *quem* está lá.
+ *
+ * Ressalva registrada, porque ela é real: o documento de arquitetura desta
+ * entrega (§3.2 e §7) pede para **não** existir endpoint de existência de sala,
+ * e `ARCHITECTURE.md` §5 classifica "que um roomId existe" como conhecimento
+ * interno do servidor. Com endereços curtos e adivinháveis, isto é, no
+ * agregado, um oráculo: varrer uma lista de nomes prováveis diz quais times
+ * estão reunidos agora, sem entrar em sala nenhuma. Está aqui porque é item
+ * explícito do DoD da WTK-MEET-10, e o commit que o introduz é isolado de
+ * propósito — reverter só ele desliga o recurso, e o client trata a falha como
+ * "não ocupado" e segue funcionando.
+ */
+app.get('/rooms/:roomId/occupancy', (req, res) => {
+  res.json({ occupied: !rooms.isEmpty(req.params.roomId) });
+});
 // requesterSocketId -> { roomId, displayName }
 // Only holds people waiting on approval; never written anywhere durable.
 const pendingJoins = new Map();
