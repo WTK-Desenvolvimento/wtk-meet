@@ -81,6 +81,83 @@ export function writeAudioFixture(name, { seconds = 30, freq = 440, rate = 8000 
   return `${CLIENT_ORIGIN}/${name}`;
 }
 
+/**
+ * Escreve um WAV de **ruído branco** no caminho dado e o devolve.
+ *
+ * É a fonte do microfone falso na medição de supressão: o tom contínuo padrão do
+ * Chromium não serve, porque um tom em nível de fala é exatamente o que uma
+ * porta espectral deve **deixar passar** — medir supressão com ele daria zero dB
+ * mesmo com o motor funcionando perfeitamente.
+ *
+ * Ruído determinístico (gerador com semente): duas execuções comparam o mesmo
+ * sinal, e um resultado que oscila passa a significar problema de verdade.
+ */
+export function writeNoiseFixture(filePath, { seconds = 20, rate = 48000, amplitude = 0.15 } = {}) {
+  const samples = seconds * rate;
+  const buffer = Buffer.alloc(44 + samples * 2);
+  buffer.write('RIFF', 0);
+  buffer.writeUInt32LE(36 + samples * 2, 4);
+  buffer.write('WAVEfmt ', 8);
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);  // PCM
+  buffer.writeUInt16LE(1, 22);  // mono
+  buffer.writeUInt32LE(rate, 24);
+  buffer.writeUInt32LE(rate * 2, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write('data', 36);
+  buffer.writeUInt32LE(samples * 2, 40);
+  let seed = 987654321;
+  for (let i = 0; i < samples; i += 1) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    const value = ((seed / 0x7fffffff) * 2 - 1) * amplitude;
+    buffer.writeInt16LE(Math.round(value * 32767), 44 + i * 2);
+  }
+  fs.writeFileSync(filePath, buffer);
+  return filePath;
+}
+
+/**
+ * Energia e bytes do áudio **recebido** deste participante, somados sobre todas
+ * as conexões.
+ *
+ * `totalAudioEnergy` / `totalSamplesDuration` vêm do `getStats` e são medidos
+ * sobre as amostras já decodificadas — é a definição operacional de "RMS no peer
+ * receptor", e não depende de nenhum `AudioContext` extra (o Chromium headless
+ * não entrega o áudio de uma track a um segundo contexto, ver o fim do
+ * `claude-progress.md`).
+ */
+export async function inboundAudio(page) {
+  return page.evaluate(async () => {
+    let energy = 0;
+    let duration = 0;
+    let bytes = 0;
+    for (const pc of window.__wtkPeers || []) {
+      if (pc.connectionState === 'closed') continue;
+      const report = await pc.getStats();
+      report.forEach((stat) => {
+        if (stat.type !== 'inbound-rtp' || stat.kind !== 'audio') return;
+        energy += stat.totalAudioEnergy || 0;
+        duration += stat.totalSamplesDuration || 0;
+        bytes += stat.bytesReceived || 0;
+      });
+    }
+    return { energy, duration, bytes };
+  });
+}
+
+/**
+ * RMS do áudio recebido entre dois instantâneos de `inboundAudio`. A janela é
+ * explícita de propósito: comparar acumulados de janelas diferentes mediria
+ * duração, não nível.
+ */
+export function rmsBetween(before, after) {
+  const energy = after.energy - before.energy;
+  const duration = after.duration - before.duration;
+  if (!(duration > 0) || !(energy >= 0)) return null;
+  return Math.sqrt(energy / duration);
+}
+
 export function startTurn() {
   const server = new Turn({
     listeningIps: ['127.0.0.1'],
@@ -161,7 +238,7 @@ async function waitForHttp(url, timeoutMs = 15000) {
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export async function launchBrowser() {
+export async function launchBrowser({ audioFile = null } = {}) {
   return chromium.launch({
     headless: true,
     // O binário completo (headless "novo"), não o chrome-headless-shell: o
@@ -172,6 +249,10 @@ export async function launchBrowser() {
       // tom contínuo — que é justamente o que aciona o indicador de fala.
       '--use-fake-device-for-media-stream',
       '--use-fake-ui-for-media-stream',
+      // Troca o tom contínuo por um arquivo (WAV 16-bit PCM, em laço). É o que
+      // permite medir supressão de ruído com um sinal conhecido: o tom padrão é
+      // justamente o que uma porta espectral **não** deve atenuar.
+      ...(audioFile ? [`--use-file-for-fake-audio-capture=${audioFile}`] : []),
       // getDisplayMedia sem diálogo: captura a primeira aba automaticamente.
       '--auto-select-desktop-capture-source=Entire screen',
       '--autoplay-policy=no-user-gesture-required',
@@ -185,7 +266,10 @@ export async function launchBrowser() {
  * Abre um participante: contexto isolado (storage próprio, como uma janela
  * anônima separada), ICE apontando para o TURN local, e nome já preenchido.
  */
-export async function openParticipant(browser, { roomUrl, name, preferences }) {
+export async function openParticipant(
+  browser,
+  { roomUrl, name, preferences, audioPreferences, forceWorkletNoiseSuppression = false },
+) {
   const context = await browser.newContext({
     permissions: ['camera', 'microphone'],
     ignoreHTTPSErrors: true,
@@ -200,6 +284,22 @@ export async function openParticipant(browser, { roomUrl, name, preferences }) {
         JSON.stringify(preferences),
       )});`,
     });
+  }
+
+  // Chave separada da de dispositivos (`lib/noiseSuppression.js`).
+  if (audioPreferences) {
+    await context.addInitScript({
+      content: `localStorage.setItem('wtk-meet:audio', ${JSON.stringify(
+        JSON.stringify(audioPreferences),
+      )});`,
+    });
+  }
+
+  // Precede a INSTRUMENTATION só por clareza — o wrapper lê a flag na hora da
+  // chamada, então a ordem não importa; o que importa é estar posta antes de
+  // qualquer script da app.
+  if (forceWorkletNoiseSuppression) {
+    await context.addInitScript({ content: 'window.__wtkForceWorkletNs = true;' });
   }
 
   await context.route('**/turn-credentials', (route) =>
@@ -433,6 +533,13 @@ export const INSTRUMENTATION = `
   window.__wtkCounters = {
     getUserMedia: 0, getDisplayMedia: 0, setLocalDescription: 0, setRemoteDescription: 0,
     raf: 0, oscillators: 0,
+    // Disparos de \`negotiationneeded\`, somados sobre todas as conexões. Os
+    // contadores de SDP acima provam que nenhuma renegociação **terminou**;
+    // este prova que nenhuma foi sequer **pedida**. A diferença importa: um
+    // replaceTrack com kind diferente do negociado agenda a renegociação para o
+    // fim da microtask, e uma checagem feita cedo demais veria os contadores de
+    // SDP ainda parados.
+    negotiationNeeded: 0,
     // Um item por getUserMedia, com os deviceId PEDIDOS: prova o que foi pedido,
     // não só quantas vezes.
     gumRequests: [],
@@ -487,6 +594,9 @@ export const INSTRUMENTATION = `
     pc.setLocalDescription = (...a) => { window.__wtkCounters.setLocalDescription++; return sld(...a); };
     const srd = pc.setRemoteDescription.bind(pc);
     pc.setRemoteDescription = (...a) => { window.__wtkCounters.setRemoteDescription++; return srd(...a); };
+    // Passivo: \`addEventListener\` não colide com o \`onnegotiationneeded\` que a
+    // app atribui, e não muda o comportamento de nenhum dos dois.
+    pc.addEventListener('negotiationneeded', () => { window.__wtkCounters.negotiationNeeded++; });
     return pc;
   };
   window.RTCPeerConnection.prototype = OrigPC.prototype;
@@ -527,12 +637,60 @@ export const INSTRUMENTATION = `
     return out;
   };
 
+  // O que foi PEDIDO em processamento de áudio, por chamada. Sem isto não há
+  // como provar que o toggle desligado emite \`noiseSuppression: false\` — e
+  // omitir a constraint no estado desligado é um bug invisível, já que os
+  // navegadores ligam a supressão por padrão.
+  const requestedProcessing = (constraint) => {
+    if (!constraint || typeof constraint !== 'object') return null;
+    const wanted = constraint.noiseSuppression;
+    if (wanted === undefined) return null;
+    return {
+      noiseSuppression: typeof wanted === 'object' && wanted !== null ? wanted.ideal : wanted,
+    };
+  };
+
+  /**
+   * Único jeito de exercitar o caminho de fallback num Chromium que suporta a
+   * constraint nativa. Sob a flag:
+   *
+   * 1. \`getSupportedConstraints()\` esconde \`noiseSuppression\`, então a app
+   *    decide pelo modo 'worklet';
+   * 2. a constraint é **forçada a false** antes de chegar ao getUserMedia real.
+   *    Só remover não bastaria: sem a constraint, o Chromium liga o próprio
+   *    processamento por padrão, suprimiria o ruído antes de o worklet ver
+   *    qualquer coisa, e a medição de dB compararia duas amostras já limpas.
+   */
+  const origSupported = md.getSupportedConstraints.bind(md);
+  md.getSupportedConstraints = () => {
+    const supported = origSupported();
+    if (!window.__wtkForceWorkletNs) return supported;
+    const { noiseSuppression, ...rest } = supported;
+    void noiseSuppression;
+    return rest;
+  };
+
+  const forceRawAudio = (constraints) => {
+    if (!window.__wtkForceWorkletNs) return constraints;
+    if (!constraints || typeof constraints !== 'object') return constraints;
+    if (!constraints.audio) return constraints;
+    const audio = typeof constraints.audio === 'object' ? { ...constraints.audio } : {};
+    audio.noiseSuppression = false;
+    audio.echoCancellation = false;
+    audio.autoGainControl = false;
+    return { ...constraints, audio };
+  };
+
   const origGUM = md.getUserMedia.bind(md);
   md.getUserMedia = async (constraints, ...rest) => {
     window.__wtkCounters.getUserMedia++;
-    const asked = { video: requestedId(constraints?.video), audio: requestedId(constraints?.audio) };
+    const asked = {
+      video: requestedId(constraints?.video),
+      audio: requestedId(constraints?.audio),
+      audioProcessing: requestedProcessing(constraints?.audio),
+    };
     window.__wtkCounters.gumRequests.push(asked);
-    const stream = await origGUM(stripDeviceId(constraints), ...rest);
+    const stream = await origGUM(forceRawAudio(stripDeviceId(constraints)), ...rest);
     // getSettings() passa a reportar o device pedido — mas só quando ele existe
     // no registro. Um id desconhecido continua reportando o device real, que é
     // exatamente o que um navegador faz com \`ideal\` e o que faz a reconciliação

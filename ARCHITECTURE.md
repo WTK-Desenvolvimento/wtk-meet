@@ -503,8 +503,10 @@ não dizem com quem se falou nem quando, e um `deviceId` é escopado à origem e
 perfil do navegador (rotaciona quando os dados do site são limpos). A alternativa —
 reescolher o headset a cada chamada — é um custo real e recorrente, cobrado justamente
 de quem investiu em hardware melhor. `sessionStorage` (usado para o nome de exibição)
-não serve: ele morre ao fechar a aba. **Nada além dessas quatro chaves ganha
-persistência**; o histórico de chat continua estritamente em memória (§6.3).
+não serve: ele morre ao fechar a aba. A supressão de ruído (§6.11) acrescenta uma
+**segunda chave**, `wtk-meet:audio`, deliberadamente fora desta — o porquê está em
+§6.11. **Nada além dessas duas chaves ganha persistência**; o histórico de chat
+continua estritamente em memória (§6.3).
 
 A lógica vive em `client/src/lib/devices.js`, um módulo **puro, sem DOM** — mesmo
 padrão de `gridLayout.js`. Ele recebe a lista crua de `enumerateDevices` e um objeto
@@ -559,6 +561,72 @@ headset USB dispara vários eventos seguidos. O E2E simula múltiplos dispositiv
 harness (o Chromium expõe uma câmera e um microfone falsos e não há flag para um
 segundo), no bloco `S` de `e2e/run.mjs`.
 
+### 6.11 Supressão de ruído
+
+O mesmo modal traz um toggle **Supressão de ruído**, ligado por padrão. Antes desta
+entrega o microfone ia cru para o mesh: `buildConstraints` só montava `deviceId:
+{ ideal }`, e ventilador, teclado e obra do vizinho iam junto com a voz.
+
+**O motor é híbrido e a escolha é do navegador, não da pessoa.** Onde
+`getSupportedConstraints().noiseSuppression` existe (Chrome, Edge, Firefox, Safari
+recentes), a supressão é a **nativa** — mais barata, mais testada, e não custa um
+`AudioWorklet`. Onde não existe, entra um `AudioWorklet` próprio
+(`lib/noiseSuppressorWorklet.js`). Onde não há nenhum dos dois, o toggle aparece
+**desabilitado com explicação**, mesmo princípio do seletor de saída de áudio (§6.10).
+A precedência do nativo não é preferência de gosto: é ela que torna impossível
+empilhar as duas supressões em série, combinação que produz bombeamento e voz
+metálica — pior que nenhuma. A matriz inteira vive em `decideMode`
+(`lib/noiseSuppression.js`), módulo **puro**, verificável sem navegador.
+
+**O toggle desligado é uma constraint explícita, não a ausência dela.** É a decisão
+menos óbvia da entrega: os navegadores ligam `noiseSuppression` por padrão quando se
+pede `audio: true` sem qualificar. Omitir a constraint no estado desligado entregaria
+um toggle que não desliga nada — e sem erro nenhum, com a queixa chegando semanas
+depois como "o toggle não faz nada". Por isso `noiseConstraints` emite
+`{ ideal: <valor> }` **nos dois estados**. `ideal` e nunca `exact`: com `exact`, um
+navegador sem a constraint responde `OverconstrainedError` e derruba a aquisição
+inteira — a pessoa entraria na sala **sem áudio** por causa de uma preferência de
+qualidade.
+
+**Chave de storage própria.** A preferência é gravada sob `wtk-meet:audio`, separada
+de `wtk-meet:devices`. As duas respondem perguntas diferentes: `wtk-meet:devices` diz
+*que hardware usar* — ids que só valem na máquina em que foram gravados, e que a
+reconciliação reescreve sozinha quando o hardware some (§6.10). Supressão de ruído não
+é escolha de hardware: é propriedade do **ambiente** de quem fala, vale para qualquer
+microfone e nunca deve ser reescrita por reconciliação. Juntas, a autocorreção de
+device passaria por cima de um campo que ela não deveria nem enxergar. Continua valendo
+o limite de §6.10: nada além dessas duas chaves ganha persistência.
+
+**No modo worklet, o track do mesh não é o track do `getUserMedia`.** O pipeline tem
+dono explícito (`lib/micPipeline.js`, único arquivo da feature que encosta em
+`AudioContext`): o track cru entra no grafo, o processado sai por um
+`MediaStreamAudioDestinationNode`, e é **o processado** que vai para os senders, para
+o `localStreamRef` e para o medidor de fala — os três, sempre o mesmo objeto, senão o
+anel de fala local acende para um áudio que ninguém recebe. O track **cru** continua
+sendo a referência para o `ended` (recuperação de microfone arrancado) e para a
+reconciliação de preferência, que precisam do dispositivo real, não do destino
+sintético. O `AudioContext` é o mesmo da sala — a invariante de um por aba (§6.4)
+continua valendo — e por isso o pipeline **não** o fecha ao parar.
+
+**Alternar em chamada é `replaceTrack`, nunca renegociação**, exatamente como a troca
+de device (§6.10): o pipeline mantém cru e processado vivos e alternar é escolher qual
+vai para os senders. Nenhum SDP novo, nenhum `negotiationneeded`, nenhum peer muda de
+`connectionState`. E aqui vale a mesma regra não óbvia de lá: o `enabled = !muted` vem
+**antes** do `replaceTrack`, senão alternar a supressão estando mudo desmutaria a
+pessoa.
+
+**O algoritmo** é uma porta espectral tipo Wiener sobre STFT (janela de 512, salto de
+128, Hann, overlap-add com ganho unitário), com piso de ruído adaptativo assimétrico —
+sobe devagar, desce rápido, que é o que distingue ruído estacionário de fala. Com
+`enabled: false` o caminho é identidade exata, não aproximada. Medido em `node:test`:
+ruído branco cai 13,5 dB, um tom em nível de fala perde 0,45 dB, e o RMS de fala
+simulada continua acima de `SPEAKING_ON` — supressão que mata o anel de fala seria
+regressão, não melhoria.
+
+**Nada disso sai da máquina.** Nenhum evento de sinalização novo, nenhum campo no data
+channel, nenhuma mudança no servidor: o processamento acontece antes do encoder, e o
+que trafega continua sendo exatamente o que já trafegava.
+
 ## 7. Stack
 
 - **Frontend:** React + Vite. `RTCPeerConnection` nativo (sem SDK de terceiros tipo
@@ -607,8 +675,11 @@ infra/coturn/  config de referência para STUN/TURN self-hosted
   total — deve ser uma decisão consciente do produto, não uma otimização silenciosa.
 - Insertable Streams: sem suporte pleno em Firefox/Safari no momento; UI comunica
   quando a chamada está rodando apenas com a criptografia padrão do WebRTC.
-- Seleção de dispositivos (§6.8) cobre **escolha de hardware**, não qualidade: não há
-  controle de `echoCancellation`, `noiseSuppression`, ganho de entrada nem resolução
-  de câmera. Também não há botão de "testar saída", nem seletor de fonte para
+- Seleção de dispositivos (§6.10) cobre **escolha de hardware**; de qualidade, só a
+  supressão de ruído (§6.11) é controlável. Não há controle de `echoCancellation`,
+  de ganho de entrada nem de resolução de câmera — os dois primeiros são baratos sobre
+  a base de §6.11 (o contrato de `buildConstraints` já os comporta), e faltam por
+  escopo, não por impedimento. A supressão também não tem seletor de intensidade: ela
+  é liga/desliga. Também não há botão de "testar saída", nem seletor de fonte para
   compartilhamento de tela (`getDisplayMedia` já traz o seletor nativo do navegador), e
   a preferência não é sincronizada entre abas — cada aba é uma sessão independente.
