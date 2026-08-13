@@ -65,7 +65,16 @@ pelo Google Meet e Zoom para "E2EE":
   Socket.IO — é o mesmo princípio usado por ferramentas como Firefox Send. O servidor
   de sinalização, portanto, nunca vê a chave, mesmo em trânsito.
 - Cada participante deriva localmente uma chave AES-GCM-256 via PBKDF2
-  (`passphrase + roomId` como salt, 250k iterações, SHA-256).
+  (`passphrase + roomId` como salt, 250k iterações, SHA-256). Desde a WTK-MEET-10 o
+  `roomId` é o **path canônico da sala** (`daily`, `k7m2xq9tp`), já normalizado pelo
+  client antes de qualquer uso — se um participante entrasse por `/Daily` e outro por
+  `/daily`, o salt divergiria e as chaves não bateriam.
+- **O tamanho do endereço não entra na conta da segurança.** O endereço encurtou de um
+  UUID de 36 caracteres para um slug de 9 (ou um nome escolhido), e isso não enfraquece
+  nada: a entropia que protege a mídia é a da passphrase de 128 bits, não a do path. O
+  path sempre foi conhecido do servidor — é a chave do `Map` de salas — e nunca fez
+  parte do segredo. Ele é salt, e salt não precisa ser secreto; precisa ser único por
+  sala, que é o que a canonicalização garante.
 - Usando a API **Insertable Streams / Encoded Transform** do WebRTC
   (`RTCRtpSender.createEncodedStreams()` / `RTCRtpReceiver.createEncodedStreams()`),
   cada frame de áudio/vídeo já codificado é criptografado com AES-GCM (IV aleatório de
@@ -80,9 +89,17 @@ pelo Google Meet e Zoom para "E2EE":
 
 ## 4. Fluxo de aprovação de entrada
 
-1. Criador gera `roomId` (UUID) + `passphrase` no client, sem chamar o servidor, e
-   compartilha o link `https://.../room/:roomId#passphrase` por um canal à parte
-   (mensagem, etc.) — o servidor nunca vê a passphrase.
+1. Criador gera `roomId` + `passphrase` no client, sem chamar o servidor, e compartilha
+   o link `https://.../:roomId#passphrase` por um canal à parte (mensagem, etc.) — o
+   servidor nunca vê a passphrase. O `roomId` é um slug base32 de 9 caracteres sem
+   caracteres ambíguos (`0123456789abcdefghjkmnpqrstvwxyz`) ou um endereço escolhido
+   por quem cria (`uma-sala-so-minha`, até 64 caracteres em `[a-z0-9-]`). O prefixo
+   `/room/` não existe mais: a sala mora na **raiz**, num segmento só, e as telas da
+   aplicação vivem sob `/app/*`. Reservados — nunca viram sala — são `app`, `room`,
+   `api`, `health`, `turn-credentials` e os paths servidos pelo nginx antes do SPA
+   (`assets`, `static`, `public`, `favicon-ico`, `robots-txt`, `index-html`, …); a lista
+   inteira está em `client/src/lib/roomRouting.js`. Links no formato antigo
+   (`/room/:id#chave`) redirecionam com `replace`, preservando o fragmento.
 2. Ao abrir o link, o client conecta ao Socket.IO e emite `join-request { roomId,
    displayName }`.
 3. Se a sala não existe (primeiro a entrar), o próprio requisitante é admitido
@@ -123,6 +140,23 @@ só o aviso; ela não afeta a decisão de acesso em si. O evento carrega apenas 
 
 Nada disso é persistido: ao encerrar a sala (todos saem) ou reiniciar o processo, o
 estado desaparece. Não há banco de dados no backend.
+
+Duas mudanças da WTK-MEET-10 mexem nesta tabela e merecem estar escritas:
+
+- O `roomId` deixou de ser um UUID opaco. Onde o servidor via
+  `3f2b7c1e-9a41-4d0b-8e77-2c5b9d1a4f60`, ele pode agora ver `sala-do-suporte` — um nome
+  escolhido por gente, que carrega sentido. Nada mudou no que ele *guarda* (chave de um
+  `Map` em memória, apagada quando a sala esvazia); mudou o que esse valor *revela* nos
+  logs de quem operar o servidor.
+- Existe um endpoint novo, `GET /rooms/:roomId/occupancy`, que responde
+  `{ occupied: boolean }` — se há algum socket na sala agora. Ele alimenta o aviso de
+  "já existe gente nessa sala" na Home (item do DoD da WTK-MEET-10) e **contraria** a
+  posição do documento de arquitetura daquela entrega, que pedia para nenhum endpoint
+  de existência de sala ser criado: com endereços curtos e adivinháveis, um booleano
+  varrido sobre uma lista de nomes prováveis diz quais times estão reunidos agora. A
+  resposta foi reduzida ao mínimo (sem contagem, sem nomes) e o recurso vive num commit
+  isolado, revertível sozinho — a decisão de mantê-lo é de produto, não de
+  implementação.
 
 ## 6. Experiência de chamada: tela, chat, indicador de fala e presença
 

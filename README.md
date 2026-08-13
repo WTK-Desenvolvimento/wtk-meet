@@ -49,9 +49,13 @@ docker compose up -d
 
 ## Fluxo de uma chamada
 
-1. Quem cria a sala gera `roomId` + passphrase de 128 bits no próprio navegador — a
-   passphrase nunca é enviada ao servidor, vive só no fragmento da URL (`/room/:id#chave`).
-2. O link é compartilhado por fora do app (mensagem, etc).
+1. Quem cria a sala gera o endereço + passphrase de 128 bits no próprio navegador — a
+   passphrase nunca é enviada ao servidor, vive só no fragmento da URL (`/:sala#chave`).
+   O endereço fica na **raiz**, sem prefixo: ou um slug sorteado de 9 caracteres
+   (`/k7m2xq9tp#chave`), ou um escolhido na hora (`/uma-sala-so-minha#chave`).
+2. O link é compartilhado por fora do app (mensagem, etc). Compartilhe-o **inteiro**,
+   incluindo a parte depois do `#`: só o endereço leva à sala certa, mas sem a chave a
+   pessoa entra com outra.
 3. Quem abre o link pede para entrar; se a sala já tem gente, qualquer participante
    presente aprova ou nega o pedido. Sala cheia (6) rejeita automaticamente.
 4. Após aprovado, a negociação WebRTC (mesh completo) começa entre o novo peer e cada
@@ -75,6 +79,43 @@ docker compose up -d
 8. Cada frame de áudio/vídeo é cifrado com AES-GCM (chave derivada da passphrase via
    PBKDF2) antes de sair, usando Insertable Streams — funciona plenamente em navegadores
    Chromium; em Firefox/Safari a UI avisa que só a criptografia padrão do WebRTC está ativa.
+
+### Endereço da sala
+
+O link **é** o produto: não há conta, diretório de salas nem convite por e-mail. Por
+isso o endereço mora na raiz, num segmento só, e o `/room/` deixou de existir.
+
+| Path | O que é |
+|---|---|
+| `/` e `/app` | Home — criar sala ou colar um convite |
+| `/app/*` | Namespace das telas da aplicação (sem tela filha ainda) |
+| `/room/:id#chave` | Link antigo: redireciona para `/:id#chave`, com o fragmento intacto |
+| `/qualquer-outra-coisa` | **Sala** |
+
+- **Slug sorteado:** 9 caracteres em base32 sem caracteres confundíveis
+  (`0123456789abcdefghjkmnpqrstvwxyz` — sem `i`, `l`, `o` e `u`), 45 bits. Feito para
+  ser ditado por telefone sem soletrar "é o L ou o um?".
+- **Endereço escolhido:** digite no campo da Home ou direto na barra de endereço. É
+  normalizado, não recusado: `Sala do Nícolas!` vira `sala-do-nicolas`. Maiúsculas
+  caem, acentos somem, espaço e `_` viram hífen. Vale até 64 caracteres, em
+  `[a-z0-9-]` começando por letra ou número — acima disso o campo avisa em vez de
+  cortar, porque uma sala truncada seria **outra** sala.
+- **Reservados** (nunca viram sala): `app`, `room`, `api`, `health`,
+  `turn-credentials`, mais os paths que o nginx serve antes do SPA — `assets`,
+  `static`, `public`, `favicon-ico`, `robots-txt`, `index-html` e companhia. Path com
+  mais de um segmento (`/time/daily`) também não é sala: volta para a Home.
+- **Abrir um endereço sem `#`** — digitar `/daily` na barra e apertar enter — **é**
+  criar a sala: o client gera a passphrase na hora e reescreve a URL para
+  `/daily#chave` com `replace` (o Voltar não volta para o path sem chave). Consequência
+  a saber: duas pessoas que abrem o mesmo endereço sem `#` recebem chaves
+  **diferentes**. Elas caem na mesma sala de sinalização, mas com a E2EE religada não
+  decodificariam o vídeo uma da outra. Por isso o link se compartilha inteiro.
+- **Slug curto não enfraquece a E2EE.** O que protege a chamada é a passphrase de 128
+  bits, que continua nascendo no client e vivendo só no fragmento — o servidor nunca a
+  vê, e encurtar o endereço não muda isso. O endereço é público por natureza (o
+  servidor precisa dele para juntar as pessoas); quem adivinhar `/daily` ainda depende
+  da aprovação de quem já está na sala para entrar, e sem a chave não decodificaria a
+  mídia. Endereço escolhido é mais fácil de adivinhar que um sorteado — a UI avisa.
 
 ### O que fica fora do servidor
 
