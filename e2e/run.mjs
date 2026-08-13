@@ -15,15 +15,20 @@
  *
  * Rodar: node e2e/run.mjs   (o próprio script builda o client)
  */
+import os from 'node:os';
+import path from 'node:path';
+
 import {
   CLIENT_ORIGIN,
   approveAll,
   buildClient,
+  inboundAudio,
   launchBrowser,
   noPageScroll,
   openParticipant,
   openSettings,
   peerStats,
+  rmsBetween,
   roomLayout,
   senderTracks,
   setInputValue,
@@ -34,6 +39,7 @@ import {
   startSignaling,
   startTurn,
   writeAudioFixture,
+  writeNoiseFixture,
 } from './harness.mjs';
 
 const results = [];
@@ -1390,9 +1396,14 @@ try {
   );
 
   await openSettings(alice.page);
-  await alice.page.locator('.settings-modal input[type="checkbox"]').evaluate((box) => {
-    box.click();
-  });
+  // Pelo rótulo, e não pela posição: o modal passou a ter dois checkboxes
+  // (supressão de ruído e avisos sonoros), e `input[type=checkbox]` sozinho
+  // pegaria os dois.
+  await alice.page
+    .getByRole('checkbox', { name: /avisos sonoros/i })
+    .evaluate((box) => {
+      box.click();
+    });
   await alice.page.getByRole('button', { name: 'Salvar' }).click();
   await alice.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
   const soundsOff = await alice.page.evaluate(
@@ -1694,6 +1705,253 @@ try {
     naoSala.map(([path, final]) => `${path}→${final}`).join(' '),
   );
   await semChave.close();
+
+  // ------------------------------------------- T. supressão de ruído
+  //
+  // Browser próprio, sala própria, microfone próprio. Três razões, todas
+  // concretas:
+  //
+  // - `--use-file-for-fake-audio-capture` é flag de **processo**: aplicá-la ao
+  //   browser principal trocaria o tom contínuo por ruído para a suíte inteira,
+  //   e o tom é justamente o que aciona o anel de fala das checagens B.
+  // - o motor precisa ser o **worklet**, e o Chromium suporta a constraint
+  //   nativa: sem `__wtkForceWorkletNs` o fallback nunca seria exercitado — e é
+  //   o fallback que tem DSP nosso para dar errado.
+  // - a medição compara duas janelas do mesmo sinal, então o sinal tem que ser
+  //   o mesmo o tempo todo.
+  const noiseFile = writeNoiseFixture(path.join(os.tmpdir(), 'wtk-meet-ruido.wav'));
+  const noiseBrowser = await launchBrowser({ audioFile: noiseFile });
+  let dora = null;
+  let elias = null;
+  let flavia = null;
+  try {
+    const salaRuido = `${CLIENT_ORIGIN}/e2e-ruido#chave-do-ruido`;
+    const abrirComRuido = (name) =>
+      openParticipant(noiseBrowser, { roomUrl: salaRuido, name, forceWorkletNoiseSuppression: true });
+    const entrar = (participant, approver) =>
+      waitFor(
+        async () => {
+          if (approver) await approveAll(approver.page);
+          return (await participant.page.locator('.room.in-call').count()) > 0;
+        },
+        { timeout: 40000, label: `${participant.name} entrar na sala de ruído` },
+      );
+
+    dora = await abrirComRuido('Dora');
+    await entrar(dora, null);
+    elias = await abrirComRuido('Elias');
+    await entrar(elias, dora);
+    flavia = await abrirComRuido('Flavia');
+    await entrar(flavia, dora);
+
+    await waitFor(
+      async () => {
+        for (const p of [dora, elias, flavia]) {
+          const stats = await peerStats(p.page);
+          if (stats.filter((s) => s.connectionState === 'connected').length !== 2) return false;
+        }
+        return true;
+      },
+      { timeout: 45000, label: 'mesh da sala de ruído' },
+    );
+
+    // Flavia entra muda: com dois emissores tocando o mesmo ruído, a energia
+    // que chega em Elias seria a soma dos dois, e a medição deixaria de ser
+    // sobre o microfone de Dora.
+    await flavia.page.getByRole('button', { name: 'Silenciar', exact: true }).click();
+    await sleep(500);
+
+    const gumDeDora = await dora.page.evaluate(() => window.__wtkCounters.gumRequests);
+    check(
+      'T1. O primeiro getUserMedia pede supressão de ruído explicitamente',
+      gumDeDora[0]?.audioProcessing?.noiseSuppression === true,
+      `pedidos=${JSON.stringify(gumDeDora.slice(0, 2))}`,
+    );
+
+    // A preferência nasce ligada **por default em memória**, e a chave só é
+    // escrita quando alguém escolhe de fato (T6 cobre o depois de salvar).
+    // Gravar na entrada materializaria uma escolha que ninguém fez, e o único
+    // ganho seria congelar o default de hoje contra uma mudança futura dele —
+    // troca ruim para um projeto cuja regra é zero persistência com exceções
+    // nomeadas (ARCHITECTURE.md §6.10). Quem prova que o default vale é o T1,
+    // no que foi PEDIDO ao getUserMedia; o que se afirma aqui é que a chave de
+    // dispositivos não é contaminada, nem por campo nem por valor.
+    const prefsDeDora = await dora.page.evaluate(() => localStorage.getItem('wtk-meet:audio'));
+    const chavesDeDevices = await dora.page.evaluate(() =>
+      Object.keys(JSON.parse(localStorage.getItem('wtk-meet:devices') || '{}')),
+    );
+    check(
+      'T2. Antes de qualquer escolha, nada é gravado e wtk-meet:devices não é contaminado',
+      prefsDeDora === null && !chavesDeDevices.includes('noiseSuppression'),
+      `wtk-meet:audio=${prefsDeDora} wtk-meet:devices=${JSON.stringify(chavesDeDevices)}`,
+    );
+
+    const trackDoGum = await dora.page.evaluate(
+      () => window.__wtkTrackStates().filter((t) => t.kind === 'audio').length,
+    );
+    const senderLigado = (await senderTracks(dora.page)).flat().find((t) => t.kind === 'audio');
+    const contextos = await dora.page.evaluate(() => window.__wtkAudioContexts.length);
+    check(
+      'T3. No modo worklet o mesh transmite o track PROCESSADO, sem um segundo AudioContext',
+      // O track do destino não é rastreado por `__wtkLiveTracks` (que só vê
+      // getUserMedia/getDisplayMedia), então o id do sender não pode ser o de
+      // nenhum track cru conhecido.
+      !!senderLigado?.id && contextos === 1 && trackDoGum >= 1,
+      `sender=${senderLigado?.id} audioContexts=${contextos}`,
+    );
+
+    // ---- janela 1: supressão LIGADA
+    const antesLigado = await inboundAudio(elias.page);
+    await sleep(6000);
+    const depoisLigado = await inboundAudio(elias.page);
+    const rmsLigado = rmsBetween(antesLigado, depoisLigado);
+
+    const sdpAntes = await dora.page.evaluate(() => ({
+      local: window.__wtkCounters.setLocalDescription,
+      remote: window.__wtkCounters.setRemoteDescription,
+      negociacoes: window.__wtkCounters.negotiationNeeded,
+    }));
+    const sendersAntes = (await senderTracks(dora.page)).flat();
+
+    // ---- desliga pelo modal
+    await openSettings(dora.page);
+    await dora.page.getByRole('checkbox', { name: /supressão de ruído/i }).evaluate((box) => {
+      box.click();
+    });
+    await dora.page.getByRole('button', { name: 'Salvar' }).click();
+    await dora.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
+    await sleep(1500);
+
+    const sdpDepois = await dora.page.evaluate(() => ({
+      local: window.__wtkCounters.setLocalDescription,
+      remote: window.__wtkCounters.setRemoteDescription,
+      negociacoes: window.__wtkCounters.negotiationNeeded,
+    }));
+    // `stable` é o estado de quem não tem oferta nem resposta pendente. Junto
+    // com os contadores, fecha o cerco: nada terminou, nada foi pedido e nada
+    // ficou no meio do caminho.
+    const signaling = await dora.page.evaluate(() =>
+      (window.__wtkPeers || []).filter((pc) => pc.connectionState !== 'closed').map((pc) => pc.signalingState),
+    );
+    const sendersDepois = (await senderTracks(dora.page)).flat();
+    const audioAntes = sendersAntes.filter((t) => t.kind === 'audio').map((t) => t.id);
+    const audioDepois = sendersDepois.filter((t) => t.kind === 'audio').map((t) => t.id);
+
+    check(
+      'T4. Alternar o toggle troca o track por replaceTrack, sem renegociar SDP',
+      sdpDepois.local === sdpAntes.local &&
+      sdpDepois.remote === sdpAntes.remote &&
+      sdpDepois.negociacoes === sdpAntes.negociacoes &&
+      signaling.length > 0 &&
+      signaling.every((state) => state === 'stable') &&
+      audioDepois.length === audioAntes.length &&
+      audioDepois.length > 0 &&
+      audioDepois.every((id, i) => id !== audioAntes[i]),
+      `sdp local ${sdpAntes.local}→${sdpDepois.local} remote ${sdpAntes.remote}→${sdpDepois.remote} ` +
+      `negotiationneeded ${sdpAntes.negociacoes}→${sdpDepois.negociacoes} ` +
+      `signaling=${JSON.stringify(signaling)} ` +
+      `tracks ${JSON.stringify(audioAntes)}→${JSON.stringify(audioDepois)}`,
+    );
+
+    check(
+      'T5. Nenhuma conexão cai ao alternar a supressão',
+      (await peerStats(dora.page)).every((s) => s.connectionState === 'connected'),
+      JSON.stringify((await peerStats(dora.page)).map((s) => s.connectionState)),
+    );
+
+    const prefsDesligada = await dora.page.evaluate(() =>
+      JSON.parse(localStorage.getItem('wtk-meet:audio')).noiseSuppression,
+    );
+    check(
+      'T6. Desligar persiste a escolha na chave própria',
+      prefsDesligada === false,
+      `noiseSuppression=${prefsDesligada}`,
+    );
+
+    // ---- janela 2: supressão DESLIGADA, mesma duração
+    const antesDesligado = await inboundAudio(elias.page);
+    await sleep(6000);
+    const depoisDesligado = await inboundAudio(elias.page);
+    const rmsDesligado = rmsBetween(antesDesligado, depoisDesligado);
+
+    check(
+      'T7. O áudio continua chegando aos peers depois de alternar (bytes subindo, track vivo)',
+      depoisDesligado.bytes > antesDesligado.bytes &&
+      (await elias.page.evaluate(
+        () => window.__wtkTrackStates().filter((t) => t.kind === 'audio' && t.readyState === 'live').length,
+      )) > 0,
+      `bytes ${antesDesligado.bytes}→${depoisDesligado.bytes}`,
+    );
+
+    const reducao = rmsLigado && rmsDesligado ? 20 * Math.log10(rmsDesligado / rmsLigado) : null;
+    check(
+      'T8. Com supressão ligada o RMS no peer receptor é ao menos 6 dB menor',
+      reducao !== null && reducao >= 6,
+      `rms ligado=${rmsLigado?.toFixed(5)} desligado=${rmsDesligado?.toFixed(5)} ` +
+      `redução=${reducao === null ? 'n/d' : `${reducao.toFixed(2)} dB`}`,
+    );
+
+    // ---- religa: o ciclo completo é o que o DoD pede
+    await openSettings(dora.page);
+    await dora.page.getByRole('checkbox', { name: /supressão de ruído/i }).evaluate((box) => {
+      box.click();
+    });
+    await dora.page.getByRole('button', { name: 'Salvar' }).click();
+    await dora.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
+    await sleep(1500);
+
+    const antesReligado = await inboundAudio(elias.page);
+    await sleep(3000);
+    const depoisReligado = await inboundAudio(elias.page);
+    check(
+      'T9. Religar a supressão mantém o áudio fluindo e a conexão de pé',
+      depoisReligado.bytes > antesReligado.bytes &&
+      (await peerStats(elias.page)).every((s) => s.connectionState === 'connected'),
+      `bytes ${antesReligado.bytes}→${depoisReligado.bytes}`,
+    );
+
+    // Mudo + supressão: alternar não pode desmutar ninguém.
+    await dora.page.getByRole('button', { name: 'Silenciar', exact: true }).click();
+    await openSettings(dora.page);
+    await dora.page.getByRole('checkbox', { name: /supressão de ruído/i }).evaluate((box) => {
+      box.click();
+    });
+    await dora.page.getByRole('button', { name: 'Salvar' }).click();
+    await dora.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
+    await sleep(1000);
+    const senderMudo = (await senderTracks(dora.page)).flat().find((t) => t.kind === 'audio');
+    check(
+      'T10. Alternar a supressão estando mudo não desmuta',
+      senderMudo?.enabled === false,
+      `sender.enabled=${senderMudo?.enabled} botão="${await dora.page
+        .locator('.controls button')
+        .first()
+        .innerText()}"`,
+    );
+
+    // Sair não pode deixar nem o track cru nem o do destino vivos.
+    await dora.page.getByRole('button', { name: 'Sair' }).click();
+    await sleep(1500);
+    const vivosAoSair = await dora.page.evaluate(() =>
+      window.__wtkTrackStates().filter((t) => t.readyState === 'live'),
+    );
+    check(
+      'T11. Sair da sala com o worklet ativo não deixa nenhum track vivo',
+      vivosAoSair.length === 0,
+      JSON.stringify(vivosAoSair),
+    );
+
+    for (const p of [dora, elias, flavia]) {
+      const relevant = p.consoleErrors.filter((e) => !/favicon|ERR_CONNECTION_REFUSED/i.test(e));
+      check(
+        `T12. Sem erros de JS no console de ${p.name} (uma rejeição de addModule bastaria)`,
+        relevant.length === 0,
+        relevant.slice(0, 3).join(' | '),
+      );
+    }
+  } finally {
+    await noiseBrowser.close();
+  }
 
   // ---------------------------------------------- G. nada de erro no console
   for (const p of [alice, bob]) {

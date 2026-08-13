@@ -1,3 +1,163 @@
+# Progresso — WTK-MEET-11: supressão de ruído client-side com toggle
+
+**Status: implementação concluída e validada, com uma falha de E2E alheia à task
+em aberto (F4a, abaixo).** Branch
+`agent/wtk-meet-11-quero-implementar-um-anti-ruido-supress-`. Commits `58f0703`
+(client: motor, worklet, plumbing do Room, testes de DSP e do modal), `b889b70`
+(bloco T do E2E + ARCHITECTURE §6.11 + README), `dd4c995` (cobertura unitária de
+`micPipeline.js`).
+
+Documento de arquitetura seguido:
+`docs/agents/arch-temp-supressao-ruido-client-side.md`.
+
+## O problema
+
+`buildConstraints` (`client/src/lib/devices.js`) só montava `deviceId: { ideal }`.
+O microfone ia cru para o mesh: ventilador, teclado e obra do vizinho junto com a
+voz, sem nenhum controle na interface.
+
+## O que foi entregue
+
+- `client/src/lib/noiseSuppression.js` (novo, **puro**) — preferência em chave
+  própria, detecção de capacidade e a matriz de modo
+  (`'native' | 'worklet' | 'unsupported'`).
+- `client/src/lib/micPipeline.js` (novo) — o grafo `source → worklet →
+  destination`, com dono explícito. Único arquivo da entrega que encosta em
+  `AudioContext`.
+- `client/src/lib/noiseSuppressorWorklet.js` (novo) — porta espectral tipo Wiener
+  sobre STFT (512/128, Hann, piso adaptativo assimétrico). Arquivo único sem
+  imports, que avalia tanto no escopo do worklet quanto no `node:test`.
+- `devices.js` — `buildConstraints` aceita `audioProcessing`.
+- `Room.jsx` — `micPipelineRef`; o track processado entra no mesh, no
+  `localStreamRef` e no medidor; `ended` e `reconcilePreferences` passam a usar o
+  track **cru**.
+- `SettingsModal.jsx` — o toggle nos três pontos de entrada, com hint por motor e
+  desabilitado com explicação onde não há suporte.
+
+## A armadilha conceitual da entrega
+
+Os navegadores **já ligam** `noiseSuppression` por padrão quando se pede
+`audio: true` sem qualificar. Por isso a constraint é emitida **também no estado
+desligado**: omiti-la entregaria um toggle que não desliga nada, sem erro nenhum,
+e a queixa chegaria semanas depois como "o toggle não faz nada".
+
+## Quatro falhas silenciosas corrigidas junto
+
+Todas da premissa "o track do mesh é o track do `getUserMedia`", que deixa de
+valer no modo worklet: microfone que seguia aberto após sair da sala, recuperação
+de mic arrancado que nunca dispararia, preferência que parava de se autocorrigir e
+uma captura vazada por troca de device.
+
+## Divergências declaradas: o DoD do board x o documento de arquitetura
+
+Terceira task seguida com o mesmo padrão (ver WTK-MEET-10). **O DoD venceu**, pelo
+mesmo critério: é ele o gate que fecha a task. Seis pontos:
+
+| # | DoD | Documento | Resolução |
+|---|---|---|---|
+| 1 | `noiseSuppression.js` puro | §4.1 põe o grafo nesse arquivo | Grafo separado em `micPipeline.js` |
+| 2 | Chave própria `wtk-meet:audio` | §3.1/§5.4 querem 5ª chave em `wtk-meet:devices` | Chave própria, justificada no cabeçalho do módulo e em §6.11 |
+| 3 | Terceiro modo `'unsupported'` | §3.3 usa `'off'` | `'unsupported'` — é capacidade do navegador, não estado do toggle |
+| 4 | Estado sem suporte com toggle desabilitado | não previsto | Implementado, com hint próprio |
+| 5 | `replaceTrack` ao alternar em chamada | §3.5 diz **nunca** `replaceTrack` | `replaceTrack`, sem renegociar SDP (provado no E2E T4) |
+| 6 | Rótulo "Supressão de ruído" | "Reduzir ruído de fundo" | "Supressão de ruído" |
+
+A justificativa da chave própria (o que o DoD 15 manda documentar):
+`wtk-meet:devices` responde *que hardware usar* — ids que só valem na máquina em
+que foram gravados, e que `reconcilePreferences` reescreve sozinho. Supressão de
+ruído é propriedade do **ambiente**, vale para qualquer microfone e nunca deve ser
+reescrita por reconciliação. Juntas, a autocorreção de device passaria por cima de
+um campo que não deveria nem enxergar.
+
+## Decisão registrada: `wtk-meet:audio` não é materializada na entrada
+
+A primeira versão do E2E afirmava que a chave nasce gravada. Não nasce: o default
+"ligado" vive em memória e a chave só é escrita quando alguém escolhe de fato.
+Mantido assim de propósito — gravar na entrada persistiria uma escolha que ninguém
+fez, contra a regra de zero persistência do projeto, e o único ganho seria
+congelar o default de hoje contra uma mudança futura dele. Quem prova o default é
+o T1 (no que é **pedido** ao `getUserMedia`); o T2, que nada é gravado antes da
+escolha; o T6, que salvar persiste.
+
+## Verificação executada
+
+| Critério (§8 do documento) | Resultado |
+|---|---|
+| 1. Constraint `noiseSuppression: { ideal: true }` no primeiro `getUserMedia` | ✅ E2E T1 |
+| 2. Leitura tolerante ao formato antigo, sem perder as outras chaves | ✅ `noiseSuppression.test.mjs` |
+| 3. Desmarcar emite a constraint explícita, **nunca** a ausência | ✅ unitário + E2E T6 |
+| 4. Alternar em chamada não renegocia nem derruba peer | ✅ **com divergência**: usa `replaceTrack` (DoD 6). E2E T4/T5 — `setLocal/setRemote 4→4`, `negotiationneeded 2→2`, `signalingState` `stable` |
+| 5. No modo worklet o sender não é o track do `getUserMedia`, e `AudioContext` continua 1 | ✅ E2E T3 |
+| 6. `localStreamRef` e medidor observam o mesmo track dos senders | ✅ E2E T3 + `micPipeline.test.mjs` |
+| 7. Sair não deixa track `live` | ✅ E2E T11 (e F5, no fluxo sem worklet) |
+| 8. Mic arrancado dispara a recuperação existente | ✅ E2E bloco S (o `ended` observa o track cru) |
+| 9. Ruído branco ≥10 dB, tom de fala <1 dB, RMS acima de `SPEAKING_ON` | ✅ **13,49 dB** e **0,46 dB**, remedidos nesta sessão |
+| 10. `enabled: false` reconstrói a entrada com erro < 1e-6 | ✅ identidade **exata**: erro máximo por amostra **0** |
+| 11. `ifftReal(fftReal(x)) === x` com erro < 1e-6 | ✅ 6,1e-16 |
+| 12. `decideEngine` bate com a tabela nas cinco linhas | ✅ `noiseSuppression.test.mjs` + `micPipeline.test.mjs` |
+| 13. Trocar de mic com worklet ativo estando mudo | ✅ E2E T10 (`sender.enabled === false`) |
+| 14. Checkbox nos três pontos, hint diz o motor | ✅ `settingsNoiseToggle.test.mjs` |
+| 15. `npm test`, `lint` e `build` passam | ✅ **298/298**, lint limpo, build OK |
+| 16. `node e2e/run.mjs` passa integralmente | ⚠️ **111/112** — a única falha é F4a, pré-existente e alheia (abaixo) |
+| 17. README e ARCHITECTURE atualizados | ✅ **com divergência**: descrevem **duas chaves**, não cinco campos em uma (DoD 2) |
+
+Medição de ponta a ponta, a mais relevante da entrega: **13,62 dB** de redução do
+RMS no **peer receptor** (`0.04423` ligado contra `0.21212` desligado), contra os
+6 dB exigidos — medido por `totalAudioEnergy/totalSamplesDuration` do `getStats`
+entre dois instantâneos, porque o Chromium headless não entrega o áudio de uma
+track a um segundo `AudioContext`.
+
+Forçar o caminho de fallback exigiu **duas** coisas no harness, não uma: esconder
+`noiseSuppression` de `getSupportedConstraints()` **e** zerar as constraints de
+processamento antes do `getUserMedia` real. Só a primeira não bastaria — sem
+constraint o Chrome liga a própria supressão por padrão, limparia o ruído antes de
+o worklet ver qualquer coisa, e a comparação mediria duas amostras já limpas.
+
+## Débito identificado, NÃO corrigido: E2E F4a
+
+`❌ F4a. O toggle de avisos sonoros não ocupa mais um slot na barra de controles
+— botões de aviso na barra=1`
+
+**É regressão pré-existente, de outra entrega.** `ed7960d` (modal de dispositivos)
+removeu o botão da barra de propósito — o espaço é escasso e o layout de altura
+fixa depende de a barra não crescer. `1baa707` ("fix(room): restaurar
+MusicVoteCard, RemoteMusicAudio e botões perdidos na fusão PR8↔PR9"), que é o
+commit de reparo do incidente de duas sessões simultâneas, restaurou junto um
+botão que não devia voltar. Confirmado por commit:
+
+```
+ed7960d → 0 ocorrências de "Silenciar avisos" em Room.jsx
+1baa707 → 1     565d62b → 1     58f0703 → 1
+```
+
+Ou seja, já falhava antes desta task começar. **Não corrigido aqui** por ser
+mudança de UI fora do escopo do documento de arquitetura — a regra é registrar e
+avisar, não implementar por conta própria. O conserto é a remoção de
+`Room.jsx:1380-1385`; o toggle já vive no modal e o `settingsNoiseToggle.test.mjs`
+cobre isso.
+
+## Nota de execução: duas sessões no mesmo worktree, de novo
+
+Terceira ocorrência (ver WTK-MEET-10 e WTK-MEET-12). Desta vez sem dano: as duas
+sessões se identificaram por `SendMessage` **antes** da primeira escrita e
+dividiram por diretório — uma em `client/src/**`, `e2e/**` e documentação, a outra
+em `client/test/**`. A sessão de QA encerrou no meio (o `ListAgents` passou a
+devolver "No reachable agents" e a socket dela ficou obsoleta), e o `micPipeline.js`
+sem cobertura que ela havia identificado foi escrito por esta sessão — o achado
+sobreviveu porque estava na mensagem, não só na cabeça dela.
+
+## Pendências
+
+- **F4a**, acima: aguarda decisão do Nicolas.
+- Os checkboxes do DoD **não foram marcados no board**: a API segue devolvendo
+  HTTP 500 (`GET /api/tasks` em `http://127.0.0.1:3000`). A verificação item a
+  item está na tabela acima.
+- Fora de escopo, propostos e **não** implementados (§9.4 do documento): toggles
+  de `echoCancellation` e `autoGainControl` — o contrato de `buildConstraints` já
+  os comporta — e um seletor de intensidade mapeando para `gMin`.
+
+---
+
 # Progresso — WTK-MEET-10: endereço de sala curto na raiz, sem `/room/`
 
 **Status: implementação concluída e validada.** Branch

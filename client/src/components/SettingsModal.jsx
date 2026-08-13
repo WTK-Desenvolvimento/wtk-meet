@@ -7,10 +7,29 @@ import {
   listDevices,
   resolvePreferredDevice,
 } from '../lib/devices.js';
+import { MODE, noiseConstraints } from '../lib/noiseSuppression.js';
 
 const SINK_UNSUPPORTED_HINT =
   'Este navegador não permite escolher a saída de áudio pela página. ' +
   'Troque o dispositivo padrão no sistema operacional.';
+
+/**
+ * O hint não é decorativo. No modo `worklet` o preview mostra o sinal **cru**
+ * (montar um segundo grafo de worklet só para o medidor custaria um
+ * `AudioContext` na Home e um ciclo de vida inteiro, para uma diferença que uma
+ * barra de RMS quase não mostra). Sem a frase, quem está no caminho de fallback
+ * marca o toggle, não vê o medidor mudar e conclui que o recurso não funciona.
+ */
+const NOISE_HINT = {
+  [MODE.NATIVE]: 'Usando a supressão nativa do navegador.',
+  [MODE.WORKLET]:
+    'Este navegador não tem supressão nativa: o wtk-meet processa o áudio na sua ' +
+    'máquina, e nada é enviado para nenhum servidor. O medidor acima mostra o sinal ' +
+    'sem processamento.',
+  [MODE.UNSUPPORTED]:
+    'Este navegador não oferece supressão de ruído nem AudioWorklet, então não há o ' +
+    'que ligar aqui. Um headset com microfone perto da boca é o que mais ajuda.',
+};
 
 /**
  * Modal único de configurações de dispositivos, usado na Home, na tela de
@@ -32,6 +51,8 @@ const SINK_UNSUPPORTED_HINT =
  */
 export default function SettingsModal({
   preferences = DEFAULT_PREFERENCES,
+  noiseSuppression = true,
+  noiseMode = MODE.NATIVE,
   onSave,
   onClose,
   audioContext = null,
@@ -39,7 +60,15 @@ export default function SettingsModal({
   onDeviceLost,
   busy = false,
 }) {
-  const [pending, setPending] = useState(() => ({ ...DEFAULT_PREFERENCES, ...preferences }));
+  // A supressão entra no mesmo objeto pendente das preferências de hardware,
+  // ainda que more em outra chave de storage: o modal devolve uma seleção só, e
+  // é o pai quem separa o que vai para cada chave.
+  const [pending, setPending] = useState(() => ({
+    ...DEFAULT_PREFERENCES,
+    ...preferences,
+    noiseSuppression,
+  }));
+  const noiseUnsupported = noiseMode === MODE.UNSUPPORTED;
   const [devices, setDevices] = useState(() => listDevices([]));
   const [level, setLevel] = useState(0);
   const [previewError, setPreviewError] = useState('');
@@ -111,7 +140,14 @@ export default function SettingsModal({
       let stream = null;
       try {
         stream = await navigator.mediaDevices.getUserMedia(
-          buildConstraints(pending, { video: videoPreview, audio: true }),
+          buildConstraints(pending, {
+            video: videoPreview,
+            audio: true,
+            // De graça no modo nativo: o preview passa a refletir a escolha sem
+            // nenhum grafo extra. No modo worklet a constraint é ignorada pelo
+            // navegador, e é disso que o hint abaixo do checkbox avisa.
+            audioProcessing: noiseConstraints(pending),
+          }),
         );
       } catch {
         try {
@@ -150,8 +186,11 @@ export default function SettingsModal({
       streamRef.current = null;
       if (videoEl) videoEl.srcObject = null;
     };
+    // `noiseSuppression` entra aqui, ao contrário da saída de áudio e dos
+    // avisos sonoros: no modo nativo ela muda de fato o que está sendo
+    // capturado, e um medidor que não acompanha a escolha é pior que nenhum.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewVideoId, pending.audioInputId, videoPreview, refreshDevices]);
+  }, [previewVideoId, pending.audioInputId, pending.noiseSuppression, videoPreview, refreshDevices]);
 
   // Conectar/desconectar hardware com o modal aberto: só reenumera. Reiniciar o
   // preview aqui faria a câmera piscar — um headset USB dispara vários
@@ -253,6 +292,22 @@ export default function SettingsModal({
         {/* Desabilitado com explicação, nunca escondido: sumir com o seletor faz
             quem viu o recurso em outro navegador procurar o que não existe. */}
         {!sinkSupported && <p className="settings-hint">{SINK_UNSUPPORTED_HINT}</p>}
+
+        {/* Desabilitado com explicação, nunca escondido — mesmo princípio do
+            seletor de saída acima: sumir com o controle faz quem viu o recurso
+            em outro navegador procurar o que não existe. */}
+        <label className="settings-check">
+          <input
+            type="checkbox"
+            checked={pending.noiseSuppression}
+            disabled={noiseUnsupported}
+            onChange={(event) =>
+              setPending((prev) => ({ ...prev, noiseSuppression: event.target.checked }))
+            }
+          />
+          <span>Supressão de ruído</span>
+        </label>
+        <p className="settings-hint">{NOISE_HINT[noiseMode] || NOISE_HINT[MODE.NATIVE]}</p>
 
         <label className="settings-check">
           <input

@@ -142,18 +142,38 @@ toggle de avisos sonoros (que saiu da barra de controles).
   mudo não desmuta; trocar de câmera com a câmera desligada só guarda a escolha, sem
   acender o LED.
 - A escolha é gravada em `localStorage`, sob a chave `wtk-meet:devices`
-  (`videoInputId`, `audioInputId`, `audioOutputId`, `soundsEnabled`). **É a única
-  exceção à regra de zero persistência** — ela vale para conteúdo e metadado de
-  chamada, não para qual periférico do seu próprio equipamento usar. Limpar os dados
-  do site apaga a preferência.
+  (`videoInputId`, `audioInputId`, `audioOutputId`, `soundsEnabled`) — e a supressão
+  de ruído, abaixo, sob `wtk-meet:audio`. **São as únicas exceções à regra de zero
+  persistência** — ela vale para conteúdo e metadado de chamada, não para qual
+  periférico do seu próprio equipamento usar. Limpar os dados do site apaga a
+  preferência.
 - Se o dispositivo salvo não existir mais (outra máquina, dock desconectada), a
   chamada abre pelo padrão do sistema **sem erro na tela** e a preferência se corrige
   sozinha. Desconectar um dispositivo em uso volta ao padrão e avisa.
 - A saída de áudio depende de `setSinkId`: onde o navegador não implementa (Firefox
   por padrão), o seletor aparece desabilitado com a explicação.
 
-Ver `ARCHITECTURE.md` §6 para o desenho e os trade-offs (§6.8 para dispositivos).
-Ver `ARCHITECTURE.md` §6 para o desenho e os trade-offs (§6.8 para a música).
+### Supressão de ruído
+
+O mesmo modal traz o toggle **Supressão de ruído**, **ligado por padrão** — ventilador,
+teclado e obra do vizinho param de ir junto com a voz, sem ninguém precisar descobrir
+a opção.
+
+- O motor é escolhido pelo navegador, não por você: onde existe supressão nativa, é
+  ela; onde não existe, entra um `AudioWorklet` próprio do projeto. Se o navegador não
+  tiver nenhum dos dois, o toggle aparece desabilitado com a explicação. O hint embaixo
+  do controle diz qual motor está ativo.
+- **Tudo acontece no seu navegador.** O áudio é processado antes de ser codificado:
+  nenhuma rota nova, nenhum evento de sinalização, nada no data channel e nada que o
+  servidor veja. Não há serviço de terceiros envolvido.
+- Ligar e desligar em chamada não renegocia a conexão nem derruba ninguém, e não
+  desmuta quem está mudo.
+- A escolha é gravada sob a chave `wtk-meet:audio`, separada da de dispositivos: ela
+  descreve o seu **ambiente**, não o seu hardware, e por isso não é reescrita quando um
+  microfone é trocado ou desaparece.
+
+Ver `ARCHITECTURE.md` §6 para o desenho e os trade-offs (§6.9 para a música, §6.10 para
+dispositivos, §6.11 para a supressão de ruído).
 
 ### Uma exceção declarada: YouTube
 

@@ -25,6 +25,13 @@ import {
   resolvePreferredDevice,
   writePreferences,
 } from '../lib/devices.js';
+import {
+  MODE,
+  noiseConstraints,
+  readAudioPreferences,
+  writeAudioPreferences,
+} from '../lib/noiseSuppression.js';
+import { createMicPipeline, detectNoiseMode } from '../lib/micPipeline.js';
 import { resolveSpotlightScreen } from '../lib/spotlightLayout.js';
 import { buildRoomUrl, generatePassphrase } from '../lib/roomSlug.js';
 import { roomPathFromLocation } from '../lib/roomRouting.js';
@@ -111,12 +118,27 @@ export default function Room() {
   // `localStorage` (ver `lib/devices.js` e `ARCHITECTURE.md` §6.8). O toggle de
   // avisos sonoros mora aqui desde que saiu da barra de controles.
   const [preferences, setPreferences] = useState(() => readPreferences(window.localStorage));
+  // Supressão de ruído: chave própria (`wtk-meet:audio`), pelas razões em
+  // `lib/noiseSuppression.js`. O modo é capacidade do navegador, não escolha.
+  const [audioPrefs, setAudioPrefs] = useState(() => readAudioPreferences(window.localStorage));
+  // Capacidade do navegador: não muda enquanto a aba viver.
+  const noiseMode = useMemo(() => detectNoiseMode(), []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsContext, setSettingsContext] = useState(null);
   const soundsEnabled = preferences.soundsEnabled;
 
   const localStreamRef = useRef(null);   // mic + câmera (o track de vídeo entra e sai)
   const cameraTrackRef = useRef(null);
+  /**
+   * O pipeline do microfone, com dono explícito.
+   *
+   * Com o worklet ativo, o track que está no `localStreamRef` **não** é o track
+   * que o `getUserMedia` devolveu: o primeiro é a saída de um
+   * `MediaStreamAudioDestinationNode`, o segundo é o device. Perguntar ao
+   * pipeline (e não ao stream) é o que impede as quatro falhas silenciosas
+   * catalogadas em `lib/micPipeline.js`.
+   */
+  const micPipelineRef = useRef(null);
   const screenStreamRef = useRef(null);
   const signalingRef = useRef(null);
   const meshRef = useRef(null);
@@ -132,6 +154,8 @@ export default function Room() {
   const preferencesRef = useRef(preferences);
   const mutedRef = useRef(muted);
   const cameraOffRef = useRef(cameraOff);
+  const audioPrefsRef = useRef(audioPrefs);
+  const noiseModeRef = useRef(noiseMode);
   // const roomKeyRef = useRef(null);
 
   participantsRef.current = participants;
@@ -141,6 +165,8 @@ export default function Room() {
   preferencesRef.current = preferences;
   mutedRef.current = muted;
   cameraOffRef.current = cameraOff;
+  audioPrefsRef.current = audioPrefs;
+  noiseModeRef.current = noiseMode;
 
   /** Grava a preferência e devolve o valor efetivo (o storage pode recusar). */
   const savePreferences = useCallback((patch) => {
@@ -149,6 +175,23 @@ export default function Room() {
     setPreferences(saved);
     return saved;
   }, []);
+
+  const saveAudioPreferences = useCallback((patch) => {
+    const saved = writeAudioPreferences(window.localStorage, patch);
+    audioPrefsRef.current = saved;
+    setAudioPrefs(saved);
+    return saved;
+  }, []);
+
+  /** As constraints de áudio da preferência corrente, para todo `getUserMedia`. */
+  const micConstraints = useCallback(
+    (options) =>
+      buildConstraints(preferencesRef.current, {
+        ...options,
+        audioProcessing: noiseConstraints(audioPrefsRef.current),
+      }),
+    [],
+  );
 
   // Handler de `ended` dos tracks locais. Vive num ref porque `watchLocalTrack`
   // precisa existir antes das funções que ele aciona (todas se referenciam).
@@ -169,34 +212,57 @@ export default function Room() {
   /**
    * Troca o track de áudio local em todos os senders do mesh, preservando o
    * estado de mute e o anel de fala do tile local.
+   *
+   * Não para nada: quem tem o que parar é o dono do pipeline anterior
+   * (`installAudioPipeline`). Alternar a supressão reaproveita esta função
+   * justamente porque nela **nenhum** device é encerrado — os dois tracks
+   * (cru e processado) continuam vivos, e só muda qual deles vai ao ar.
    */
-  const installAudioTrack = useCallback(
-    async (track) => {
-      const stream = localStreamRef.current;
-      if (!track || !stream) return;
+  const attachAudioTrack = useCallback(async (track) => {
+    const stream = localStreamRef.current;
+    if (!track || !stream) return;
 
-      // Track novo nasce `enabled = true`. Sem esta linha, trocar de microfone
-      // desmuta a pessoa sem que ela peça — e ela precisa vir ANTES do
-      // replaceTrack, senão existe uma janela de frames em que o áudio vaza.
-      track.enabled = !mutedRef.current;
+    // Track novo nasce `enabled = true`. Sem esta linha, trocar de microfone
+    // desmuta a pessoa sem que ela peça — e ela precisa vir ANTES do
+    // replaceTrack, senão existe uma janela de frames em que o áudio vaza.
+    track.enabled = !mutedRef.current;
 
-      const old = stream.getAudioTracks()[0] || null;
-      await meshRef.current?.setAudioTrack(track);
-      if (old) {
-        old.stop();
-        stream.removeTrack(old);
-      }
-      stream.addTrack(track);
-      watchLocalTrack(track);
+    const old = stream.getAudioTracks()[0] || null;
+    // `replaceTrack` com o mesmo kind num transceiver já negociado: não há
+    // renegociação de SDP e nenhum peer muda de estado.
+    await meshRef.current?.setAudioTrack(track);
+    if (old && old !== track) stream.removeTrack(old);
+    if (old !== track) stream.addTrack(track);
 
-      // `attach` é idempotente por (id, stream) e o MediaStream local é o
-      // **mesmo objeto** depois da troca (só o track interno mudou). Um attach
-      // sozinho retornaria cedo e o analisador continuaria preso ao track
-      // antigo, já parado: o anel de fala local morreria em silêncio.
-      monitorRef.current?.detach(LOCAL_AUDIO_ID);
-      monitorRef.current?.attach(LOCAL_AUDIO_ID, stream);
+    // `attach` é idempotente por (id, stream) e o MediaStream local é o
+    // **mesmo objeto** depois da troca (só o track interno mudou). Um attach
+    // sozinho retornaria cedo e o analisador continuaria preso ao track
+    // antigo, já parado: o anel de fala local morreria em silêncio.
+    monitorRef.current?.detach(LOCAL_AUDIO_ID);
+    monitorRef.current?.attach(LOCAL_AUDIO_ID, stream);
+  }, []);
+
+  /**
+   * Assume um pipeline novo como o do microfone corrente e descarta o anterior.
+   *
+   * A ordem é a mesma de sempre e não é negociável: `replaceTrack` primeiro,
+   * `stop` do antigo depois. Parar antes abriria uma janela de silêncio audível
+   * para todos os peers.
+   *
+   * O `ended` é observado no **track cru**: o track do destino do worklet nunca
+   * dispara `ended`: arrancar o microfone faria o grafo passar a processar
+   * silêncio para sempre, e a recuperação nunca rodaria.
+   */
+  const installAudioPipeline = useCallback(
+    async (pipeline) => {
+      if (!pipeline) return;
+      const previous = micPipelineRef.current;
+      micPipelineRef.current = pipeline;
+      await attachAudioTrack(pipeline.track);
+      watchLocalTrack(pipeline.rawTrack);
+      if (previous && previous !== pipeline) previous.stop();
     },
-    [watchLocalTrack],
+    [attachAudioTrack, watchLocalTrack],
   );
 
   // const e2eeSupported = isInsertableStreamsSupported();
@@ -251,10 +317,9 @@ export default function Room() {
      * áudio nenhum — e nada disso pode virar erro na tela.
      */
     async function getLocalStream() {
-      const prefs = preferencesRef.current;
       const attempts = [
-        buildConstraints(prefs, { video: true, audio: true }),
-        buildConstraints(prefs, { video: false, audio: true }),
+        micConstraints({ video: true, audio: true }),
+        micConstraints({ video: false, audio: true }),
         { video: false, audio: true },
       ];
       for (const constraints of attempts) {
@@ -286,27 +351,99 @@ export default function Room() {
       cameraTrackRef.current = localStream?.getVideoTracks()[0] || null;
       if (!cameraTrackRef.current) setCameraOff(true);
 
-      // A verdade sobre qual device foi aberto vem do track, não do que foi
-      // pedido: é assim que uma preferência apontando para hardware que sumiu se
-      // corrige sozinha, sem nenhuma mensagem de erro (§3.3/§3.4 do documento).
-      if (localStream) {
-        const { prefs, changed } = reconcilePreferences(
-          preferencesRef.current,
-          localStream.getTracks(),
-        );
-        if (changed) savePreferences(prefs);
-        localStream.getTracks().forEach(watchLocalTrack);
-      }
-      // roomKeyRef.current = roomKey;
-
       // O `AudioContext` é um só para a sala e o dono dele é este componente:
       // nós de contextos diferentes não podem ser conectados, e o grafo da
       // música precisa do mesmo contexto do indicador de fala. Enquanto o
       // monitor era o dono, `monitor.close()` mataria a música em silêncio.
       const monitor = new AudioLevelMonitor({ onUpdate: setAudioLevels, getContext: getAudioContext });
       monitorRef.current = monitor;
-      monitor.ensureContext();
+      const audioContext = monitor.ensureContext();
       const stopGestureHook = resumeAudioContextOnGesture();
+
+      // O pipeline vem **antes** do mesh e do monitor: é o track processado que
+      // precisa entrar no `localStreamRef`, senão o mesh nasceria transmitindo
+      // o cru e o medidor mediria o áudio que ninguém recebe.
+      const rawAudioTrack = localStream?.getAudioTracks()[0] || null;
+      if (rawAudioTrack) {
+        const pipeline = await createMicPipeline({
+          rawTrack: rawAudioTrack,
+          enabled: audioPrefsRef.current.noiseSuppression,
+          mode: noiseModeRef.current,
+          context: audioContext,
+        });
+        if (cancelled) {
+          pipeline.stop();
+          localStream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        micPipelineRef.current = pipeline;
+        if (pipeline.track !== rawAudioTrack) {
+          localStream.removeTrack(rawAudioTrack);
+          localStream.addTrack(pipeline.track);
+        }
+        // Só o cru: o track do destino não dispara `ended` e não tem deviceId.
+        watchLocalTrack(rawAudioTrack);
+
+        // Contexto suspenso é o estado **normal** antes do primeiro gesto
+        // (política de autoplay), e recarregar a página com o nome já em
+        // sessionStorage entra na sala sem nenhum clique. Sem esta re-tentativa,
+        // quem recarrega fica com a supressão desligada para sempre, sem nada
+        // na tela dizendo isso. Aqui o `await resume()` é seguro justamente
+        // porque estamos **dentro** de um gesto — no caminho de entrada ele
+        // ficaria pendente e travaria a sala.
+        if (!pipeline.processing && pipeline.mode === MODE.WORKLET && audioPrefsRef.current.noiseSuppression) {
+          const events = ['click', 'keydown', 'touchstart'];
+          const unregister = () => {
+            for (const evt of events) window.removeEventListener(evt, onGesture);
+          };
+          const onGesture = async () => {
+            const current = micPipelineRef.current;
+            if (cancelled || !current || current.processing) {
+              unregister();
+              return;
+            }
+            const ctx = getAudioContext();
+            if (!ctx) return;
+            try {
+              await ctx.resume();
+            } catch {
+              return;
+            }
+            if (cancelled || ctx.state !== 'running' || micPipelineRef.current !== current) return;
+            const upgraded = await createMicPipeline({
+              rawTrack: current.rawTrack,
+              enabled: audioPrefsRef.current.noiseSuppression,
+              mode: noiseModeRef.current,
+              context: ctx,
+            });
+            // Falhou de novo: descartar o objeto e sair sem `stop()` — ele
+            // compartilha o `rawTrack` com o pipeline em uso.
+            if (cancelled || !upgraded.processing) return;
+            if (micPipelineRef.current !== current) return;
+            micPipelineRef.current = upgraded;
+            await attachAudioTrack(upgraded.track);
+            unregister();
+          };
+          for (const evt of events) window.addEventListener(evt, onGesture, { passive: true });
+          cleanupExtras.push(unregister);
+        }
+      }
+      if (cameraTrackRef.current) watchLocalTrack(cameraTrackRef.current);
+
+      // A verdade sobre qual device foi aberto vem do track **cru**, não do que
+      // foi pedido nem do que está no stream: é assim que uma preferência
+      // apontando para hardware que sumiu se corrige sozinha, sem nenhuma
+      // mensagem de erro. O track do destino do worklet não tem `deviceId`, e
+      // passá-lo aqui faria a autocorreção parar de funcionar em silêncio.
+      if (localStream) {
+        const { prefs, changed } = reconcilePreferences(preferencesRef.current, [
+          cameraTrackRef.current,
+          micPipelineRef.current?.rawTrack || null,
+        ]);
+        if (changed) savePreferences(prefs);
+      }
+      // roomKeyRef.current = roomKey;
+
       if (localStream) monitor.attach(LOCAL_AUDIO_ID, localStream);
 
       const signaling = createSignalingClient();
@@ -477,6 +614,13 @@ export default function Room() {
       signalingRef.current?.disconnect();
       signalingRef.current = null;
 
+      // O pipeline primeiro: com o worklet ativo, o `localStreamRef` contém
+      // apenas o track do **destino**, e parar só ele deixaria o `getUserMedia`
+      // vivo — LED do microfone aceso depois de sair da sala, indicador do
+      // sistema operacional ligado, e o próximo `getUserMedia` podendo falhar
+      // com NotReadableError.
+      micPipelineRef.current?.stop();
+      micPipelineRef.current = null;
       localStreamRef.current?.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
       cameraTrackRef.current = null;
@@ -586,19 +730,76 @@ export default function Room() {
    * apertar "Desligar câmera" e "Salvar" quase ao mesmo tempo dispara dois
    * `getUserMedia` concorrentes sobre o mesmo hardware.
    */
+  /**
+   * Liga/desliga a supressão **sem** tocar no hardware e sem renegociar SDP.
+   *
+   * No modo worklet os dois tracks já existem (o cru e o do destino), então
+   * alternar é escolher qual deles vai para os senders — um `replaceTrack` com
+   * o mesmo kind num transceiver já negociado. O mute é preservado porque
+   * `attachAudioTrack` ajusta `enabled` antes da troca.
+   *
+   * Devolve `false` quando o modo é `native` (não há segundo track: a mudança
+   * só existe se o navegador reabrir a captura com a constraint nova), e aí quem
+   * chama cai no caminho de reaquisição.
+   */
+  const applyNoiseSuppression = useCallback(
+    async (value) => {
+      const pipeline = micPipelineRef.current;
+      if (!pipeline || noiseModeRef.current !== MODE.WORKLET) return false;
+
+      if (value) {
+        if (pipeline.processing) return true;
+        const engaged = await createMicPipeline({
+          rawTrack: pipeline.rawTrack,
+          enabled: true,
+          mode: MODE.WORKLET,
+          context: getAudioContext(),
+        });
+        // Degradou (contexto suspenso, addModule falhando): o objeto novo
+        // compartilha o `rawTrack`, então é descartado **sem** `stop()`.
+        if (!engaged.processing) return false;
+        micPipelineRef.current = engaged;
+        await attachAudioTrack(engaged.track);
+        return true;
+      }
+
+      if (!pipeline.processing) return true;
+      // Troca primeiro, desmonta depois: o inverso deixaria os peers em
+      // silêncio durante a transição.
+      await attachAudioTrack(pipeline.rawTrack);
+      micPipelineRef.current = pipeline.release();
+      return true;
+    },
+    [attachAudioTrack],
+  );
+
   const applyDeviceSelection = useCallback(
-    async (next) => {
+    async ({ noiseSuppression, ...next }) => {
       const previous = preferencesRef.current;
+      const previousAudio = audioPrefsRef.current;
       const merged = { ...previous, ...next };
+      const nextNoise =
+        typeof noiseSuppression === 'boolean' ? noiseSuppression : previousAudio.noiseSuppression;
       setSettingsOpen(false);
       // Grava antes de mexer no hardware: se a troca falhar, a escolha da pessoa
       // não se perde junto.
       savePreferences(merged);
+      saveAudioPreferences({ noiseSuppression: nextNoise });
 
       const stream = localStreamRef.current;
       const videoChanged = merged.videoInputId !== previous.videoInputId;
       const audioChanged = merged.audioInputId !== previous.audioInputId;
-      if (!stream || (!videoChanged && !audioChanged)) return;
+      const noiseChanged = nextNoise !== previousAudio.noiseSuppression;
+      if (!stream || (!videoChanged && !audioChanged && !noiseChanged)) return;
+
+      // Só a supressão mudou: caminho rápido, sem `getUserMedia` e sem passar
+      // pelo `cameraBusyRef`. Um checkbox de qualidade não pode ter o mesmo
+      // custo e o mesmo risco de trocar de microfone.
+      if (noiseChanged && !audioChanged && !videoChanged) {
+        if (await applyNoiseSuppression(nextNoise)) return;
+        // No modo nativo não há o que alternar em memória: segue para a
+        // reaquisição abaixo, que é o que aplica a constraint nova.
+      }
       if (cameraBusyRef.current) {
         // Outra operação de mídia em voo (tipicamente "Desligar câmera"). A
         // escolha já está gravada; descartar a troca **em silêncio** é que não
@@ -610,11 +811,17 @@ export default function Room() {
       cameraBusyRef.current = true;
       setMediaError(null);
       try {
-        if (audioChanged) {
+        if (audioChanged || noiseChanged) {
           const fresh = await navigator.mediaDevices.getUserMedia(
-            buildConstraints(merged, { video: false, audio: true }),
+            micConstraints({ video: false, audio: true }),
           );
-          await installAudioTrack(fresh.getAudioTracks()[0]);
+          const pipeline = await createMicPipeline({
+            rawTrack: fresh.getAudioTracks()[0],
+            enabled: nextNoise,
+            mode: noiseModeRef.current,
+            context: getAudioContext(),
+          });
+          await installAudioPipeline(pipeline);
         }
 
         // Câmera desligada: só a preferência é gravada. Reacender a câmera para
@@ -622,7 +829,7 @@ export default function Room() {
         // consentimento — a escolha vale a partir do próximo "Ativar câmera".
         if (videoChanged && !cameraOffRef.current) {
           const fresh = await navigator.mediaDevices.getUserMedia(
-            buildConstraints(merged, { video: true, audio: false }),
+            micConstraints({ video: true, audio: false }),
           );
           const track = fresh.getVideoTracks()[0];
           if (track) {
@@ -638,10 +845,13 @@ export default function Room() {
           }
         }
 
-        const { prefs, changed } = reconcilePreferences(
-          preferencesRef.current,
-          stream.getTracks(),
-        );
+        // O track cru, nunca `stream.getTracks()`: com o worklet ativo o stream
+        // carrega o track do destino, que não tem `deviceId` — a reconciliação
+        // pararia de corrigir preferências obsoletas, e em silêncio.
+        const { prefs, changed } = reconcilePreferences(preferencesRef.current, [
+          cameraTrackRef.current,
+          micPipelineRef.current?.rawTrack || null,
+        ]);
         if (changed) savePreferences(prefs);
       } catch (err) {
         console.error('[Room] applyDeviceSelection failed:', err);
@@ -650,7 +860,14 @@ export default function Room() {
         cameraBusyRef.current = false;
       }
     },
-    [installAudioTrack, savePreferences, watchLocalTrack],
+    [
+      applyNoiseSuppression,
+      installAudioPipeline,
+      micConstraints,
+      saveAudioPreferences,
+      savePreferences,
+      watchLocalTrack,
+    ],
   );
 
   /**
@@ -661,7 +878,14 @@ export default function Room() {
     async (track) => {
       const stream = localStreamRef.current;
       // Track que já foi substituído (troca normal de device) não é perda.
-      if (!stream || !stream.getTracks().includes(track)) return;
+      //
+      // O track cru do pipeline entra na guarda porque, com o worklet ativo, ele
+      // **não** está no `localStreamRef` — o stream carrega o track do destino.
+      // Sem esta linha, arrancar o microfone não dispararia recuperação nenhuma:
+      // o `ended` chegaria, seria descartado aqui, e o grafo seguiria
+      // processando silêncio para sempre.
+      const isMicRawTrack = micPipelineRef.current?.rawTrack === track;
+      if (!stream || (!isMicRawTrack && !stream.getTracks().includes(track))) return;
 
       if (track.kind === 'video') {
         stream.removeTrack(track);
@@ -676,15 +900,26 @@ export default function Room() {
 
       savePreferences({ audioInputId: '' });
       try {
-        // Sem restrição de device: o que estava salvo é justamente o que sumiu.
-        const fresh = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
-        await installAudioTrack(fresh.getAudioTracks()[0]);
+        // Sem restrição de device — o que estava salvo é justamente o que sumiu —
+        // mas a preferência de supressão continua valendo: a pessoa não pediu
+        // para desligá-la, só perdeu o microfone.
+        const fresh = await navigator.mediaDevices.getUserMedia({
+          video: false,
+          audio: { ...noiseConstraints(audioPrefsRef.current) },
+        });
+        const pipeline = await createMicPipeline({
+          rawTrack: fresh.getAudioTracks()[0],
+          enabled: audioPrefsRef.current.noiseSuppression,
+          mode: noiseModeRef.current,
+          context: getAudioContext(),
+        });
+        await installAudioPipeline(pipeline);
       } catch (err) {
         console.error('[Room] recuperação de microfone falhou:', err);
       }
       setMediaError('O microfone em uso foi desconectado. Voltamos para o padrão do sistema.');
     },
-    [installAudioTrack, savePreferences],
+    [installAudioPipeline, savePreferences],
   );
 
   trackEndedRef.current = handleLocalTrackEnded;
@@ -956,6 +1191,8 @@ export default function Room() {
       {settingsOpen && (
         <SettingsModal
           preferences={preferences}
+          noiseSuppression={audioPrefs.noiseSuppression}
+          noiseMode={noiseMode}
           audioContext={settingsContext}
           busy={cameraBusyRef.current}
           // Câmera desligada não vira preview: abrir a câmera aqui acenderia o
