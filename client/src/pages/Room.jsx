@@ -518,7 +518,13 @@ export default function Room() {
       const videoChanged = merged.videoInputId !== previous.videoInputId;
       const audioChanged = merged.audioInputId !== previous.audioInputId;
       if (!stream || (!videoChanged && !audioChanged)) return;
-      if (cameraBusyRef.current) return;
+      if (cameraBusyRef.current) {
+        // Outra operação de mídia em voo (tipicamente "Desligar câmera"). A
+        // escolha já está gravada; descartar a troca **em silêncio** é que não
+        // pode — a pessoa ficaria olhando para o dispositivo antigo sem entender.
+        setMediaError('Havia outra troca de mídia em andamento. Abra as configurações e salve de novo.');
+        return;
+      }
 
       cameraBusyRef.current = true;
       setMediaError(null);

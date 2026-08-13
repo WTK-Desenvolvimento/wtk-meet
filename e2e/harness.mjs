@@ -154,11 +154,22 @@ export async function launchBrowser() {
  * Abre um participante: contexto isolado (storage próprio, como uma janela
  * anônima separada), ICE apontando para o TURN local, e nome já preenchido.
  */
-export async function openParticipant(browser, { roomUrl, name }) {
+export async function openParticipant(browser, { roomUrl, name, preferences }) {
   const context = await browser.newContext({
     permissions: ['camera', 'microphone'],
     ignoreHTTPSErrors: true,
   });
+
+  // Semeia a preferência de dispositivos **antes** de qualquer script da app: é
+  // o que permite exercitar "a preferência salva aponta para hardware que não
+  // existe mais" sem depender de uma sessão anterior.
+  if (preferences) {
+    await context.addInitScript({
+      content: `localStorage.setItem('wtk-meet:devices', ${JSON.stringify(
+        JSON.stringify(preferences),
+      )});`,
+    });
+  }
 
   await context.route('**/turn-credentials', (route) =>
     route.fulfill({
@@ -201,6 +212,54 @@ export async function setInputValue(locator, value) {
     setter.call(input, text);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }, value);
+}
+
+/**
+ * Escolhe uma opção de um `<select>` controlado pelo React.
+ *
+ * Mesmo motivo de `setInputValue`: a injeção de eventos via CDP não chega ao
+ * renderer neste headless. `selectOption()` do Playwright dispara o evento pelo
+ * caminho que não funciona aqui; escrever pelo setter nativo e despachar
+ * `change` é o caminho que o React escuta.
+ */
+export async function setSelectValue(locator, value) {
+  await locator.evaluate((select, wanted) => {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+    setter.call(select, wanted);
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }, value);
+}
+
+/**
+ * Abre o modal de configurações e espera ele estabilizar: o preview precisa ter
+ * concedido a permissão e a enumeração precisa ter populado os seletores, senão
+ * a escolha cai numa `<option>` que ainda não existe.
+ */
+export async function openSettings(page, { source = '.controls' } = {}) {
+  await page.locator(source).getByRole('button', { name: 'Configurações' }).click();
+  const modal = page.locator('.settings-modal');
+  await modal.waitFor({ timeout: 10000 });
+  await page.waitForFunction(
+    () => {
+      const selects = document.querySelectorAll('.settings-modal select');
+      return selects.length === 3 && [...selects].every((s) => s.options.length > 1);
+    },
+    { timeout: 10000 },
+  );
+  return modal;
+}
+
+/** Snapshot dos tracks de cada sender, por peer — identidade e estado. */
+export async function senderTracks(page) {
+  return page.evaluate(() =>
+    (window.__wtkPeers || [])
+      .filter((pc) => pc.connectionState !== 'closed')
+      .map((pc) =>
+        pc.getSenders()
+          .filter((s) => s.track)
+          .map((s) => ({ kind: s.track.kind, id: s.track.id, enabled: s.track.enabled })),
+      ),
+  );
 }
 
 /**
@@ -301,7 +360,26 @@ export const INSTRUMENTATION = `
   window.__wtkCounters = {
     getUserMedia: 0, getDisplayMedia: 0, setLocalDescription: 0, setRemoteDescription: 0,
     raf: 0, oscillators: 0,
+    // Um item por getUserMedia, com os deviceId PEDIDOS: prova o que foi pedido,
+    // não só quantas vezes.
+    gumRequests: [],
   };
+
+  // ------------------------------------------------ simulação de dispositivos
+  // A flag --use-fake-device-for-media-stream expõe exatamente UMA câmera e UM
+  // microfone falsos, e não existe flag para uma segunda. Sem esta camada não há
+  // como exercitar "trocar de câmera" no navegador — o teste ficaria restrito ao
+  // que o unitário já cobre.
+  window.__wtkFakeDevices = [
+    { deviceId: 'cam-a', kind: 'videoinput',  label: 'Câmera Falsa A', groupId: 'grp-a' },
+    { deviceId: 'cam-b', kind: 'videoinput',  label: 'Câmera Falsa B', groupId: 'grp-b' },
+    { deviceId: 'mic-a', kind: 'audioinput',  label: 'Microfone Falso A', groupId: 'grp-a' },
+    { deviceId: 'mic-b', kind: 'audioinput',  label: 'Microfone Falso B', groupId: 'grp-b' },
+    { deviceId: 'spk-a', kind: 'audiooutput', label: 'Saída Falsa A', groupId: 'grp-a' },
+    { deviceId: 'spk-b', kind: 'audiooutput', label: 'Saída Falsa B', groupId: 'grp-b' },
+  ];
+  window.__wtkSinkIds = [];
+
   window.__wtkLiveTracks = new Set();
   // Só as tracks vindas de getDisplayMedia. O teste precisa distinguí-las das
   // da câmera para simular "Parar compartilhamento" da barra do navegador.
@@ -348,8 +426,82 @@ export const INSTRUMENTATION = `
   }
 
   const md = navigator.mediaDevices;
+
+  // enumerateDevices devolve o registro simulado, com toJSON() (a app e o teste
+  // podem serializar as entradas).
+  md.enumerateDevices = async () =>
+    window.__wtkFakeDevices.map((d) => ({ ...d, toJSON() { return { ...d }; } }));
+
+  const requestedId = (constraint) => {
+    if (!constraint || typeof constraint !== 'object') return null;
+    const wanted = constraint.deviceId;
+    if (!wanted) return null;
+    return typeof wanted === 'string' ? wanted : (wanted.ideal || wanted.exact || null);
+  };
+
+  // O device falso real é um só: manter a constraint de deviceId tornaria o
+  // resultado dependente de como o Chromium trata um id que ele não conhece.
+  const stripDeviceId = (constraints) => {
+    if (!constraints || typeof constraints !== 'object') return constraints;
+    const out = { ...constraints };
+    for (const key of ['video', 'audio']) {
+      if (out[key] && typeof out[key] === 'object') {
+        const { deviceId, ...rest } = out[key];
+        void deviceId;
+        out[key] = Object.keys(rest).length ? rest : true;
+      }
+    }
+    return out;
+  };
+
   const origGUM = md.getUserMedia.bind(md);
-  md.getUserMedia = async (...a) => { window.__wtkCounters.getUserMedia++; return trackStream(await origGUM(...a)); };
+  md.getUserMedia = async (constraints, ...rest) => {
+    window.__wtkCounters.getUserMedia++;
+    const asked = { video: requestedId(constraints?.video), audio: requestedId(constraints?.audio) };
+    window.__wtkCounters.gumRequests.push(asked);
+    const stream = await origGUM(stripDeviceId(constraints), ...rest);
+    // getSettings() passa a reportar o device pedido — mas só quando ele existe
+    // no registro. Um id desconhecido continua reportando o device real, que é
+    // exatamente o que um navegador faz com \`ideal\` e o que faz a reconciliação
+    // de preferência obsoleta ter o que consertar.
+    for (const track of stream.getTracks()) {
+      const wanted = track.kind === 'video' ? asked.video : asked.audio;
+      const known = wanted && window.__wtkFakeDevices.some((d) => d.deviceId === wanted);
+      const origSettings = track.getSettings.bind(track);
+      track.getSettings = () => ({
+        ...origSettings(),
+        deviceId: known ? wanted : (origSettings().deviceId || 'fake-device-real'),
+      });
+    }
+    return trackStream(stream);
+  };
+
+  // setSinkId: o headless pode não implementar, e a asserção é sobre TER
+  // chamado — não sobre o áudio sair de fato por outro alto-falante.
+  if (window.HTMLMediaElement) {
+    HTMLMediaElement.prototype.setSinkId = function (sinkId) {
+      window.__wtkSinkIds.push({ tag: this.tagName, sinkId });
+      return Promise.resolve();
+    };
+  }
+
+  // Único jeito de cobrir conexão/desconexão de hardware sem hardware.
+  window.__wtkAddDevice = (info) => {
+    window.__wtkFakeDevices.push(info);
+    md.dispatchEvent(new Event('devicechange'));
+  };
+  window.__wtkRemoveDevice = (deviceId) => {
+    window.__wtkFakeDevices = window.__wtkFakeDevices.filter((d) => d.deviceId !== deviceId);
+    // O navegador encerra o track de um device arrancado; o helper faz o mesmo,
+    // senão a recuperação da aplicação nunca seria exercitada.
+    for (const track of window.__wtkLiveTracks) {
+      if (track.readyState !== 'live') continue;
+      let settings = {};
+      try { settings = track.getSettings(); } catch {}
+      if (settings.deviceId === deviceId) track.dispatchEvent(new Event('ended'));
+    }
+    md.dispatchEvent(new Event('devicechange'));
+  };
   const origGDM = md.getDisplayMedia?.bind(md);
   if (origGDM) {
     md.getDisplayMedia = async (...a) => {

@@ -7,6 +7,8 @@
  *   C. compartilhamento de tela + glare (dois compartilhando ao mesmo tempo)
  *   D. chat P2P via data channel, sem passar pelo servidor
  *   E. desligar/religar câmera com track.stop() e replaceTrack, sem renegociar
+ *   S. modal de configurações: listagem, troca de câmera/mic em chamada,
+ *      saída de áudio, cancelamento e devicechange
  *   F. saída da sala sem vazar tracks/AudioContext/rAF
  *
  * Rodar: node e2e/run.mjs   (o próprio script builda o client)
@@ -18,9 +20,12 @@ import {
   launchBrowser,
   noPageScroll,
   openParticipant,
+  openSettings,
   peerStats,
   roomLayout,
+  senderTracks,
   setInputValue,
+  setSelectValue,
   sleep,
   startClientServer,
   startSignaling,
@@ -609,6 +614,324 @@ try {
   );
   check('E9. Áudio não caiu no ciclo de câmera', audioStillAlive);
 
+  // ------------------------------------- S. modal de configurações de mídia
+  // Os dispositivos são simulados pelo harness: a flag de câmera falsa do
+  // Chromium expõe exatamente um device de cada tipo, e não existe flag para um
+  // segundo — sem a simulação, "trocar de câmera" é inexecutável no navegador.
+  const readPrefs = (page) =>
+    page.evaluate(() => JSON.parse(localStorage.getItem('wtk-meet:devices') || 'null'));
+  const kindIds = (snapshot, kind) =>
+    new Set(snapshot.flat().filter((t) => t.kind === kind).map((t) => t.id));
+
+  const sdpBeforeSwap = await alice.page.evaluate(() => ({
+    local: window.__wtkCounters.setLocalDescription,
+    remote: window.__wtkCounters.setRemoteDescription,
+  }));
+  const tracksBeforeSwap = await senderTracks(alice.page);
+
+  await openSettings(alice.page);
+
+  const modalState = await alice.page.evaluate(() => {
+    const dialog = document.querySelector('.settings-modal');
+    const [video, audio, output] = dialog.querySelectorAll('select');
+    const read = (el) => [...el.options].map((o) => ({ value: o.value, label: o.textContent }));
+    return {
+      role: dialog.getAttribute('role'),
+      ariaModal: dialog.getAttribute('aria-modal'),
+      hasLabel: !!document.getElementById(dialog.getAttribute('aria-labelledby') || ''),
+      focusOnFirstField: document.activeElement === video,
+      video: read(video),
+      audio: read(audio),
+      output: read(output),
+      // O empilhamento importa: configurações abaixo do pedido de entrada, acima
+      // dos toasts.
+      backdropZ: Number(getComputedStyle(document.querySelector('.modal-backdrop.settings')).zIndex),
+      audioContexts: window.__wtkAudioContexts.length,
+      previewPlaying: !!document.querySelector('.settings-preview video')?.srcObject,
+    };
+  });
+  const noDupes = (list) => new Set(list.map((o) => o.value)).size === list.length;
+  check(
+    'S1. O modal lista os três kinds com rótulos reais, sem duplicatas e com "Padrão do sistema" na frente',
+    modalState.video.length === 3 &&
+      modalState.audio.length === 3 &&
+      modalState.output.length === 3 &&
+      [modalState.video, modalState.audio, modalState.output].every(
+        (l) => noDupes(l) && l[0].value === '' && /Padrão do sistema/.test(l[0].label),
+      ) &&
+      modalState.video.some((o) => o.value === 'cam-b' && /Câmera Falsa B/.test(o.label)) &&
+      modalState.audio.some((o) => o.value === 'mic-b' && /Microfone Falso B/.test(o.label)) &&
+      modalState.output.some((o) => o.value === 'spk-b' && /Saída Falsa B/.test(o.label)),
+    `câmeras=${JSON.stringify(modalState.video.map((o) => o.label))} ` +
+      `mics=${JSON.stringify(modalState.audio.map((o) => o.label))} ` +
+      `saídas=${JSON.stringify(modalState.output.map((o) => o.label))}`,
+  );
+  check(
+    'S2. O modal é acessível, tem preview ao vivo e não cria um segundo AudioContext',
+    modalState.role === 'dialog' &&
+      modalState.ariaModal === 'true' &&
+      modalState.hasLabel &&
+      modalState.focusOnFirstField &&
+      modalState.previewPlaying &&
+      modalState.audioContexts === 1 &&
+      modalState.backdropZ === 28,
+    `role=${modalState.role} foco no 1º campo=${modalState.focusOnFirstField} ` +
+      `preview=${modalState.previewPlaying} AudioContexts=${modalState.audioContexts} z=${modalState.backdropZ}`,
+  );
+
+  const selects = alice.page.locator('.settings-modal select');
+  await setSelectValue(selects.nth(0), 'cam-b');
+  await setSelectValue(selects.nth(1), 'mic-b');
+  await sleep(600); // o preview reinicia a cada mudança de seleção pendente
+
+  const previewTracksOpen = await alice.page.evaluate(
+    () => window.__wtkTrackStates().filter((t) => t.readyState === 'live').length,
+  );
+  await alice.page.getByRole('button', { name: 'Salvar' }).click();
+  await alice.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 10000 });
+  await sleep(1200);
+
+  const tracksAfterSwap = await senderTracks(alice.page);
+  const sdpAfterSwap = await alice.page.evaluate(() => ({
+    local: window.__wtkCounters.setLocalDescription,
+    remote: window.__wtkCounters.setRemoteDescription,
+  }));
+
+  const videoBefore = kindIds(tracksBeforeSwap, 'video');
+  const videoAfter = kindIds(tracksAfterSwap, 'video');
+  const audioBefore = kindIds(tracksBeforeSwap, 'audio');
+  const audioAfter = kindIds(tracksAfterSwap, 'audio');
+  const disjoint = (a, b) => [...a].every((id) => !b.has(id));
+  check(
+    'S3. Salvar troca o track em TODOS os senders do mesh (câmera e microfone)',
+    tracksAfterSwap.length === 2 &&
+      tracksAfterSwap.every(
+        (peer) =>
+          peer.filter((t) => t.kind === 'video').length === 1 &&
+          peer.filter((t) => t.kind === 'audio').length === 1,
+      ) &&
+      videoAfter.size === 1 &&
+      audioAfter.size === 1 &&
+      disjoint(videoBefore, videoAfter) &&
+      disjoint(audioBefore, audioAfter),
+    `vídeo ${JSON.stringify([...videoBefore])} → ${JSON.stringify([...videoAfter])}, ` +
+      `áudio ${JSON.stringify([...audioBefore])} → ${JSON.stringify([...audioAfter])}`,
+  );
+  check(
+    'S4. A troca de dispositivo não renegocia SDP (replaceTrack em transceiver já negociado)',
+    sdpAfterSwap.local === sdpBeforeSwap.local && sdpAfterSwap.remote === sdpBeforeSwap.remote,
+    `setLocalDescription: ${sdpBeforeSwap.local} → ${sdpAfterSwap.local}, ` +
+      `setRemoteDescription: ${sdpBeforeSwap.remote} → ${sdpAfterSwap.remote}`,
+  );
+  check('S5. Nenhuma conexão cai na troca de dispositivo', await everyoneConnected());
+
+  const asked = await alice.page.evaluate(() => window.__wtkCounters.gumRequests);
+  check(
+    'S6. O getUserMedia da troca pediu exatamente os deviceId escolhidos',
+    asked.some((r) => r.video === 'cam-b') && asked.some((r) => r.audio === 'mic-b'),
+    `últimos pedidos=${JSON.stringify(asked.slice(-4))}`,
+  );
+
+  const savedPrefs = await readPrefs(alice.page);
+  check(
+    'S7. A preferência é gravada em localStorage["wtk-meet:devices"] com exatamente as quatro chaves',
+    savedPrefs &&
+      savedPrefs.videoInputId === 'cam-b' &&
+      savedPrefs.audioInputId === 'mic-b' &&
+      Object.keys(savedPrefs).sort().join() ===
+        'audioInputId,audioOutputId,soundsEnabled,videoInputId',
+    JSON.stringify(savedPrefs),
+  );
+
+  // ------------------------------------------------------ S. cancelamento
+  await openSettings(alice.page);
+  await setSelectValue(alice.page.locator('.settings-modal select').nth(0), 'cam-a');
+  await sleep(600);
+  await alice.page.evaluate(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  });
+  await alice.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
+  await sleep(400);
+
+  const afterCancel = await readPrefs(alice.page);
+  const liveAfterCancel = await alice.page.evaluate(
+    () => window.__wtkTrackStates().filter((t) => t.readyState === 'live').length,
+  );
+  const sendersAfterCancel = await senderTracks(alice.page);
+  check(
+    'S8. Esc descarta a seleção, para o stream de preview e mantém os devices em uso',
+    afterCancel.videoInputId === 'cam-b' &&
+      disjoint(kindIds(sendersAfterCancel, 'video'), videoBefore) &&
+      kindIds(sendersAfterCancel, 'video').size === 1 &&
+      [...kindIds(sendersAfterCancel, 'video')][0] === [...videoAfter][0] &&
+      liveAfterCancel < previewTracksOpen,
+    `preferência=${afterCancel.videoInputId} tracks vivas: ${previewTracksOpen} (modal aberto) → ` +
+      `${liveAfterCancel} (fechado)`,
+  );
+
+  // ------------------------------------------------------ S. saída de áudio
+  await openSettings(alice.page);
+  await setSelectValue(alice.page.locator('.settings-modal select').nth(2), 'spk-b');
+  await alice.page.getByRole('button', { name: 'Salvar' }).click();
+  await alice.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
+  await sleep(500);
+
+  const sinkState = await alice.page.evaluate(() => ({
+    calls: window.__wtkSinkIds.filter((c) => c.sinkId === 'spk-b').length,
+    tiles: document.querySelectorAll('.video-tile video').length,
+    saved: JSON.parse(localStorage.getItem('wtk-meet:devices')).audioOutputId,
+  }));
+  check(
+    'S9. A saída escolhida é aplicada com setSinkId em todos os elementos de mídia dos tiles',
+    sinkState.calls >= sinkState.tiles && sinkState.tiles > 0 && sinkState.saved === 'spk-b',
+    `setSinkId('spk-b') em ${sinkState.calls} elementos, ${sinkState.tiles} tiles, salvo=${sinkState.saved}`,
+  );
+
+  // ------------------------------------- S. trocar de mic estando silenciado
+  await alice.page.getByRole('button', { name: 'Silenciar' }).click();
+  await alice.page.getByRole('button', { name: 'Ativar mic' }).waitFor({ timeout: 5000 });
+  await openSettings(alice.page);
+  await setSelectValue(alice.page.locator('.settings-modal select').nth(1), 'mic-a');
+  await sleep(600);
+  await alice.page.getByRole('button', { name: 'Salvar' }).click();
+  await alice.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
+  await sleep(1000);
+
+  const mutedSwap = await senderTracks(alice.page);
+  const stillMuted = await alice.page.getByRole('button', { name: 'Ativar mic' }).count();
+  check(
+    'S10. Trocar de microfone estando mudo gera track novo já com enabled=false (continua mudo)',
+    mutedSwap.length === 2 &&
+      mutedSwap.every((peer) => peer.some((t) => t.kind === 'audio' && t.enabled === false)) &&
+      disjoint(kindIds(mutedSwap, 'audio'), audioAfter) &&
+      stillMuted === 1,
+    `áudio ${JSON.stringify([...audioAfter])} → ${JSON.stringify([...kindIds(mutedSwap, 'audio')])}, ` +
+      `botão "Ativar mic" presente=${stillMuted === 1}`,
+  );
+  await alice.page.getByRole('button', { name: 'Ativar mic' }).click();
+  await alice.page.getByRole('button', { name: 'Silenciar' }).waitFor({ timeout: 5000 });
+
+  // ------------------------------ S. trocar de câmera com a câmera desligada
+  await alice.page.getByRole('button', { name: 'Desligar câmera' }).click();
+  await alice.page.getByRole('button', { name: 'Ativar câmera' }).waitFor({ timeout: 5000 });
+  await openSettings(alice.page);
+  // Medido com o modal já aberto: o preview do microfone (a câmera está
+  // desligada, então ele não pede vídeo) é uma ação à parte do "Salvar".
+  const gumBeforeSave = await alice.page.evaluate(() => window.__wtkCounters.getUserMedia);
+  await setSelectValue(alice.page.locator('.settings-modal select').nth(0), 'cam-a');
+  await alice.page.getByRole('button', { name: 'Salvar' }).click();
+  await alice.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
+  await sleep(800);
+
+  const camOffSwap = await alice.page.evaluate(() => ({
+    gum: window.__wtkCounters.getUserMedia,
+    videoRequests: window.__wtkCounters.gumRequests.filter((r) => r.video !== null).length,
+    liveVideo: window.__wtkTrackStates().filter((t) => t.kind === 'video' && t.readyState === 'live')
+      .length,
+    saved: JSON.parse(localStorage.getItem('wtk-meet:devices')).videoInputId,
+  }));
+  check(
+    'S11. Com a câmera desligada, trocar de câmera só grava a preferência — o LED não acende',
+    camOffSwap.gum === gumBeforeSave && camOffSwap.liveVideo === 0 && camOffSwap.saved === 'cam-a',
+    `getUserMedia ${gumBeforeSave} → ${camOffSwap.gum}, tracks de vídeo vivas=${camOffSwap.liveVideo}, ` +
+      `preferência=${camOffSwap.saved}`,
+  );
+
+  await alice.page.getByRole('button', { name: 'Ativar câmera' }).click();
+  await alice.page.getByRole('button', { name: 'Desligar câmera' }).waitFor({ timeout: 10000 });
+  await sleep(600);
+  const relit = await alice.page.evaluate(() => window.__wtkCounters.gumRequests.at(-1));
+  check(
+    'S12. Religar a câmera usa a preferência escolhida enquanto ela estava desligada',
+    relit.video === 'cam-a',
+    `último pedido=${JSON.stringify(relit)}`,
+  );
+
+  // ------------------------------- S. persistência lida num documento novo
+  // Um documento novo no mesmo perfil é o teste honesto de "sobrevive a reload
+  // e a fechar/reabrir o navegador": nada da sessão anterior está na memória, e
+  // a única fonte possível para a seleção é o localStorage.
+  const homePage = await alice.context.newPage();
+  await homePage.goto(CLIENT_ORIGIN);
+  await homePage.locator('main.home').waitFor({ timeout: 10000 });
+  await openSettings(homePage, { source: 'main.home' });
+  const restored = await homePage.evaluate(() => {
+    const [video, audio, output] = document.querySelectorAll('.settings-modal select');
+    return {
+      stored: JSON.parse(localStorage.getItem('wtk-meet:devices') || 'null'),
+      video: video.value,
+      audio: audio.value,
+      output: output.value,
+      // Rótulos reais dependem de permissão concedida — e é o preview que a
+      // concede, o que só funciona se ele vier ANTES do enumerateDevices.
+      labelled: [...video.options].every((o) => o.textContent.trim().length > 0),
+    };
+  });
+  check(
+    'S15. A preferência é lida do localStorage num documento novo, e o modal abre na seleção salva',
+    restored.stored &&
+      restored.video === restored.stored.videoInputId &&
+      restored.audio === restored.stored.audioInputId &&
+      restored.output === restored.stored.audioOutputId &&
+      restored.video === 'cam-a' &&
+      restored.output === 'spk-b' &&
+      restored.labelled,
+    `gravado=${JSON.stringify(restored.stored)} seletores=${restored.video}/${restored.audio}/${restored.output}`,
+  );
+  await homePage.close();
+
+  // --------------------------------------------------- S. devicechange
+  await openSettings(alice.page);
+  await alice.page.evaluate(() =>
+    window.__wtkAddDevice({
+      deviceId: 'cam-c',
+      kind: 'videoinput',
+      label: 'Câmera Falsa C',
+      groupId: 'grp-c',
+    }),
+  );
+  const appeared = await waitFor(
+    async () =>
+      alice.page.evaluate(() =>
+        [...document.querySelectorAll('.settings-modal select')[0].options].some(
+          (o) => o.value === 'cam-c',
+        ),
+      ),
+    { timeout: 8000, label: 'opção do device conectado aparecer no modal' },
+  ).catch(() => false);
+  check(
+    'S13. Conectar um dispositivo com o modal aberto atualiza a lista (devicechange), sem reabrir',
+    appeared === true,
+  );
+
+  // O device em uso é arrancado: o navegador encerra o track e não migra
+  // sozinho — quem repõe é a aplicação.
+  await alice.page.evaluate(() => window.__wtkRemoveDevice('mic-a'));
+  const recovered = await waitFor(
+    async () => {
+      const state = await alice.page.evaluate(() => ({
+        saved: JSON.parse(localStorage.getItem('wtk-meet:devices')).audioInputId,
+        warning: document.querySelector('.warning')?.textContent || '',
+        audioLive: window
+          .__wtkTrackStates()
+          .filter((t) => t.kind === 'audio' && t.readyState === 'live').length,
+      }));
+      return state.saved === '' && /desconectad/i.test(state.warning) ? state : false;
+    },
+    { timeout: 12000, label: 'recuperação do microfone removido' },
+  ).catch(() => false);
+  check(
+    'S14. Remover o dispositivo em uso cai para o padrão do sistema e avisa na tela',
+    recovered !== false && recovered.audioLive > 0,
+    recovered === false
+      ? 'a preferência não voltou ao padrão ou nenhum aviso foi exibido'
+      : `preferência="${recovered.saved}" aviso=${JSON.stringify(recovered.warning)} ` +
+        `tracks de áudio vivas=${recovered.audioLive}`,
+  );
+
+  await alice.page.getByRole('button', { name: 'Cancelar' }).click();
+  await alice.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
+
   // ------------------------------------------------ F. saída e vazamentos
   // Zera a fila de toasts antes de medir: o reload de Bob (seção D) gera um
   // "Bob saiu da sala" legítimo que pode ainda estar na tela.
@@ -642,8 +965,33 @@ try {
     `osciladores: ${beepsBefore} → ${beepsAfter}`,
   );
 
-  // Silenciar os avisos deve calar o bipe sem calar o toast.
-  await alice.page.getByRole('button', { name: 'Silenciar avisos' }).click();
+  // Silenciar os avisos deve calar o bipe sem calar o toast. O toggle saiu da
+  // barra de controles (espaço escasso, e o layout de altura fixa depende de ela
+  // não crescer) e agora vive dentro do modal de configurações.
+  const soundsInControls = await alice.page
+    .locator('.controls')
+    .getByRole('button', { name: /avisos/i })
+    .count();
+  check(
+    'F4a. O toggle de avisos sonoros não ocupa mais um slot na barra de controles',
+    soundsInControls === 0,
+    `botões de aviso na barra=${soundsInControls}`,
+  );
+
+  await openSettings(alice.page);
+  await alice.page.locator('.settings-modal input[type="checkbox"]').evaluate((box) => {
+    box.click();
+  });
+  await alice.page.getByRole('button', { name: 'Salvar' }).click();
+  await alice.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
+  const soundsOff = await alice.page.evaluate(
+    () => JSON.parse(localStorage.getItem('wtk-meet:devices')).soundsEnabled,
+  );
+  check(
+    'F4b. O toggle de avisos vive no modal e a escolha é persistida',
+    soundsOff === false,
+    `soundsEnabled=${soundsOff}`,
+  );
   const beepsMuted = await alice.page.evaluate(() => window.__wtkCounters.oscillators);
   await bob.page.getByRole('button', { name: 'Sair' }).click();
   const bobToast = await waitFor(
@@ -700,8 +1048,45 @@ try {
   // ------------------------ M (cont.). fila do modal e desistência do pedido
   // Dois pedidos ao mesmo tempo, e os dois solicitantes desistem antes de
   // qualquer decisão: o modal não pode ficar com botões que não fazem nada.
-  const dave = await openParticipant(browser, { roomUrl, name: 'Dave' });
+  // Dave entra com uma preferência obsoleta gravada (o headset ficou na outra
+  // máquina): a mídia tem que abrir pelo padrão, sem nenhuma mensagem de erro, e
+  // a preferência tem que se corrigir sozinha.
+  const dave = await openParticipant(browser, {
+    roomUrl,
+    name: 'Dave',
+    preferences: {
+      videoInputId: 'cam-de-outra-maquina',
+      audioInputId: 'mic-de-outra-maquina',
+      audioOutputId: '',
+      soundsEnabled: true,
+    },
+  });
   const erin = await openParticipant(browser, { roomUrl, name: 'Erin' });
+
+  const stale = await waitFor(
+    async () => {
+      const state = await dave.page.evaluate(() => ({
+        prefs: JSON.parse(localStorage.getItem('wtk-meet:devices') || 'null'),
+        warnings: document.querySelectorAll('.warning, .error').length,
+        liveTracks: window.__wtkTrackStates().filter((t) => t.readyState === 'live').length,
+        askedFor: window.__wtkCounters.gumRequests[0] || null,
+      }));
+      return state.prefs && state.prefs.videoInputId !== 'cam-de-outra-maquina' ? state : false;
+    },
+    { timeout: 20000, label: 'preferência obsoleta de Dave se corrigir' },
+  ).catch(() => false);
+  check(
+    'S16. Preferência salva para um device inexistente cai no padrão sem erro visível, e se corrige',
+    stale !== false &&
+      stale.warnings === 0 &&
+      stale.liveTracks > 0 &&
+      stale.askedFor?.video === 'cam-de-outra-maquina' &&
+      stale.prefs.audioInputId !== 'mic-de-outra-maquina',
+    stale === false
+      ? 'a preferência obsoleta continuou gravada'
+      : `pedido inicial=${JSON.stringify(stale.askedFor)} → gravado=${JSON.stringify(stale.prefs)}, ` +
+        `avisos na tela=${stale.warnings} tracks vivas=${stale.liveTracks}`,
+  );
 
   const queued = await waitFor(
     async () => {
