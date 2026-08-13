@@ -208,21 +208,30 @@ export class YouTubeTrackPlayer {
     this.host.appendChild(mount);
     this.mount = mount;
 
-    const instance = new YT.Player(mount, {
+    let instance = null;
+    let readyFired = false;
+
+    instance = new YT.Player(mount, {
       videoId,
       // `playsinline` evita o player em tela cheia no iOS; `rel: 0` corta a
       // enxurrada de sugestões no fim do vídeo.
       playerVars: { playsinline: 1, rel: 0, controls: 0, disablekb: 1, start: Math.floor(startSeconds) },
       events: {
-        onReady: () => {
-          if (this.generation === generation && !this.destroyed) {
+        onReady: (event) => {
+          readyFired = true;
+          // A API real avisa de forma assíncrona, mas um `onReady` disparado de
+          // dentro do construtor deixaria `instance` ainda por atribuir: o
+          // `event.target` é o mesmo player e resolve os dois casos.
+          const player = instance || event?.target || null;
+          if (player && this.generation === generation && !this.destroyed) {
+            this.player = player;
             this.ready = true;
             this._loading = false;
-            this.player?.setVolume?.(Math.round(this.volume * 100));
+            player.setVolume?.(Math.round(this.volume * 100));
             this._announceMetadata(videoId);
             // A intenção mais recente vence o `autoplay` com que o load começou.
-            if (this.desiredPlaying) this.player?.playVideo?.();
-            else this.player?.pauseVideo?.();
+            if (this.desiredPlaying) player.playVideo?.();
+            else player.pauseVideo?.();
           }
           this._settleReady(generation);
         },
@@ -241,11 +250,13 @@ export class YouTubeTrackPlayer {
     });
     // Guardado já: um `load` mais novo precisa poder derrubar este player mesmo
     // que o `onReady` dele nunca chegue.
-    this.player = instance;
+    if (!this._stale(generation)) this.player = instance;
 
-    await new Promise((resolve) => {
-      this._pendingReady = { generation, resolve };
-    });
+    if (!readyFired) {
+      await new Promise((resolve) => {
+        this._pendingReady = { generation, resolve };
+      });
+    }
 
     if (this._stale(generation)) {
       // Outro `load` assumiu enquanto este subia. Ele já derrubou este player no
