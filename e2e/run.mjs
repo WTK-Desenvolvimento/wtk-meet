@@ -769,6 +769,20 @@ try {
       `${liveAfterCancel} (fechado)`,
   );
 
+  // Clique no backdrop é a terceira via de saída (junto de "Cancelar" e Esc). O
+  // clique vai num canto: o centro do backdrop é onde o próprio modal está.
+  await openSettings(alice.page);
+  await setSelectValue(alice.page.locator('.settings-modal select').nth(1), 'mic-a');
+  await alice.page.locator('.modal-backdrop.settings').click({ position: { x: 4, y: 4 } });
+  await alice.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
+  await sleep(300);
+  const afterBackdrop = await readPrefs(alice.page);
+  check(
+    'S8b. Clique no backdrop também descarta a seleção pendente',
+    afterBackdrop.audioInputId === 'mic-b',
+    `microfone gravado=${afterBackdrop.audioInputId} (a seleção descartada era mic-a)`,
+  );
+
   // ------------------------------------------------------ S. saída de áudio
   await openSettings(alice.page);
   await setSelectValue(alice.page.locator('.settings-modal select').nth(2), 'spk-b');

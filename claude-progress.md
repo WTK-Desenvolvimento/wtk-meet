@@ -60,11 +60,23 @@ a pessoa descobria que a câmera errada estava ativa já visível para os outros
 - `npm --prefix client test` → **66/66** (27 novos em `devices.test.mjs`;
   `audioLevels`, `gridLayout`, `chat` e sinalização sem regressão)
 - `npm --prefix client run build` → ok
-- `node e2e/run.mjs` → **75/75**, com o bloco S cobrindo: listagem sem duplicatas,
+- `node e2e/run.mjs` → **76/76**, com o bloco S cobrindo: listagem sem duplicatas,
   troca de câmera+mic em chamada com track novo em todos os senders e SDP inalterado,
-  cancelamento por `Esc`, `setSinkId` em todos os tiles, troca de mic estando mudo,
-  troca de câmera com a câmera desligada, releitura da preferência num documento novo,
-  `devicechange` (conectar e arrancar em uso) e preferência obsoleta se corrigindo.
+  cancelamento por `Esc` e por clique no backdrop, `setSinkId` em todos os tiles, troca
+  de mic estando mudo, troca de câmera com a câmera desligada, releitura da preferência
+  num documento novo, `devicechange` (conectar e arrancar em uso) e preferência
+  obsoleta se corrigindo.
+
+Quatro execuções da suíte no total. Uma delas (a segunda) abortou em **"mesh
+reconectado após reload de Bob"**, na seção D — passo que existe desde a entrega
+anterior e que não é tocado por esta: todas as conexões apareceram em
+`failed`/`disconnected`, e as outras três execuções passaram no mesmo commit. É
+intermitência do TURN local sob carga, não regressão. Vale rodar de novo antes de
+investigar.
+
+O bloco S foi o que cobrou a decisão 3 acima: a primeira execução falhou em S11
+porque trocar a câmera com a câmera desligada ainda reiniciava o preview (só de
+áudio) e gastava um `getUserMedia`. Hoje o contador não se move.
 
 ### Correção de ambiente incluída
 
