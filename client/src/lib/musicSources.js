@@ -140,6 +140,36 @@ export function parseSource(raw, { allowYouTube = true } = {}) {
   };
 }
 
+/**
+ * Melhora o título de uma origem quando dá para descobrir o nome de verdade —
+ * hoje, só YouTube, cujo `parseSource` só consegue devolver `YouTube · <id>`
+ * sem sair da máquina.
+ *
+ * **Assíncrona, mas ainda pura:** o buscador vem por parâmetro. Quem faz rede é
+ * `fetchYouTubeTitle`, em `youtubePlayer.js` — o arquivo onde a dependência do
+ * terceiro está confinada e que a `VITE_ENABLE_YOUTUBE` desliga inteiro. Este
+ * módulo continua sem DOM e sem rede, que é o que permite testá-lo com entrada
+ * hostil em `node:test`.
+ *
+ * A função **nunca falha e nunca demora a decidir**: qualquer erro, valor que
+ * não é texto ou título vazio mantém o fallback. Enfileirar não pode depender de
+ * um nome bonito.
+ */
+export async function resolveSourceTitle(parsed, { fetchTitle } = {}) {
+  const fallback = parsed?.title || 'Faixa';
+  if (!parsed?.ok || parsed.kind !== 'youtube') return fallback;
+  if (typeof fetchTitle !== 'function') return fallback;
+
+  let resolved = null;
+  try {
+    resolved = await fetchTitle(parsed.sourceRef);
+  } catch {
+    return fallback;
+  }
+  if (typeof resolved !== 'string') return fallback;
+  return clampTitle(resolved, fallback);
+}
+
 /** Entrada a partir de um `File` escolhido no disco. O arquivo nunca sai daqui. */
 export function parseFileSource(file) {
   if (!file || typeof file !== 'object') return { ok: false, reason: 'empty' };

@@ -50,15 +50,16 @@ import {
   MAX_PER_PEER,
   MAX_QUEUE,
   mergeSnapshot,
-  nextEntryAfterKey,
   observeLamport,
   orderedQueue,
+  ownerFor,
+  planAdvance,
   removeEntriesBy,
   removeEntry,
   sanitizeEntry,
   successorOwner,
 } from './musicSession.js';
-import { parseFileSource, parseSource, SOURCE_ERRORS } from './musicSources.js';
+import { parseFileSource, parseSource, resolveSourceTitle, SOURCE_ERRORS } from './musicSources.js';
 import {
   canPropose,
   castVote,
@@ -70,7 +71,7 @@ import {
   remainingMs,
   VOTE_DURATION_MS,
 } from './musicVote.js';
-import { isYouTubeEnabled, YouTubeTrackPlayer } from './youtubePlayer.js';
+import { fetchYouTubeTitle, isYouTubeEnabled, YouTubeTrackPlayer } from './youtubePlayer.js';
 
 /** O dono republica a posição a cada 5s (e em toda mudança). */
 const POSITION_PUBLISH_MS = 5_000;
@@ -87,18 +88,6 @@ const RESULT_LINGER_MS = 3_000;
 
 function newId() {
   return globalThis.crypto?.randomUUID?.() || `m-${Math.random().toString(36).slice(2)}-${Date.now()}`;
-}
-
-/**
- * Quem responde pela faixa: quem a adicionou, se ainda estiver na sala; senão o
- * presente de menor id. Determinístico e calculado por todos ao mesmo tempo, que
- * é o que faz exatamente um cliente agir — "quem descobrir primeiro assume" faria
- * dois assumirem, dois publicarem, e o estado oscilar.
- */
-function ownerFor(entry, presentIds) {
-  if (!entry) return null;
-  if (presentIds.includes(entry.addedBy)) return entry.addedBy;
-  return successorOwner(presentIds);
 }
 
 export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pushToast }) {
@@ -190,6 +179,19 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
     return loaded.kind === 'youtube' ? youtubeRef.current : engineRef.current;
   }, []);
 
+  /**
+   * Posição para publicar/anunciar. **Um player carregando responde `0`, não
+   * `undefined`** — então `player?.positionSec ?? playback.positionSec` não
+   * protege de nada aqui, e publicar esse `0` como estado autoritativo faz a
+   * sala inteira saltar para o começo da faixa.
+   */
+  const currentPositionSec = useCallback(() => {
+    const { playback } = sessionRef.current;
+    const player = activePlayer();
+    if (!player || player.loading) return playback.positionSec;
+    return player.positionSec;
+  }, [activePlayer]);
+
   const publishPlayback = useCallback(
     (patch) => {
       const current = sessionRef.current.playback;
@@ -214,46 +216,37 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
   }, []);
 
   /**
-   * Avança para a faixa seguinte. Quem publica é o dono da **próxima** — se a
-   * fila acabou, quem publica o "nada tocando" é o dono da que terminou. Um
-   * escritor por transição, sempre.
+   * Avança para a faixa seguinte. Quem **decide** é `planAdvance`, puro; o que
+   * sobra aqui é agir: tirar a faixa da fila, avisar a sala e publicar o estado
+   * novo se o plano disser que a vez é minha.
+   *
+   * Os quatro motivos (`skipped`, `ended`, `error`, `owner-left`) passam por esta
+   * mesma função e produzem o mesmo estado — o motivo só viaja para
+   * `endedReason`. É o que faz "pulei" e "acabou sozinha" terminarem iguais.
    */
   const advanceFrom = useCallback(
     (finishedEntryId, reason) => {
-      const before = sessionRef.current;
-      const finished = entryById(before, finishedEntryId);
-      const key = finished || null;
+      const plan = planAdvance({
+        session: sessionRef.current,
+        finishedEntryId,
+        reason,
+        presentIds: presentIdsRef.current,
+        selfId: selfIdRef.current,
+        // Injetado: a entrega sai da sonda de CORS, que é rede — e rede não
+        // entra no módulo puro.
+        delivery: deliveryFor,
+      });
 
       // A faixa que acabou sai da fila (o player é uma fila, não uma playlist).
-      const after = finishedEntryId
-        ? updateSession((prev) => removeEntry(prev, finishedEntryId))
-        : before;
-      if (finishedEntryId && finished) {
-        send(queueRemoveMessage({ entryId: finishedEntryId, byName: displayNameRef.current }));
+      if (plan.removedEntryId) {
+        updateSession((prev) => removeEntry(prev, plan.removedEntryId));
       }
-
-      const next = key ? nextEntryAfterKey(after, key) : orderedQueue(after)[0] || null;
-      const me = selfIdRef.current;
-
-      if (!next) {
-        // Ninguém para assumir: quem estava tocando declara o silêncio.
-        if (after.playback.ownerId === me || !after.playback.ownerId) {
-          publishPlayback({ entryId: null, playing: false, positionSec: 0, endedReason: reason || null });
-        }
-        return;
+      if (plan.broadcastRemove) {
+        send(queueRemoveMessage({ entryId: plan.removedEntryId, byName: displayNameRef.current }));
       }
-
-      // Se o dono da próxima for outro, ele publica sozinho: o efeito de
-      // "nada tocando e a fila tem faixa" roda em todos e só ele satisfaz.
-      if (ownerFor(next, presentIdsRef.current) !== me) return;
-
-      publishPlayback({
-        entryId: next.id,
-        playing: true,
-        positionSec: 0,
-        delivery: deliveryFor(next),
-        endedReason: reason || null,
-      });
+      // Fila vazia: o plano não declara entrega, e o `publishPlayback` preserva a
+      // do estado corrente — como era antes da extração.
+      if (plan.publish) publishPlayback(plan.publish);
     },
     [deliveryFor, publishPlayback, send, updateSession],
   );
@@ -301,24 +294,39 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
     return engineRef.current;
   }, [handleDuration, handleEnded, handlePlayerError]);
 
+  /** A faixa corrente, se o evento que chegou for mesmo dela. */
+  const currentIfVideo = useCallback((videoId) => {
+    const current = entryById(sessionRef.current, sessionRef.current.playback.entryId);
+    if (!current || current.kind !== 'youtube') return null;
+    return current.sourceRef === videoId ? current : null;
+  }, []);
+
   const ensureYouTube = useCallback(() => {
     if (!youtubeRef.current && youtubeHostRef.current) {
-      // O container é criado **fora** do React: `YT.Player` substitui o elemento
-      // que recebe por um iframe, e um nó trocado por baixo do React estoura na
-      // hora de desmontar. O React cuida do host; do filho, cuidamos nós.
-      const mount = document.createElement('div');
-      youtubeHostRef.current.appendChild(mount);
+      // O host é do React; **tudo dentro dele é do envelope**, que monta um nó
+      // novo por faixa e o derruba junto com o iframe. `YT.Player` substitui o
+      // elemento que recebe, então um container fixo criado aqui não
+      // sobreviveria à segunda faixa — e um nó trocado por baixo do React
+      // estoura na hora de desmontar.
       youtubeRef.current = new YouTubeTrackPlayer({
-        container: mount,
-        onEnded: () => handleEnded(sessionRef.current.playback.entryId),
+        host: youtubeHostRef.current,
+        // O envelope diz de qual vídeo veio o evento; a conferência contra a
+        // faixa corrente é a segunda trava contra o `ENDED` de um iframe que já
+        // foi derrubado avançar a faixa **nova**.
+        onEnded: (videoId) => {
+          const entry = currentIfVideo(videoId);
+          if (entry) handleEnded(entry.id);
+        },
         onError: handlePlayerError,
-        onDurationKnown: (_videoId, duration) =>
-          handleDuration(sessionRef.current.playback.entryId, duration),
+        onDurationKnown: (videoId, duration) => {
+          const entry = currentIfVideo(videoId);
+          if (entry) handleDuration(entry.id, duration);
+        },
         onTitle: () => setNowPlayingTick((tick) => tick + 1),
       });
     }
     return youtubeRef.current;
-  }, [handleDuration, handleEnded, handlePlayerError]);
+  }, [currentIfVideo, handleDuration, handleEnded, handlePlayerError]);
 
   /**
    * Reconcilia o que está tocando de verdade com o que o estado diz. Roda em
@@ -364,7 +372,14 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
       loadedRef.current = { signature, entryId: entry.id, kind: 'youtube', role };
       player.setVolume(volumeRef.current);
       const startSeconds = estimatePosition(playback, performance.now());
-      await player.load(entry.sourceRef, { startSeconds, autoplay: playback.playing });
+      const loaded = await player.load(entry.sourceRef, { startSeconds, autoplay: playback.playing });
+      // Outra faixa entrou no meio do carregamento (o ramo de arquivo/URL já
+      // fazia esta conferência): quem manda é a reconciliação mais nova, e ela
+      // já cuidou do `loadedRef`.
+      if (token !== loadTokenRef.current) return;
+      // O envelope recusou carregar — deixar `loadedRef` afirmando que esta
+      // faixa está no ar impediria qualquer nova tentativa.
+      if (!loaded) loadedRef.current = null;
       return;
     }
 
@@ -428,6 +443,11 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
     publishTimerRef.current = setInterval(() => {
       const player = activePlayer();
       if (!player) return;
+      // Trocando de faixa: o player ainda não sabe nada de si. Publicar aqui
+      // seria anunciar `{ positionSec: 0, playing: false }` **para a sala
+      // inteira** — o estado é autoritativo, e todos obedeceriam a um "pausado"
+      // que só existe porque o iframe ainda está subindo.
+      if (player.loading) return;
       publishPlayback({ positionSec: player.positionSec, playing: player.playing !== false });
     }, POSITION_PUBLISH_MS);
     return () => clearInterval(publishTimerRef.current);
@@ -441,7 +461,9 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
 
     const timer = setInterval(() => {
       const player = activePlayer();
-      if (!player || player.buffering) return;
+      // Carregando ou em buffering, a posição não é dele ainda: corrigir contra
+      // ela só aumentaria a deriva.
+      if (!player || player.buffering || player.loading) return;
       const now = performance.now();
       if (now - lastSyncAtRef.current < SYNC_MIN_INTERVAL_MS) return;
       const expected = estimatePosition(sessionRef.current.playback, now);
@@ -679,15 +701,25 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
       // **nada de estado é lido antes dela**: uma faixa que outro participante
       // adicionasse durante a sonda desapareceria da fila deste cliente se ele
       // publicasse um estado calculado antes de ela chegar.
+      //
+      // O oEmbed do título é a **segunda** chamada de rede deste caminho e vale
+      // a mesma regra: ela vai junto da sonda, e tudo que lê `sessionRef.current`
+      // para compor o que será publicado fica depois das duas esperas.
       const probeTarget = { kind: parsed.kind, sourceRef: parsed.sourceRef };
-      const delivery = parsed.kind === 'url' ? await ensureEngine().probeDelivery(probeTarget) : 'stream';
+      const [delivery, title] = await Promise.all([
+        parsed.kind === 'url' ? ensureEngine().probeDelivery(probeTarget) : 'stream',
+        // Só quem enfileira fala com a Google: o título viaja replicado no
+        // `music-queue-add`, e os outros participantes não fazem requisição
+        // nenhuma para exibir o nome do vídeo.
+        resolveSourceTitle(parsed, { fetchTitle: (videoId) => fetchYouTubeTitle(videoId) }),
+      ]);
 
       const { session: bumped, lamport } = bumpLamport(sessionRef.current);
       const entry = sanitizeEntry(
         {
           id: newId(),
           kind: parsed.kind,
-          title: parsed.title,
+          title,
           sourceRef: parsed.sourceRef,
           addedByName: displayNameRef.current,
           lamport,
@@ -760,23 +792,24 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
     const { playback } = sessionRef.current;
     if (!playback.entryId) return;
     if (isOwner()) {
-      const player = activePlayer();
-      publishPlayback({ playing: false, positionSec: player?.positionSec ?? playback.positionSec });
+      // O `player.pause()` sai do efeito que segue o estado publicado, e o
+      // envelope guarda a intenção mesmo carregando: pausar 200ms depois de
+      // pular vale quando o player novo ficar pronto.
+      publishPlayback({ playing: false, positionSec: currentPositionSec() });
     } else {
       send(commandMessage({ entryId: playback.entryId, action: 'pause' }));
     }
-  }, [activePlayer, isOwner, publishPlayback, send]);
+  }, [currentPositionSec, isOwner, publishPlayback, send]);
 
   const requestResume = useCallback(() => {
     const { playback } = sessionRef.current;
     if (!playback.entryId) return;
     if (isOwner()) {
-      const player = activePlayer();
-      publishPlayback({ playing: true, positionSec: player?.positionSec ?? playback.positionSec });
+      publishPlayback({ playing: true, positionSec: currentPositionSec() });
     } else {
       send(commandMessage({ entryId: playback.entryId, action: 'resume' }));
     }
-  }, [activePlayer, isOwner, publishPlayback, send]);
+  }, [currentPositionSec, isOwner, publishPlayback, send]);
 
   const requestSeek = useCallback(
     (positionSec) => {
@@ -805,10 +838,10 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
       const player = activePlayer();
       switch (message.action) {
         case 'pause':
-          publishPlayback({ playing: false, positionSec: player?.positionSec ?? playback.positionSec });
+          publishPlayback({ playing: false, positionSec: currentPositionSec() });
           break;
         case 'resume':
-          publishPlayback({ playing: true, positionSec: player?.positionSec ?? playback.positionSec });
+          publishPlayback({ playing: true, positionSec: currentPositionSec() });
           break;
         case 'seek':
           if (Number.isFinite(message.positionSec)) {
@@ -820,7 +853,7 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
           break;
       }
     },
-    [activePlayer, isOwner, publishPlayback],
+    [activePlayer, currentPositionSec, isOwner, publishPlayback],
   );
 
   // -------------------------------------------------- recepção do data channel
@@ -930,9 +963,10 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
     const snapshot = buildSnapshot(current);
     if (snapshot.playback.entryId) {
       const player = current.playback.ownerId === selfIdRef.current ? activePlayer() : null;
-      snapshot.playback.positionSec = player
-        ? player.positionSec
-        : estimatePosition(current.playback, performance.now());
+      // Player carregando responde `0`: quem entrasse na sala durante uma troca
+      // de faixa começaria do início dela.
+      snapshot.playback.positionSec =
+        player && !player.loading ? player.positionSec : estimatePosition(current.playback, performance.now());
     }
     return snapshot;
   }, [activePlayer]);
@@ -1029,8 +1063,12 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
   useEffect(() => {
     const update = () => {
       const player = activePlayer();
+      // Durante a troca de faixa a estimativa é melhor que o `0` do player que
+      // ainda está subindo — senão a barra pisca no começo a cada faixa.
       setPosition(
-        player ? player.positionSec : estimatePosition(sessionRef.current.playback, performance.now()),
+        player && !player.loading
+          ? player.positionSec
+          : estimatePosition(sessionRef.current.playback, performance.now()),
       );
     };
     update();

@@ -954,3 +954,92 @@ injeção de teclado via CDP não chega ao renderer (usar o setter nativo de
 da página, como faz a checagem M4), e o Chrome não entrega o áudio de uma track a
 um segundo `AudioContext` (por isso a temporização da histerese é verificada em
 teste unitário, não no navegador).
+
+---
+
+# WTK-MEET-12 — Troca de faixa do player de música (sessão do Arquiteto)
+
+> 2026-08-13. Papel desta sessão: **Arquiteto de Software**. O entregável é o
+> documento técnico, não a implementação. Nenhum arquivo de código foi tocado.
+
+## O que foi entregue
+
+`docs/agents/arch-temp-troca-de-faixa-e-playlist-longa.md` — documento de
+arquitetura completo da demanda (contexto, escopo, 10 decisões arquiteturais,
+componentes afetados, contratos de interface, ordem de implementação em 12
+passos, 10 riscos com anti-patterns e 26 critérios de aceite técnicos).
+
+## Diagnóstico registrado no documento
+
+A causa vai além do que a descrição da task já apontava. A cadeia completa:
+
+1. `load()` no caminho de reuso zera `this.ready` e nunca o restaura — `onReady`
+   é evento de **construção** do `YT.Player`, não dispara em `loadVideoById`.
+2. Todo comando (`play`/`pause`/`seek`/`setVolume`/`stop`) vira no-op.
+3. **Todo getter também**: `positionSec → 0`, `playing → false`. E aí o dano sai
+   do arquivo — o temporizador de 5s do dono passa a publicar
+   `{ positionSec: 0, playing: false }` **para a sala inteira**, como estado
+   autoritativo, enquanto o iframe continua tocando. É por isso que o sintoma
+   atinge quem não pulou.
+4. `stop()` zera `videoId` sem derrubar o iframe → a próxima faixa de YouTube
+   cai no caminho de reuso, o que explica a falha também em YouTube↔arquivo/URL.
+5. Corrida: o ramo do YouTube em `reconcilePlayback` **não** confere o
+   `loadTokenRef` depois do `await` (o ramo de arquivo/URL confere).
+
+## Decisões que o implementador precisa conhecer antes de abrir o editor
+
+- **D1/D3:** destruir e recriar o `YT.Player` a cada faixa; `stop()` vira
+  teardown completo (zero iframe) mas deixa o envelope reutilizável.
+- **D2:** o envelope passa a receber o **host** (`youtubeHostRef`) e a criar o nó
+  de mount por faixa — `YT.Player` substitui o elemento que recebe, então um
+  container fixo não sobrevive ao segundo `load()`.
+- **D4/D5:** geração monotônica no envelope (evento de iframe morto não pode
+  avançar a faixa nova) e intenção de reprodução que sobrevive à janela de
+  `loading`; o publicador de posição pula o tique enquanto carrega.
+- **D6:** extrair `planAdvance` puro para `musicSession.js`. É o que torna
+  `ended`/`error`/`owner-left` testáveis sem navegador — o projeto não tem
+  renderer de DOM em `node --test`, só `react-dom/server`.
+- **D7:** `parseSource` continua puro; `resolveSourceTitle` por injeção; o
+  `fetch` do oEmbed mora em `youtubePlayer.js`. Divergência declarada com o DoD 5
+  (ver abaixo).
+- **D8:** o título é decidido por quem enfileira e replicado; ninguém reescreve
+  título de entrada existente (divergiria a fila entre participantes).
+
+**Dois testes de `client/test/youtubePlayer.test.mjs` fixam hoje o comportamento
+que a correção remove** e precisam ser invertidos, não conciliados:
+`'a faixa seguinte reaproveita o mesmo iframe…'` e
+`'parar a faixa larga o vídeo corrente sem derrubar o player'`.
+
+## Divergência com o DoD, declarada
+
+**DoD 5** pede que `parseSource` resolva o título via oEmbed. `musicSources.js`
+declara-se "Módulo **puro**: sem DOM, sem rede" e é o módulo que valida entrada
+hostil vinda do data channel. A recomendação (D7) entrega o **efeito observável**
+exigido — o caminho de enfileiramento resolve o título, a UI mostra o nome do
+vídeo, falha mantém o fallback com o id — sem colocar rede na função pura.
+Se a leitura literal for obrigatória, é decisão do Nicolas e muda a assinatura de
+um módulo de validação; confirmar **antes** de implementar.
+
+É o terceiro DoD seguido a contradizer a arquitetura do repo (ver os registros da
+WTK-MEET-10 e da WTK-MEET-11).
+
+## Pendente
+
+Toda a implementação. Nenhum código, teste ou documentação de produto foi
+alterado nesta sessão — por definição do papel.
+
+## Bloqueios
+
+- **Board não gravável.** As ferramentas MCP do board não estão disponíveis nesta
+  sessão e `GET/POST /api/tasks/<id>` responde 404. Não houve como usar
+  `add_task_log`, `update_task` ou `move_task_forward`. O registro da verificação
+  vive neste arquivo, no documento de arquitetura e no commit.
+
+## Próximo passo recomendado
+
+Acionar o **agente de desenvolvimento (client)** com
+`docs/agents/arch-temp-troca-de-faixa-e-playlist-longa.md` como referência,
+começando pelos passos 1 e 3 do §6 (`planAdvance` puro e o ciclo de vida do
+envelope) — são independentes entre si e podem correr em paralelo. O agente de
+QA pode iniciar o passo 2 imediatamente: o contrato de `planAdvance` está fechado
+no §5 e não depende do envelope.

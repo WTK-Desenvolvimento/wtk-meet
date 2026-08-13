@@ -20,6 +20,15 @@
  */
 
 const API_SRC = 'https://www.youtube.com/iframe_api';
+/** oEmbed público: só o título do vídeo, sem chave e sem cookie. */
+const OEMBED_SRC = 'https://www.youtube.com/oembed';
+/**
+ * O título é enfeite; a faixa entra na fila com ou sem ele. Uma espera longa
+ * atrasaria o enfileiramento para a sala inteira por causa de um nome.
+ */
+const OEMBED_TIMEOUT_MS = 2_500;
+/** Mesmo alfabeto de `musicSources.js` — aqui só para não montar URL com lixo. */
+const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 
 let apiPromise = null;
 
@@ -71,79 +80,257 @@ export function loadYouTubeApi() {
 }
 
 /**
+ * Título real do vídeo pelo endpoint oEmbed público — sem chave de API, sem
+ * cookie, e só para quem **enfileira** a faixa (os outros participantes recebem
+ * o nome pelo data channel, sem falar com a Google).
+ *
+ * Nunca lança e nunca é obrigatório: rede caída, CORS, resposta que não é JSON,
+ * título vazio ou estouro do prazo devolvem `null`, e quem chama mantém o
+ * `YouTube · <id>`. Um nome bonito não vale bloquear o enfileiramento.
+ *
+ * A guarda de `isYouTubeEnabled()` é redundante com a de `parseSource` **de
+ * propósito**: a promessa "nenhuma requisição à Google" tem que valer no ponto
+ * onde a requisição nasceria, não só no chamador de hoje.
+ */
+export async function fetchYouTubeTitle(videoId, { signal, fetchImpl, enabled = isYouTubeEnabled() } = {}) {
+  // `enabled` é a flag, e é parâmetro só porque `import.meta.env` não existe em
+  // `node:test`: sem essa costura, "com a flag desligada nenhuma requisição
+  // nasce" só seria verificável no navegador. O padrão continua sendo a flag.
+  if (!enabled) return null;
+  if (typeof videoId !== 'string' || !VIDEO_ID.test(videoId)) return null;
+
+  const doFetch = fetchImpl || (typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null);
+  if (!doFetch) return null;
+
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), OEMBED_TIMEOUT_MS) : null;
+  const abort = () => controller?.abort();
+  signal?.addEventListener?.('abort', abort);
+
+  try {
+    const watch = `https://www.youtube.com/watch?v=${videoId}`;
+    const url = `${OEMBED_SRC}?url=${encodeURIComponent(watch)}&format=json`;
+    const response = await doFetch(url, {
+      signal: controller?.signal,
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+    });
+    if (!response?.ok) return null;
+    const data = await response.json();
+    const title = typeof data?.title === 'string' ? data.title.trim() : '';
+    return title || null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener?.('abort', abort);
+  }
+}
+
+/**
  * Envelope fino sobre o player do YouTube, com a mesma superfície do
  * `MusicEngine` (`play`/`pause`/`seek`/`positionSec`), para o `Room` tratar as
  * três origens pelo mesmo caminho.
+ *
+ * **Cada faixa constrói um `YT.Player` novo e derruba o anterior.** Não existe
+ * caminho de reuso, e a ausência dele é a correção: o único instante em que a
+ * IFrame API garante um estado íntegro é o `onReady` da construção, que **não**
+ * dispara de novo em `loadVideoById`. Reusar obriga o envelope a manter à mão um
+ * espelho de um estado que a API não reexpõe — e foi esse espelho divergindo que
+ * deixava play/pause e volume mudos depois de pular uma faixa. Recriar faz de
+ * "faixa nova" o mesmo caminho de código que "a primeira faixa".
+ *
+ * Duas consequências que o resto da classe existe para sustentar:
+ *
+ * - **O envelope é dono do nó de mount, não do host.** `YT.Player` *substitui* o
+ *   elemento que recebe por um `<iframe>`, e `destroy()` remove esse iframe: um
+ *   container fixo capturado na construção não sobreviveria ao segundo `load()`.
+ *   O React cuida do host; de tudo que estiver dentro dele, cuidamos nós.
+ * - **Toda troca tem uma janela em que o player não está pronto.** `play`,
+ *   `pause` e o volume pedidos nessa janela ficam guardados em `desiredPlaying`/
+ *   `volume` e são aplicados no `onReady` — descartá-los devolveria, em outra
+ *   forma, o mesmo sintoma de "o botão não faz nada".
+ *
+ * A `generation` é o que impede o evento de um iframe já derrubado de agir sobre
+ * a faixa nova: um `ENDED` atrasado chamaria `onEnded` com a faixa **corrente**
+ * e a fila pularia duas de uma vez, de forma intermitente.
  */
 export class YouTubeTrackPlayer {
-  constructor({ container, onEnded, onError, onDurationKnown, onTitle } = {}) {
-    this.container = container;
+  constructor({ host, onEnded, onError, onDurationKnown, onTitle } = {}) {
+    this.host = host;
     this.onEnded = onEnded;
     this.onError = onError;
     this.onDurationKnown = onDurationKnown;
     this.onTitle = onTitle;
     this.player = null;
+    this.mount = null;
     this.videoId = null;
     this.ready = false;
     this.destroyed = false;
     this.volume = 1;
+    /** Intenção de reprodução, viva também enquanto o player carrega. */
+    this.desiredPlaying = false;
+    /** Incrementa a cada `load`/`stop`/`destroy`: identifica a faixa vigente. */
+    this.generation = 0;
+    this._loading = false;
+    /** `{ generation, resolve }` do `load` que espera o `onReady`. */
+    this._pendingReady = null;
+  }
+
+  /** Verdadeiro entre o início do `load()` e o `onReady` da faixa corrente. */
+  get loading() {
+    return this._loading;
   }
 
   async load(videoId, { startSeconds = 0, autoplay = false } = {}) {
-    if (this.destroyed || !this.container) return false;
-    const YT = await loadYouTubeApi();
-    if (this.destroyed) return false;
-    this.videoId = videoId;
+    if (this.destroyed || !this.host) return false;
 
-    if (this.player) {
-      this.ready = false;
-      this.player.loadVideoById({ videoId, startSeconds });
-      if (!autoplay) this.player.pauseVideo();
-      return true;
+    const generation = (this.generation += 1);
+    // Derruba a faixa anterior **antes** de qualquer espera: um iframe vivo
+    // enquanto o próximo carrega é o áudio órfão que o usuário relatou.
+    this._teardown();
+    this.videoId = videoId;
+    this.desiredPlaying = !!autoplay;
+    this._loading = true;
+
+    let YT;
+    try {
+      YT = await loadYouTubeApi();
+    } catch (err) {
+      // API bloqueada: sem player, mas `loading` não pode ficar preso — ele é o
+      // que faz o dono deixar de publicar posição.
+      if (this.generation === generation) this._loading = false;
+      throw err;
+    }
+    if (this._stale(generation)) return false;
+
+    const mount = document.createElement('div');
+    this.host.appendChild(mount);
+    this.mount = mount;
+
+    let instance = null;
+    let readyFired = false;
+
+    instance = new YT.Player(mount, {
+      videoId,
+      // `playsinline` evita o player em tela cheia no iOS; `rel: 0` corta a
+      // enxurrada de sugestões no fim do vídeo.
+      playerVars: { playsinline: 1, rel: 0, controls: 0, disablekb: 1, start: Math.floor(startSeconds) },
+      events: {
+        onReady: (event) => {
+          readyFired = true;
+          // A API real avisa de forma assíncrona, mas um `onReady` disparado de
+          // dentro do construtor deixaria `instance` ainda por atribuir: o
+          // `event.target` é o mesmo player e resolve os dois casos.
+          const player = instance || event?.target || null;
+          if (player && this.generation === generation && !this.destroyed) {
+            this.player = player;
+            this.ready = true;
+            this._loading = false;
+            player.setVolume?.(Math.round(this.volume * 100));
+            this._announceMetadata(videoId);
+            // A intenção mais recente vence o `autoplay` com que o load começou.
+            if (this.desiredPlaying) player.playVideo?.();
+            else player.pauseVideo?.();
+          }
+          this._settleReady(generation);
+        },
+        onStateChange: (event) => {
+          if (this._obsolete(generation, instance)) return;
+          if (event.data === YT.PlayerState.ENDED) this.onEnded?.(videoId);
+          if (event.data === YT.PlayerState.PLAYING) this._announceMetadata(videoId);
+        },
+        // Vídeo removido, privado ou com incorporação bloqueada. Vira "faixa
+        // pulada com aviso" — nunca um player travado sem explicação.
+        onError: (event) => {
+          if (this._obsolete(generation, instance)) return;
+          this.onError?.('youtube-error', event?.data);
+        },
+      },
+    });
+    // Guardado já: um `load` mais novo precisa poder derrubar este player mesmo
+    // que o `onReady` dele nunca chegue.
+    if (!this._stale(generation)) this.player = instance;
+
+    if (!readyFired) {
+      await new Promise((resolve) => {
+        this._pendingReady = { generation, resolve };
+      });
     }
 
-    await new Promise((resolve) => {
-      this.player = new YT.Player(this.container, {
-        videoId,
-        // `playsinline` evita o player em tela cheia no iOS; `rel: 0` corta a
-        // enxurrada de sugestões no fim do vídeo.
-        playerVars: { playsinline: 1, rel: 0, controls: 0, disablekb: 1, start: Math.floor(startSeconds) },
-        events: {
-          onReady: () => {
-            this.ready = true;
-            this.setVolume(this.volume);
-            this._announceMetadata();
-            if (autoplay) this.player.playVideo();
-            else this.player.pauseVideo();
-            resolve();
-          },
-          onStateChange: (event) => {
-            if (event.data === YT.PlayerState.ENDED) this.onEnded?.(this.videoId);
-            if (event.data === YT.PlayerState.PLAYING) this._announceMetadata();
-          },
-          // Vídeo removido, privado ou com incorporação bloqueada. Vira "faixa
-          // pulada com aviso" — nunca um player travado sem explicação.
-          onError: (event) => this.onError?.('youtube-error', event?.data),
-        },
-      });
-    });
+    if (this._stale(generation)) {
+      // Outro `load` assumiu enquanto este subia. Ele já derrubou este player no
+      // `_teardown`; o `if` cobre o caso improvável de a ordem se inverter.
+      if (this.player === instance) this._teardown();
+      return false;
+    }
     return true;
   }
 
-  _announceMetadata() {
+  /** O `load` desta geração ainda manda? (usado depois de cada espera) */
+  _stale(generation) {
+    return this.destroyed || this.generation !== generation;
+  }
+
+  /** Evento chegando de um player que já não é o vigente. */
+  _obsolete(generation, instance) {
+    return this.destroyed || this.generation !== generation || this.player !== instance;
+  }
+
+  /**
+   * Libera o `load` que espera o `onReady` — **só o da geração que o emitiu**.
+   * Sem essa conferência, o `onReady` atrasado de um player já derrubado faria o
+   * `load` novo devolver `true` antes de o player dele estar pronto.
+   */
+  _settleReady(generation) {
+    const pending = this._pendingReady;
+    if (!pending) return;
+    if (generation !== undefined && pending.generation !== generation) return;
+    this._pendingReady = null;
+    pending.resolve();
+  }
+
+  _announceMetadata(videoId) {
     if (!this.ready || !this.player) return;
     const duration = this.player.getDuration?.();
-    if (Number.isFinite(duration) && duration > 0) this.onDurationKnown?.(this.videoId, duration);
+    if (Number.isFinite(duration) && duration > 0) this.onDurationKnown?.(videoId, duration);
     const title = this.player.getVideoData?.()?.title;
-    if (title) this.onTitle?.(this.videoId, title);
+    if (title) this.onTitle?.(videoId, title);
+  }
+
+  /**
+   * Desmonta o player corrente e devolve o host vazio. Não mexe em `generation`
+   * nem em `destroyed`: quem chama decide se isto é uma troca de faixa, um
+   * `stop()` ou o fim do envelope.
+   */
+  _teardown() {
+    const player = this.player;
+    this.player = null;
+    this.ready = false;
+    this._loading = false;
+    try {
+      player?.destroy?.();
+    } catch {
+      // iframe já removido
+    }
+    this.mount = null;
+    // `destroy()` remove o iframe que substituiu o mount; o que sobrar é lixo
+    // nosso, e o host precisa voltar vazio para o próximo `load`.
+    const host = this.host;
+    while (host?.firstChild) host.removeChild(host.firstChild);
+    // Um `load` esperando o `onReady` deste player não pode ficar pendurado.
+    this._settleReady();
   }
 
   play() {
+    // Registrada mesmo durante o carregamento: o `onReady` aplica a mais recente.
+    this.desiredPlaying = true;
     if (this.ready) this.player?.playVideo?.();
     return Promise.resolve(true);
   }
 
   pause() {
+    this.desiredPlaying = false;
     if (this.ready) this.player?.pauseVideo?.();
   }
 
@@ -176,19 +363,24 @@ export class YouTubeTrackPlayer {
     return this.ready && this.player?.getPlayerState?.() === 3;
   }
 
+  /**
+   * Larga a faixa corrente: zero iframe no DOM, zero áudio — e o envelope
+   * continua utilizável. Um `stopVideo()` que deixasse o iframe de pé é
+   * exatamente o que produzia áudio órfão na transição YouTube→arquivo/URL.
+   */
   stop() {
-    if (this.ready) this.player?.stopVideo?.();
+    this.generation += 1;
+    this._teardown();
     this.videoId = null;
+    this.desiredPlaying = false;
   }
 
+  /** Como `stop()`, e o envelope não aceita mais nenhum `load()`. */
   destroy() {
     this.destroyed = true;
-    this.ready = false;
-    try {
-      this.player?.destroy?.();
-    } catch {
-      // iframe já removido
-    }
-    this.player = null;
+    this.generation += 1;
+    this._teardown();
+    this.videoId = null;
+    this.desiredPlaying = false;
   }
 }

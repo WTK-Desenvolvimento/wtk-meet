@@ -401,3 +401,97 @@ export function successorOwner(presentIds) {
   if (ids.length === 0) return null;
   return ids.sort()[0];
 }
+
+/**
+ * Quem responde pela faixa: quem a adicionou, se ainda estiver na sala; senão o
+ * presente de menor id. Determinístico e calculado por todos ao mesmo tempo, que
+ * é o que faz exatamente um cliente agir — "quem descobrir primeiro assume" faria
+ * dois assumirem, dois publicarem, e o estado oscilar.
+ */
+export function ownerFor(entry, presentIds) {
+  const ids = Array.isArray(presentIds) ? presentIds : [];
+  if (!entry) return null;
+  if (ids.includes(entry.addedBy)) return entry.addedBy;
+  return successorOwner(ids);
+}
+
+/**
+ * Decide o avanço de faixa. **Pura**: recebe o estado e devolve o que fazer —
+ * quem age é o hook.
+ *
+ * Existe separada por dois motivos. O primeiro é testabilidade: `skipped`,
+ * `ended`, `error` e `owner-left` são quatro caminhos que precisam produzir o
+ * **mesmo** estado saudável, e provar isso dentro de um hook React exigiria um
+ * renderer que este projeto não tem. O segundo é que a regra é de convergência,
+ * e neste arquivo estão todas as outras.
+ *
+ * Três invariantes que a ordem das linhas abaixo carrega:
+ *
+ * 1. **A chave da faixa que acabou é capturada antes da remoção.** Depois de
+ *    remover, `nextEntryAfterKey` não teria de onde partir.
+ * 2. **A busca é por chave, não por id.** Quando a faixa corrente já virou
+ *    tombstone (`owner-left`, skip que chegou pelo canal), procurar pelo id na
+ *    fila não acharia nada e a fila pararia.
+ * 3. **Quem publica é o dono da faixa *seguinte*** — nunca o da que acabou. Um
+ *    escritor por transição, sempre. Se a fila esvaziou, quem estava tocando
+ *    declara o silêncio.
+ *
+ * `reason` não altera decisão nenhuma: ele só viaja para `endedReason`. É
+ * exatamente por isso que os quatro motivos convergem para o mesmo lugar.
+ *
+ * `delivery` é injetado (função `(entry) => 'stream' | 'local'` ou valor fixo)
+ * porque a decisão vem da sonda de CORS, que é rede — e rede não entra aqui.
+ */
+export function planAdvance({
+  session,
+  finishedEntryId = null,
+  reason = null,
+  presentIds = [],
+  selfId = '',
+  delivery = 'stream',
+} = {}) {
+  const idle = { removedEntryId: null, broadcastRemove: false, publish: null };
+  if (!session) return idle;
+
+  const finished = entryById(session, finishedEntryId);
+  const key = finished || null;
+
+  // A faixa que acabou sai da fila (o player é uma fila, não uma playlist). O
+  // tombstone vale mesmo para uma entrada que já não está aqui: é ele que impede
+  // a ressurreição por um snapshot velho.
+  const after = finishedEntryId ? removeEntry(session, finishedEntryId) : session;
+  const removedEntryId = finishedEntryId || null;
+  const broadcastRemove = !!(finishedEntryId && finished);
+
+  const next = key ? nextEntryAfterKey(after, key) : orderedQueue(after)[0] || null;
+
+  if (!next) {
+    // Ninguém para assumir: quem estava tocando declara o silêncio.
+    const mine = after.playback.ownerId === selfId || !after.playback.ownerId;
+    return {
+      removedEntryId,
+      broadcastRemove,
+      publish: mine ? { entryId: null, playing: false, positionSec: 0, endedReason: reason || null } : null,
+    };
+  }
+
+  // Se o dono da próxima for outro, ele publica sozinho: o efeito de "nada
+  // tocando e a fila tem faixa" roda em todos e só ele satisfaz.
+  if (ownerFor(next, presentIds) !== selfId) {
+    return { removedEntryId, broadcastRemove, publish: null };
+  }
+
+  const how = typeof delivery === 'function' ? delivery(next) : delivery;
+  return {
+    removedEntryId,
+    broadcastRemove,
+    publish: {
+      entryId: next.id,
+      playing: true,
+      positionSec: 0,
+      delivery: DELIVERY.has(how) ? how : 'stream',
+      endedReason: reason || null,
+    },
+  };
+}
+

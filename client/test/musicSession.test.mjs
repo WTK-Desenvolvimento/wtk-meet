@@ -28,6 +28,7 @@ const {
   nextEntryAfterKey,
   observeLamport,
   orderedQueue,
+  ownerFor,
   previousEntry,
   removeEntriesBy,
   removeEntry,
@@ -302,6 +303,56 @@ test('sucessão do dono é determinística: o presente de menor id', () => {
   assert.equal(successorOwner(['peer-a']), 'peer-a');
   assert.equal(successorOwner([]), null);
   assert.equal(successorOwner(null), null);
+});
+
+test('ownerFor: quem adicionou responde pela faixa; ausente, o presente de menor id', () => {
+  const minha = entry({ id: 'e1', addedBy: 'peer-b' });
+
+  // Presente: o autor responde, mesmo não sendo o menor id da sala.
+  assert.equal(ownerFor(minha, ['peer-a', 'peer-b', 'peer-c']), 'peer-b');
+  // Ausente: cai para o sucessor determinístico, e todos chegam à mesma conclusão
+  // sem trocar mensagem — é o que faz exatamente um cliente publicar.
+  assert.equal(ownerFor(minha, ['peer-c', 'peer-a']), 'peer-a');
+  // Sala vazia ou entrada inexistente não elegem ninguém.
+  assert.equal(ownerFor(minha, []), null);
+  assert.equal(ownerFor(null, ['peer-a']), null);
+  assert.equal(ownerFor(minha, null), null);
+});
+
+test('ownerFor é estável ao longo da fila: a resposta não depende da ordem dos presentes', () => {
+  const fila = [
+    entry({ id: 'e1', addedBy: 'peer-a', lamport: 1 }),
+    entry({ id: 'e2', addedBy: 'peer-b', lamport: 2 }),
+    entry({ id: 'e3', addedBy: 'peer-c', lamport: 3 }),
+  ];
+  const presentes = ['peer-a', 'peer-b', 'peer-c'];
+  const embaralhado = ['peer-c', 'peer-b', 'peer-a'];
+
+  for (const item of fila) {
+    assert.equal(ownerFor(item, presentes), ownerFor(item, embaralhado), item.id);
+    assert.equal(ownerFor(item, presentes), item.addedBy);
+  }
+});
+
+test('a ordem que planAdvance percorre é a mesma para quem viu as adições em ordens diferentes', () => {
+  const fila = [
+    entry({ id: 'e2', addedBy: 'peer-b', lamport: 5 }),
+    entry({ id: 'e1', addedBy: 'peer-a', lamport: 5 }),
+    entry({ id: 'e3', addedBy: 'peer-a', lamport: 4 }),
+  ];
+  // Mesmo conjunto, ordens de chegada opostas: a fila resultante tem que ser a
+  // mesma, senão dois clientes avançariam para faixas diferentes.
+  const daqui = orderedQueue(withEntries(createSession(), fila));
+  const dali = orderedQueue(withEntries(createSession(), [...fila].reverse()));
+  assert.deepEqual(daqui.map((e) => e.id), dali.map((e) => e.id));
+  assert.deepEqual(daqui.map((e) => e.id), ['e3', 'e1', 'e2'], '(lamport, autor, id), nesta ordem');
+
+  // E a busca por chave — a que sustenta o avanço com a faixa já tombstoneada —
+  // concorda com a navegação por id enquanto a entrada existe.
+  const session = withEntries(createSession(), fila);
+  for (const item of daqui) {
+    assert.deepEqual(nextEntryAfterKey(session, item)?.id, nextEntry(session, item.id)?.id, item.id);
+  }
 });
 
 test('reordenar só anda para frente, então reordenações concorrentes convergem', () => {
