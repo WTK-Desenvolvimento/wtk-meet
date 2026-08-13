@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { remainingMs, tally } from '../lib/musicVote.js';
 
 /**
@@ -14,10 +14,16 @@ import { remainingMs, tally } from '../lib/musicVote.js';
  *
  * O `z-index` (25) fica acima dos toasts (20) e **abaixo** do modal de entrada
  * (30): controle de acesso nunca fica atrás de música.
+ *
+ * **Dispensar é explícito — `Esc` ou o ✕ —, nunca "clique fora".** A primeira
+ * versão fechava em qualquer clique fora do card, e o efeito era o oposto do
+ * pretendido: silenciar o microfone com a votação aberta fazia a pessoa **perder
+ * o voto**, sem entender por quê. Num card fixo de canto, que não intercepta
+ * clique nenhum, "clique fora" não significa "quis fechar" — significa apenas
+ * "usou a sala".
  */
 export default function MusicVoteCard({ vote, myVote, onVote, onClose }) {
   const [remaining, setRemaining] = useState(() => remainingMs(vote, performance.now()));
-  const cardRef = useRef(null);
 
   useEffect(() => {
     if (!vote) return undefined;
@@ -35,17 +41,8 @@ export default function MusicVoteCard({ vote, myVote, onVote, onClose }) {
     const onKeyDown = (event) => {
       if (event.key === 'Escape') onClose?.();
     };
-    const onPointerDown = (event) => {
-      if (cardRef.current && !cardRef.current.contains(event.target)) onClose?.();
-    };
     window.addEventListener('keydown', onKeyDown);
-    // `click` no capture: fechar sem engolir o clique que o usuário deu em
-    // outro controle da sala — o card não bloqueia nada.
-    window.addEventListener('click', onPointerDown, true);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('click', onPointerDown, true);
-    };
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, [vote, onClose]);
 
   if (!vote) return null;
@@ -55,19 +52,24 @@ export default function MusicVoteCard({ vote, myVote, onVote, onClose }) {
   const decided = !!vote.result;
 
   return (
-    <aside
-      className="music-vote-card"
-      ref={cardRef}
-      role="region"
-      aria-label="Votação de música"
-    >
+    <aside className="music-vote-card" role="region" aria-label="Votação de música">
       <header className="music-vote-header">
-        <strong>{vote.proposerName || 'Alguém'}</strong>
-        <span className="music-vote-question">
-          {vote.kind === 'skip'
-            ? `quer pular “${vote.target?.title || 'a faixa atual'}”`
-            : 'quer ligar o player de música da sala'}
-        </span>
+        <div>
+          <strong>{vote.proposerName || 'Alguém'}</strong>
+          <span className="music-vote-question">
+            {vote.kind === 'skip'
+              ? `quer pular “${vote.target?.title || 'a faixa atual'}”`
+              : 'quer ligar o player de música da sala'}
+          </span>
+        </div>
+        <button
+          type="button"
+          className="icon-button"
+          onClick={onClose}
+          aria-label="Dispensar votação sem votar"
+        >
+          ✕
+        </button>
       </header>
 
       <p className="music-vote-tally">

@@ -115,6 +115,7 @@ só o aviso; ela não afeta a decisão de acesso em si. O evento carrega apenas 
 | Que houve troca de SDP (portanto, que *algo* mudou na negociação) | O conteúdo das mensagens de chat — trafega por `RTCDataChannel` P2P, e não existe nenhum evento de chat no protocolo do servidor (§6.3) |
 | — | Quem está falando: os níveis de áudio são medidos localmente por cada participante e nunca saem da máquina (§6.4) |
 | — | Se alguém está compartilhando tela ou com a câmera desligada — esse estado é anunciado pelo data channel, não pelo servidor |
+| — | Que a sala está ouvindo música, o que está na fila ou quem votou o quê — o player inteiro vive nos clients (§6.8). A exceção é a origem YouTube: ali quem sabe é a Google, não este servidor |
 
 Nada disso é persistido: ao encerrar a sala (todos saem) ou reiniciar o processo, o
 estado desaparece. Não há banco de dados no backend.
@@ -295,6 +296,85 @@ explícita em vez de silêncio. O backdrop fica em `z-index` 30 e o conteúdo em
 acima dos toasts (20) — se esse empilhamento inverter, o clique em "Aprovar" é
 interceptado e ninguém entra na sala.
 
+### 6.8 Player de música colaborativo
+
+A sala tem um player estilo Spotify com fila colaborativa: qualquer participante
+adiciona faixas (arquivo local, URL direta de áudio ou link do YouTube) e a sala
+ouve junto. **Nenhuma rota, evento ou estado novo no servidor** — fila, faixa
+corrente, posição e votos vivem nos clients e trafegam pelo mesmo
+`RTCDataChannel` do chat, com um snapshot enviado a quem entra depois.
+
+**Ligar o player é votado; pular e remover, não.** Um botão "Música" abre uma
+votação da sala (30s, árbitro, maioria dos votos válidos com quórum de metade do
+eleitorado). Aprovada, o player fica habilitado até a sala esvaziar. Já pular a
+faixa corrente ou remover uma entrada é livre, com a autoria visível — votar cada
+pulo transformaria cada música ruim numa cerimônia de meio minuto, e o recurso
+morreria de fricção. A votação existe onde o custo é alto e coletivo: **ligar**.
+O card é **não-bloqueante** (`z-index` 25, entre os toasts e o modal de entrada) e
+fecha por `Esc`/clique fora sem votar — abster-se é legítimo, ao contrário do
+pedido de entrada, onde ignorar deixa alguém preso do lado de fora.
+
+**Quarto transceiver, não mixagem no microfone.** Cada `RTCPeerConnection` passa
+a nascer com **quatro** `sendonly`, na ordem **áudio (mic), vídeo (câmera), vídeo
+(tela), áudio (música)**. Mixar a música no track do mic é o caminho mais curto e
+funciona na primeira demo; depois, `toggleMute` (que faz `enabled = false` no
+track do mic) silenciaria a música **para a sala inteira**, o indicador de fala
+(§6.4) ficaria permanentemente aceso no tile de quem toca, e ninguém conseguiria
+baixar a música sem baixar a voz junto. O canal separado ainda recebe
+`contentHint = 'music'` e `maxBitrate` de 96 kbps — com `iceTransportPolicy:
+'relay'`, quem toca sobe N−1 cópias pelo TURN, e sem teto o Opus disputaria banda
+com o vídeo exatamente na sala cheia. A ordem de criação é **contrato de rede**:
+o array de `_classifyTransceiver` precisa ser estendido na mesma edição, senão a
+música cai no stream de voz e o bug *parece* funcionar.
+
+**Duas formas de entrega, escolhidas pela origem.** `delivery: 'stream'` é o
+áudio retransmitido pela máquina de quem adicionou a faixa; `delivery: 'local'` é
+cada client tocando a mesma origem, sincronizado por posição.
+
+| Origem | Entrega | Por quê |
+|---|---|---|
+| Arquivo local | `stream` | Única possibilidade: ninguém mais tem o arquivo. O arquivo **nunca** é transferido — o que trafega é áudio decodificado, como som. |
+| URL direta | `stream` com CORS, `local` sem | `createMediaElementSource` sobre mídia cross-origin sem `Access-Control-Allow-Origin` transmite **silêncio digital**, sem erro. Daí a sonda de `Range: bytes=0-0` antes de tocar, e daí o padrão ser `local` quando a sonda não confirma. |
+| YouTube | `local`, obrigatoriamente | O player roda num iframe cross-origin; não existe API que dê acesso ao áudio dele. Extrair o stream violaria os Termos de Serviço e exigiria servidor; capturar a aba levaria junto a voz dos participantes. |
+
+**Convergência sem servidor, sem relógio comum e sem eleição.** Cada pedaço do
+estado tem uma regra que converge sozinha (`client/src/lib/musicSession.js`, puro
+e coberto por `client/test/musicSession.test.mjs`):
+
+- **Fila:** conjunto append-only com tombstones. Ordem total por
+  `(lamport, addedBy, id)` — nunca por relógio de parede, que daria ordens
+  diferentes em máquinas diferentes sem ninguém desconfiar. Merge de snapshot é
+  **união** menos tombstones: substituir a fila local apagaria adições recentes, e
+  sem tombstone o snapshot de quem não viu a remoção **ressuscita** a entrada.
+- **Reprodução:** escritor único, o dono da faixa corrente, com `version`
+  monotônico. Quem não é dono manda um **pedido** (`music-command`); o dono aplica
+  e publica. Autoridade fica alinhada com capacidade física — o áudio nasce na
+  máquina dele. Trocar de faixa é publicado pelo dono da **próxima**, nunca pelo
+  da que acabou: um escritor por transição.
+- **Sucessão:** quando o dono cai, todos aplicam a mesma regra (o presente de
+  menor id, o mesmo critério do polite/impolite) e exatamente um publica. Faixa de
+  **arquivo** de quem saiu é pulada com aviso; URL e YouTube continuam.
+- **Posição:** o dono republica a cada 5s; o receptor estima com
+  `performance.now()` **local** a partir do instante de recepção. Relógios de
+  máquinas diferentes nunca são comparados. Correção só acima de 1.5s de desvio e
+  no máximo uma a cada 5s — sem essa trava, seek causa buffering, buffering causa
+  deriva e o player gagueja em loop.
+
+**Identidade é a conexão.** O autor de qualquer mensagem `music-*` é o peer do
+data channel em que ela chegou; nenhum `addedBy`/`voterId` do payload é aceito
+como identidade — aceitar permitiria votar ou comandar em nome de outro. A
+exceção é o `id` da entrada de fila, que é **preservado** (é a identidade
+compartilhada da entrada, ao contrário do `id` de mensagem de chat, que é
+regerado).
+
+**Volume é sempre local** e nunca trafega: volume compartilhado é uma guerra de
+cliques, e mais um campo para convergir sem nenhum ganho.
+
+**Um `AudioContext` só, e ele é do `Room`.** Nós de contextos diferentes não podem
+ser conectados, então o grafo da música precisa do mesmo contexto do indicador de
+fala. O dono passou a ser o `Room` (`lib/audioContext.js`): enquanto era o
+`AudioLevelMonitor`, um `monitor.close()` mataria a música em silêncio.
+
 ## 7. Stack
 
 - **Frontend:** React + Vite. `RTCPeerConnection` nativo (sem SDK de terceiros tipo
@@ -311,8 +391,9 @@ interceptado e ninguém entra na sala.
 ```
 server/        signaling server (Express + Socket.IO, estado em memória)
 client/        app React (Vite) — UI, WebRTC mesh, E2EE via insertable streams
-client/test/   testes unitários (node:test): histerese de áudio, modelo de chat e
-               cálculo da grade de vídeos (§6.7)
+client/test/   testes unitários (node:test): histerese de áudio, modelo de chat,
+               cálculo da grade de vídeos (§6.7) e o estado musical — fila,
+               votação, parsing de origens e sanitização do protocolo (§6.8)
 e2e/           teste ponta a ponta com 3 participantes Chromium + TURN local
 infra/coturn/  config de referência para STUN/TURN self-hosted
 ```
@@ -323,7 +404,19 @@ infra/coturn/  config de referência para STUN/TURN self-hosted
 - O chat não tem histórico e não entrega backlog a quem chega depois. É
   consequência direta da ausência de persistência (§6.3), não uma pendência.
 - `getDisplayMedia` não captura áudio do sistema nesta versão: o compartilhamento
-  de tela leva só vídeo.
+  de tela leva só vídeo. Para ouvir som junto existe o player de música (§6.8).
+- **YouTube é a única dependência de terceiros do projeto, e é opcional.** Pela
+  impossibilidade técnica de capturar o áudio de um iframe cross-origin (§6.8), a
+  faixa é carregada no navegador de cada participante, o que expõe à Google o IP de
+  todos e o que a sala ouve — em contradição direta com §1 e com a promessa de §5.
+  A origem sai inteira com `VITE_ENABLE_YOUTUBE=false`, e a UI avisa explicitamente
+  ao adicionar a primeira faixa de YouTube da sessão. **É uma decisão de produto em
+  aberto**, não um esquecimento: arquivo local e URL direta entregam o recurso sem
+  nenhum terceiro.
+- O canal de música nasce **mono**, com teto de 96 kbps. Estéreo exigiria munging do
+  `fmtp` do Opus no SDP e é uma entrega separada.
+- A fila de música não reordena por drag-and-drop: a ordem é a de inserção. Remover
+  e re-adicionar cobre o caso.
 - Mesh não escala além de ~6-8 participantes; migrar para SFU exigiria reintroduzir um
   componente de mídia no servidor, o que contradiz o requisito atual de privacidade
   total — deve ser uma decisão consciente do produto, não uma otimização silenciosa.

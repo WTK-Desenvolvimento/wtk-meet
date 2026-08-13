@@ -709,8 +709,16 @@ code {
 
 .music-vote-header {
   display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.music-vote-header > div {
+  display: flex;
   flex-direction: column;
   gap: 0.15rem;
+  min-width: 0;
 }
 
 .music-vote-question {
