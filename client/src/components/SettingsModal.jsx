@@ -48,10 +48,8 @@ export default function SettingsModal({
   const firstFieldRef = useRef(null);
   const streamRef = useRef(null);
   const meterRef = useRef(null);
-  // Espelhos para uso dentro de handlers registrados uma única vez.
-  const preferencesRef = useRef(preferences);
+  // Espelho para uso dentro de handlers registrados uma única vez.
   const onDeviceLostRef = useRef(onDeviceLost);
-  preferencesRef.current = preferences;
   onDeviceLostRef.current = onDeviceLost;
 
   const sinkSupported = useMemo(() => isSinkIdSupported(), []);
