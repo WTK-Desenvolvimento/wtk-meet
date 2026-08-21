@@ -1,9 +1,11 @@
 # Progresso — WTK-MEET-13: classificar o erro do YouTube e recuperar falha transitória
 
-**Status: implementação concluída.** Branch
+**Status: implementação concluída e verificada por QA.** Branch
 `agent/wtk-meet-13-classificar-o-c-digo-de-erro-do-youtube-`. Commits `f7affb9`
-(funções puras, `playerVars`, payload em objeto e migração dos testes) e
-`d109149` (hook: handler, retentativa, contador, janela de silêncio).
+(funções puras, `playerVars`, payload em objeto e migração dos testes),
+`d109149` (hook: handler, retentativa, contador, janela de silêncio) e `961d9d2`
+(QA: a fiação do erro até a fila da sala, que fecha a ressalva do DoD 1 e o
+débito registrado no fim deste bloco).
 
 Documento de arquitetura seguido:
 `docs/agents/arch-temp-erro-youtube-classificado-e-retry.md`. **Sem divergência
@@ -95,6 +97,12 @@ por isso que a política inteira saiu do hook e virou função pura no módulo: 
 única forma de a regra ficar verificável neste projeto. A camada que sobrou no
 hook é deliberadamente fina e sem ramificação própria.
 
+> **Ressalva encerrada na rodada de QA.** "A única forma" não era: o corpo do
+> handler passou a ter cobertura em `client/test/musicRoomPlayerError.test.mjs`,
+> sem `@testing-library/react` e sem `jsdom` — dispatcher próprio para rodar o
+> hook com efeitos, e o dublê de `window.YT` que a suíte já tinha. O DoD 1 está
+> coberto ponta a ponta; ver "Verificação de QA" adiante.
+
 ## Verificação critério a critério — `scope` do card
 
 | # | Item do `scope` | Situação |
@@ -108,6 +116,56 @@ hook é deliberadamente fina e sem ramificação própria.
 | 7 | Código do erro no `console.warn` com contexto | ✅ `[music] erro do player YouTube:` com `videoId`, `entryId`, `code`, `kind` e `action` |
 | 8 | Fora do escopo: validação do link antes da fila e o buffering do heartbeat | ✅ nada disso foi tocado (WTK-MEET-14 e WTK-MEET-15) |
 
+## Verificação de QA — a fiação, que era o que faltava
+
+Sessão de QA posterior à implementação. Nenhuma linha de código de produção foi
+alterada: o que a rodada acrescentou é `client/test/musicRoomPlayerError.test.mjs`
+(10 casos, commit `961d9d2`).
+
+**Por que ele existe.** Os 12 casos puros provam a *decisão* (`classifyYouTubeError`,
+`planYouTubeError`). Nenhum provava a *fiação* — e a fiação é onde o bug morava.
+Uma regressão do mesmo gênero (ler o código do campo errado, esquecer a guarda de
+dono, deixar o contador zerado) passa por todos os 12 sem acender uma luz. Os
+casos novos vão do `onError` do player da Google até a fila que a sala enxerga, e
+afirmam só o que o hook devolve (`queue`, `notice`) e o que ele manda ao mesh.
+
+**Como, sem dependência nova.** Duas costuras, ambas com precedente no repo: o
+dublê de `window.YT` de `youtubePlayer.test.mjs` (o envelope sob teste é o de
+verdade — quem é falso é a Google) e um render de hook com dispatcher próprio
+como o de `settingsNoiseToggle.test.mjs`, aqui com `useEffect` rodando de fato,
+com deps e cleanup. Sem efeitos não há reconciliação e o player nunca sobe;
+`useCallback`/`useMemo` memorizam pelas deps de propósito, senão o efeito de
+reconciliação dispararia a cada tique de posição e o teste mediria um laço que o
+React não tem. O laço de render tem trava e falha alto em vez de travar a suíte.
+
+| Caso | O que prova |
+|---|---|
+| AC1 | O código **chega ao handler**: 2, 100 e 101 produzem três avisos distintos (`new Set(...).size === 3`), cada um nomeando a faixa |
+| AC2 | 2/100/101/150 com o dono: a faixa sai da fila na hora, `music-queue-remove` vai para a sala, e a faixa que falhou não é recarregada |
+| AC3 | 5 e 153: uma recarga do **mesmo** `videoId`, aviso "Tentando de novo…", fila intacta e nada publicado |
+| AC4 | A recarga que falha de novo pula (dono) e **não** abre terceira tentativa |
+| AC4b | Dez falhas seguidas num peer não-dono geram **uma** recarga, não dez — o laço não existe |
+| AC5 | Sete códigos (2/5/100/101/150/153/999) × duas falhas, sem ser dono: fila intacta e **zero** mensagens saindo deste peer |
+| AC5b | A retentativa do não-dono é local: recarrega o player e não trafega nada |
+| AC6 | O contador zera na troca de faixa — a faixa B ganha a retentativa dela mesmo depois de a A gastar a sua |
+| AC6b | Trocar de faixa cancela a retentativa pendente: a A não volta por cima da B |
+| AC7 | Erro de vídeo que já não é o corrente não avisa nem remove nada da fila |
+
+**Os testes foram verificados por mutação** — o código de produção foi restaurado
+depois de cada uma, e `git status` confirmado limpo:
+
+| Mutação em `useMusicRoom.js` | Casos que quebram |
+|---|---|
+| `code: payload.entryId` (o bug original: o código volta a ser descartado) | **6 de 10** |
+| `isOwner: true` (o peer não-dono passa a poder pular a faixa da sala) | **2 de 10** |
+| `attempts: { entryId: null, count: 0 }` (contador que nunca acumula) | **1 de 10** |
+
+Nenhuma das três é detectada pelos 12 casos puros — eles não importam
+`useMusicRoom.js`. É essa a lacuna que a rodada fechou.
+
+**Resultado da suíte:** `npm test --prefix client` → **349/349**, 0 falhas
+(339 antes, 10 novos). `npm run lint --prefix client` → saída limpa.
+
 ## A hipótese do `origin` continua uma hipótese
 
 `origin` e `enablejsapi` entraram por **conformidade com a API documentada**, não
@@ -118,10 +176,12 @@ reaparecer, o código no log diz qual dos dois caminhos investigar.
 
 ## Débito identificado, não corrigido
 
-- **A camada de ação do hook não tem cobertura automatizada** (acima). Fechá-la
-  exigiria `@testing-library/react` + `jsdom` nas devDependencies — decisão de
-  dependência, que o escopo desta task não autoriza. Registrado aqui para quem
-  decidir.
+- ~~**A camada de ação do hook não tem cobertura automatizada.** Fechá-la
+  exigiria `@testing-library/react` + `jsdom` nas devDependencies.~~
+  **Fechado pelo commit `961d9d2`**, e sem dependência nova: um dispatcher de
+  ~60 linhas roda o hook com efeitos de verdade, e o dublê de `window.YT` que a
+  suíte já tinha faz o resto. Fica registrada a técnica, que serve para qualquer
+  hook deste client — ver a seção de QA acima.
 - **Um vídeo que nunca pode ser incorporado continua entrando na fila** e só
   falha na hora de tocar. É a WTK-MEET-14, e não foi antecipada aqui de propósito.
 
