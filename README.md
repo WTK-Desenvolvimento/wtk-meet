@@ -106,15 +106,22 @@ vence e como uma conexão caída se recupera) está em `ARCHITECTURE.md` §6.12.
 2. O link é compartilhado por fora do app (mensagem, etc). Compartilhe-o **inteiro**,
    incluindo a parte depois do `#`: só o endereço leva à sala certa, mas sem a chave a
    pessoa entra com outra.
-3. Quem abre o link pede para entrar; se a sala já tem gente, qualquer participante
-   presente aprova ou nega o pedido. Sala cheia (6) rejeita automaticamente.
+3. Quem abre o link cai numa **tela de pré-entrada**: nome, preview da própria câmera e
+   o toggle de entrar com ela ligada ou desligada — **o padrão é desligada**, e nada ali
+   conecta nada. Só depois de escolher é que se pede para entrar; se a sala já tem gente,
+   qualquer participante presente aprova ou nega o pedido. Sala cheia (6) rejeita
+   automaticamente.
 4. Após aprovado, a negociação WebRTC (mesh completo) começa entre o novo peer e cada
    peer já presente. Mídia nunca passa pelo servidor de sinalização.
 5. Cada conexão nasce com quatro canais de envio — microfone, câmera, tela e música —
-   mais um `RTCDataChannel`. Ligar/desligar câmera, entrar/sair de compartilhamento de
-   tela e assumir a faixa que está tocando são trocas de track nesses canais, sem
-   renegociar SDP. Quem já está na sala é avisado por um toast com bipe curto
-   (silenciável).
+   mais um `RTCDataChannel`. Os quatro são criados sempre, mesmo vazios: quem entra com
+   a câmera desligada negocia o canal de câmera **sem track dentro**, e é por isso que
+   ligar a câmera depois não precisa de SDP novo. Ligar/desligar câmera, entrar/sair de
+   compartilhamento de tela e assumir a faixa que está tocando são trocas de track nesses
+   canais, sem renegociar SDP. Quem já está na sala é avisado por um toast com bipe curto
+   (silenciável) — e vê o tile do recém-chegado em placeholder desde o primeiro frame,
+   sem piscar vídeo e sem aviso de "desligou a câmera": entrar desligado não é mudança
+   de estado.
 6. Durante a chamada: **compartilhar tela** coloca a sala em modo destaque — a tela
    ocupa ~80% do palco e as câmeras (mais as outras telas) ficam numa coluna lateral
    rolável; com mais de uma tela, cada participante escolhe localmente qual vê em
@@ -180,6 +187,29 @@ isso o endereço mora na raiz, num segmento só, e o `/room/` deixou de existir.
   trafegam pelo mesmo data channel, com snapshot para quem entra depois. Nenhuma rota
   nem evento novo no servidor, e nada em storage — a fila morre com a sala.
 
+### Entrar na sala: a tela de pré-entrada
+
+Abrir o link de uma sala **não acende o LED da webcam**. Quem chega sem nome na sessão
+vê primeiro uma tela de pré-entrada com campo de nome, preview local espelhado, o toggle
+**Entrar com a câmera ligada** e o botão Configurações.
+
+- **O padrão de fábrica é entrar com a câmera desligada.** Sem preferência gravada,
+  nenhum `getUserMedia` com vídeo acontece — nem no lobby, nem depois de entrar. O
+  microfone continua com o comportamento de sempre: você entra falando, não mutado.
+- **O preview é opt-in.** A câmera só abre se o toggle estiver ligado, e o stream do
+  lobby morre ao sair da tela por qualquer caminho (entrar, navegar, fechar). Ele nunca
+  é entregue à sala: o setup da chamada faz a própria captura.
+- **A escolha fica gravada** em `wtk-meet:devices` (campo `startCameraOff`) no clique do
+  toggle, não no botão Entrar — fechar a aba antes de entrar não perde a decisão, e ela
+  vale para as próximas salas.
+- **Quem recarrega a página não passa pelo lobby de novo:** o nome já está em
+  `sessionStorage` e a preferência decide a câmera. Mesma coisa para quem cria a sala
+  pela Home — esse caminho entra direto, com o padrão de fábrica, e a câmera se liga
+  pelo botão "Ativar câmera" dentro da sala. (Expor o toggle no modal de Configurações,
+  que é alcançável da Home, é trabalho futuro.)
+- Se a câmera não abrir no preview, aparece uma linha de aviso e **nada é bloqueado**:
+  dá para entrar assim mesmo e ligar a câmera lá dentro.
+
 ### Escolher câmera, microfone e saída de áudio
 
 O botão **Configurações** abre o mesmo modal em três lugares: na Home, na tela de
@@ -192,7 +222,9 @@ toggle de avisos sonoros (que saiu da barra de controles).
   mudo não desmuta; trocar de câmera com a câmera desligada só guarda a escolha, sem
   acender o LED.
 - A escolha é gravada em `localStorage`, sob a chave `wtk-meet:devices`
-  (`videoInputId`, `audioInputId`, `audioOutputId`, `soundsEnabled`) — e a supressão
+  (`videoInputId`, `audioInputId`, `audioOutputId`, `soundsEnabled` e
+  `startCameraOff` — este último é a escolha da tela de pré-entrada, e vale `true`
+  quando não há nada gravado) — e a supressão
   de ruído, abaixo, sob `wtk-meet:audio`. **São as únicas exceções à regra de zero
   persistência** — ela vale para conteúdo e metadado de chamada, não para qual
   periférico do seu próprio equipamento usar. Limpar os dados do site apaga a

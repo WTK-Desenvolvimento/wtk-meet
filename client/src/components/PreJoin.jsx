@@ -46,6 +46,7 @@ export default function PreJoin({
   onSubmit,
   onOpenSettings,
   onPreviewError,
+  previewError = null,
 }) {
   const [previewStream, setPreviewStream] = useState(null);
   const streamRef = useRef(null);
@@ -110,6 +111,12 @@ export default function PreJoin({
     <main className="home prejoin">
       <h1>wtk-meet</h1>
       <p className="tagline">Você foi convidado para uma sala. Escolha um nome para entrar.</p>
+
+      {/* Linha de aviso, não bloqueio: uma câmera que não abre no preview não
+          pode impedir ninguém de entrar — dá para ligar a câmera lá dentro.
+          Sem renderizar aqui, `onPreviewError` seria engolido em silêncio (o
+          `mediaError` do `Room` só aparece no ramo da chamada). */}
+      {previewError && <p className="warning">{previewError}</p>}
 
       <div className="local-preview prejoin-preview">
         {/* `cameraOff` segue o preview, não o toggle: com o modal aberto o

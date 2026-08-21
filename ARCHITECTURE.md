@@ -168,10 +168,18 @@ sala e não de mídia; §6.7 descreve por que a UI o exige.
 
 ### 6.1 Layout de transceivers e renegociação
 
-Cada `RTCPeerConnection` nasce com três transceivers `sendonly`, sempre na mesma
-ordem: **áudio (mic), vídeo (câmera), vídeo (tela)**. O sentido inverso vem de
-três transceivers `recvonly` que o navegador cria ao aplicar a oferta do outro
-lado.
+Cada `RTCPeerConnection` nasce com quatro transceivers `sendonly`, sempre na mesma
+ordem: **áudio (mic), vídeo (câmera), vídeo (tela), áudio (música)**. O sentido
+inverso vem de quatro transceivers `recvonly` que o navegador cria ao aplicar a
+oferta do outro lado.
+
+Os quatro são criados **incondicionalmente**, existindo track ou não — e é isso
+que faz a entrada com a câmera desligada (§6.10) custar zero: quem entra sem
+vídeo negocia o canal de câmera vazio, como `sendonly` com `replaceTrack(null)`,
+e "Ativar câmera" continua sendo uma troca de track num sender que já existe.
+Criar o transceiver condicionalmente quebraria a ordem fixa das m-lines — que é
+o contrato de classificação do outro lado — e transformaria o botão de câmera
+numa renegociação.
 
 Por que não um único par bidirecional por finalidade: a especificação WebRTC só
 associa uma m-line remota a um transceiver local pré-existente quando ele foi
@@ -183,9 +191,12 @@ que chega totalmente determinística: os transceivers que criamos são
 reconhecidos por identidade de objeto; os do outro lado chegam na ordem das
 m-lines, que é a ordem em que ele os criou.
 
-A consequência prática é a que interessa: **ligar/desligar câmera e entrar/sair
-de compartilhamento de tela são `replaceTrack()` num sender que já existe**.
-Não há SDP novo, não há renegociação, e o áudio não é tocado.
+A consequência prática é a que interessa: **ligar/desligar câmera, entrar/sair
+de compartilhamento de tela e assumir a faixa que está tocando são
+`replaceTrack()` num sender que já existe**. Não há SDP novo, não há
+renegociação, e nem o áudio nem a música são tocados. Vale igual para o caso
+mais comum depois de §6.10: o canal de câmera que nasceu vazio recebe o primeiro
+track pelo mesmo caminho.
 
 Ainda assim a renegociação existe e precisa ser correta — a negociação inicial é
 simétrica (os dois lados disparam `onnegotiationneeded`, ou seja, **há glare em
@@ -575,7 +586,8 @@ true })` sem restrição: quem usa webcam ou headset USB ficava preso ao hardwar
 embutido, e a única saída era trocar o default no sistema operacional e recarregar.
 
 **Exceção nomeada e delimitada à regra de zero persistência.** As preferências
-(`videoInputId`, `audioInputId`, `audioOutputId`, `soundsEnabled`) são gravadas em
+(`videoInputId`, `audioInputId`, `audioOutputId`, `soundsEnabled`,
+`startCameraOff`) são gravadas em
 `localStorage`, sob a chave `wtk-meet:devices`. Elas não são conteúdo nem metadado de
 chamada: nunca são enviadas ao servidor de sinalização nem trafegam pelo data channel,
 não dizem com quem se falou nem quando, e um `deviceId` é escopado à origem e ao
@@ -639,6 +651,62 @@ reenumera — reiniciar o preview a cada evento faria a câmera piscar, já que 
 headset USB dispara vários eventos seguidos. O E2E simula múltiplos dispositivos no
 harness (o Chromium expõe uma câmera e um microfone falsos e não há flag para um
 segundo), no bloco `S` de `e2e/run.mjs`.
+
+#### Entrar com a câmera desligada: `startCameraOff`
+
+Um quinto campo mora na mesma chave, e ele não é sobre **qual** device usar, e sim
+sobre **se** o device é aberto: `startCameraOff` (default `true`) decide se a entrada
+na sala pede vídeo. Antes desta entrega o app chamava `getUserMedia({ video: true })`
+no efeito de setup e `cameraOff` nascia `false` — abrir o link de uma sala acendia o
+LED da webcam antes de qualquer decisão de quem abriu.
+
+**Por que ele cabe na exceção de persistência, e não abre uma terceira chave.** Ele é
+a mesma natureza das outras quatro: uma decisão sobre o próprio hardware, tomada uma
+vez, que não é conteúdo nem metadado de chamada, nunca é enviada ao servidor nem
+trafega pelo data channel, e não diz com quem se falou nem quando. Reusar
+`wtk-meet:devices` significa herdar de graça o merge parcial, a tolerância a JSON
+inválido e ao modo privado que `readPreferences`/`writePreferences` já entregam. A
+segunda chave (`wtk-meet:audio`, §6.11) existe por um motivo que aqui não se aplica:
+lá o módulo precisava ficar puro de uma capacidade do navegador. Aqui seria uma
+chave nova para um booleano.
+
+**O default é `true`, e o nome é negativo por causa disso.** "O que ninguém decidiu
+entra desligado" é a leitura direta, e ela faz a preferência gravada por uma versão
+anterior do app — que não tem o campo — resolver para o lado seguro. Só um booleano
+de verdade é aceito (molde de `soundsEnabled`): sem a checagem de tipo, um
+`undefined` gravado viraria `undefined` lido, e `!undefined` acenderia a câmera. A UI
+mostra o inverso ("Entrar com a câmera ligada"), e a conversão acontece num ponto só.
+
+Três decisões sustentam o resto:
+
+- **A cadeia de constraints da entrada é uma função pura**, `initialMediaPlan`, ao
+  lado de `buildConstraints`. É a única forma de cobrir a entrada em `node:test` — o
+  `Room.jsx` inteiro é intestável sem DOM, e foi exatamente dentro dele que a cadeia
+  hardcoded viveu sem cobertura. Detalhe que não é cosmético: com `startCameraOff`, a
+  primeira e a segunda tentativa da cadeia antiga **colapsam na mesma requisição**, e
+  o plano devolve duas tentativas, não três com uma repetida.
+- **O preview da tela de pré-entrada é opt-in e o stream nunca é entregue à sala.**
+  O `PreJoin` abre e para o próprio stream no efeito, e o setup da sala faz a própria
+  captura. Com `StrictMode` ligado, um stream "emprestado" seria parado pela primeira
+  limpeza e chegaria morto na segunda execução — um bug que só aparece em dev ou só
+  em prod, dependendo de quem escreveu a guarda. Além disso o efeito de setup é hoje
+  o dono absoluto de `localStreamRef`, e espalhar a responsabilidade de apagar o LED
+  por dois lugares é a classe de bug que §6.6 existe para evitar.
+- **Desconhecido é desligado.** Todo registro de participante nasce `cameraOff: true`,
+  nos três pontos que criam registro. A mensagem `state` chega quando o data channel
+  abre, e não há garantia de que isso aconteça antes do primeiro `ontrack`; assumir
+  "ligada" enquanto não se sabe escolhe o erro mais caro — um retângulo preto, ou um
+  frame de vídeo de alguém que pediu para não aparecer. O custo aceito é um
+  placeholder de algumas centenas de milissegundos no tile de quem está ligado mesmo.
+  `VideoTile` reforça isso por construção: sem track de vídeo no stream, não há o que
+  mostrar. **Não** se deriva "desligou" de `track.muted` — uma track fica muda tanto
+  por `replaceTrack(null)` do outro lado quanto por soluço de rede, e confundir os
+  dois faria a sala piscar placeholder a cada engasgo de banda.
+
+Estado inicial **não** é mudança de estado: entrar com a câmera desligada não produz
+toast nem bipe em ninguém, e nenhuma notificação de câmera existe no produto. A
+tentação de notificar a primeira transição recebida por peer produziria "Fulano
+desligou a câmera" no instante em que Fulano entra — o E2E assere a ausência.
 
 ### 6.11 Supressão de ruído
 

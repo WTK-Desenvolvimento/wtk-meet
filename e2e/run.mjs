@@ -20,6 +20,7 @@ import path from 'node:path';
 
 import {
   CLIENT_ORIGIN,
+  INSTRUMENTATION,
   approveAll,
   buildClient,
   inboundAudio,
@@ -92,6 +93,130 @@ let bob;
 let carol;
 
 try {
+  // --------------------------------------------- P. tela de pré-entrada
+  //
+  // Uma aba que **nunca entra na sala**: ela só abre o link e fica no lobby.
+  // É o caminho de quem recebe um convite e ainda está decidindo — e é onde o
+  // defeito de origem desta entrega vivia, porque abrir o link já acendia a
+  // câmera. Nada aqui toca o servidor: o socket só nasce quando há nome.
+  {
+    const lobbyCtx = await browser.newContext({
+      permissions: ['camera', 'microphone'],
+      ignoreHTTPSErrors: true,
+    });
+    await lobbyCtx.addInitScript({ content: INSTRUMENTATION });
+    const lobby = await lobbyCtx.newPage();
+    await lobby.goto(roomUrl);
+
+    const toggle = lobby.getByRole('checkbox', { name: 'Entrar com a câmera ligada' });
+    await toggle.waitFor({ timeout: 20000 });
+
+    const partes = {
+      nome: await lobby.getByPlaceholder('Como te chamam').count(),
+      preview: await lobby.locator('.local-preview video.mirrored').count(),
+      toggle: await toggle.count(),
+      configuracoes: await lobby.getByRole('button', { name: 'Configurações' }).count(),
+      entrar: await lobby.getByRole('button', { name: 'Entrar na sala' }).count(),
+    };
+    check(
+      'P1. A pré-entrada tem nome, preview espelhado, toggle de câmera, Configurações e Entrar',
+      Object.values(partes).every((n) => n === 1),
+      JSON.stringify(partes),
+    );
+
+    // O item central: o toggle nasce **desligado** e, com ele desligado, o
+    // navegador não foi chamado nenhuma vez. Não é "chamado e negado" — é não
+    // chamado. É a diferença entre o LED piscar e não acender.
+    const inicial = await lobby.evaluate(() => ({
+      marcado: document.querySelector('.prejoin-toggle input')?.checked,
+      gum: window.__wtkCounters.getUserMedia,
+      prefs: localStorage.getItem('wtk-meet:devices'),
+    }));
+    check(
+      'P2. O padrão de fábrica é desligado, e nada foi pedido ao navegador',
+      inicial.marcado === false && inicial.gum === 0,
+      `toggle marcado=${inicial.marcado} getUserMedia=${inicial.gum} storage=${inicial.prefs}`,
+    );
+
+    await toggle.click();
+    const ligado = await waitFor(
+      async () => {
+        const state = await lobby.evaluate(() => ({
+          gum: window.__wtkCounters.getUserMedia,
+          pedidos: window.__wtkCounters.gumRequests,
+          vivas: window.__wtkTrackStates().filter((t) => t.readyState === 'live'),
+          prefs: JSON.parse(localStorage.getItem('wtk-meet:devices') || 'null'),
+        }));
+        return state.vivas.length > 0 ? state : false;
+      },
+      { timeout: 15000, label: 'preview do lobby abrir' },
+    );
+    check(
+      'P3. Ligar o toggle abre o preview — só vídeo, sem microfone',
+      ligado.gum === 1 &&
+      ligado.pedidos.every((r) => r.videoRequested) &&
+      ligado.vivas.every((t) => t.kind === 'video'),
+      `getUserMedia=${ligado.gum} pedidos=${JSON.stringify(ligado.pedidos)} ` +
+      `tracks vivas=${JSON.stringify(ligado.vivas.map((t) => t.kind))}`,
+    );
+    check(
+      'P4. A escolha do toggle é gravada na hora, sob a chave que já existia',
+      ligado.prefs?.startCameraOff === false,
+      `wtk-meet:devices=${JSON.stringify(ligado.prefs)}`,
+    );
+
+    // Desligar é um dos caminhos de saída do preview, e o mais fácil de acertar.
+    await toggle.click();
+    const desligado = await waitFor(
+      async () => {
+        const n = await lobby.evaluate(
+          () => window.__wtkTrackStates().filter((t) => t.readyState === 'live').length,
+        );
+        return n === 0 ? true : false;
+      },
+      { timeout: 10000, label: 'preview parar ao desligar o toggle' },
+    ).catch(() => false);
+    check('P5. Desligar o toggle encerra o track do preview (o LED apaga)', desligado === true);
+
+    // O outro caminho de saída, e o que um `onClick` no botão "Entrar" jamais
+    // cobriria: o modal de Configurações abre o **próprio** preview de câmera, e
+    // duas capturas simultâneas do mesmo device dão `NotReadableError` em parte
+    // das máquinas. O sintoma seria "às vezes o preview não abre" — caro de
+    // diagnosticar e fácil de culpar o hardware.
+    //
+    // Aqui não se conta "zero tracks vivas": o modal tem a dele, e ela é
+    // legítima. O que se exige é que a do lobby tenha **terminado** — sobra no
+    // máximo uma viva, e existe pelo menos uma encerrada.
+    await toggle.click();
+    await waitFor(
+      async () =>
+        (await lobby.evaluate(
+          () => window.__wtkTrackStates().filter((t) => t.readyState === 'live').length,
+        )) > 0,
+      { timeout: 10000, label: 'preview do lobby reabrir' },
+    );
+
+    await openSettings(lobby, { source: '.prejoin' });
+    const comModal = await waitFor(
+      async () => {
+        const videos = await lobby.evaluate(() =>
+          window.__wtkTrackStates().filter((t) => t.kind === 'video'),
+        );
+        return videos.some((t) => t.readyState === 'ended') ? videos : false;
+      },
+      { timeout: 15000, label: 'preview do lobby parar ao abrir Configurações' },
+    ).catch(() => false);
+    check(
+      'P6. Abrir Configurações para o preview do lobby — nunca duas capturas do mesmo device',
+      comModal !== false && comModal.filter((t) => t.readyState === 'live').length <= 1,
+      comModal === false
+        ? 'o preview do lobby continuou aberto com o modal em cima'
+        : `tracks de vídeo=${JSON.stringify(comModal.map((t) => t.readyState))}`,
+    );
+
+    await lobbyCtx.close();
+  }
+
   // ------------------------------------------------------------------ A. mesh
   /** Espera o participante entrar na chamada, aprovando enquanto isso. */
   const waitInCall = (participant, approver) =>
@@ -226,6 +351,31 @@ try {
   });
   const beepsBeforeCarol = await alice.page.evaluate(() => window.__wtkCounters.oscillators);
 
+  // "Placeholder desde o primeiro frame" não se verifica com `waitFor`: um
+  // `waitFor` que **encontra** o placeholder não prova que ele esteve lá o tempo
+  // todo — prova só que ele está lá agora, depois de um possível piscar de
+  // vídeo. Por isso o observador é instalado **antes** de Carol existir, e o que
+  // ele registra é cada instante em que um tile da Carol apareceu no DOM sem
+  // `.video-placeholder`. Zero é a única resposta aceitável.
+  await alice.page.evaluate(() => {
+    window.__wtkCarolSemPlaceholder = 0;
+    window.__wtkCarolVisto = 0;
+    const inspecionar = () => {
+      for (const tile of document.querySelectorAll('.video-tile')) {
+        if (!/Carol/.test(tile.innerText || '')) continue;
+        window.__wtkCarolVisto++;
+        if (!tile.querySelector('.video-placeholder')) window.__wtkCarolSemPlaceholder++;
+      }
+    };
+    new MutationObserver(inspecionar).observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      characterData: true,
+    });
+    inspecionar();
+  });
+
   carol = await openParticipant(browser, { roomUrl, name: 'Carol' });
   await waitInCall(carol, alice);
 
@@ -275,6 +425,49 @@ try {
   const nTiles = await alice.page.locator('.video-tile').count();
   check('A3. Grade mostra 3 tiles (local + 2 remotos)', nTiles === 3, `tiles=${nTiles}`);
 
+  // ---------------------------- A10-A13. entrar com a câmera desligada
+  // O defeito de origem desta entrega: abrir o link de uma sala acendia o LED da
+  // webcam antes de qualquer decisão de quem abriu. Os três participantes
+  // entraram pelo lobby com o toggle desligado — que é o padrão de fábrica.
+  const entradaSemVideo = await carol.page.evaluate(() => ({
+    tracksDeVideo: window.__wtkTrackStates().filter((t) => t.kind === 'video').length,
+    pedidosComVideo: window.__wtkCounters.gumRequests.filter((r) => r.videoRequested).length,
+    totalDePedidos: window.__wtkCounters.gumRequests.length,
+  }));
+  check(
+    'A10. Logo após a aprovação, o stream local não tem nenhuma track de vídeo',
+    entradaSemVideo.tracksDeVideo === 0,
+    `tracks de vídeo vivas=${entradaSemVideo.tracksDeVideo}`,
+  );
+  check(
+    'A11. Nenhum getUserMedia da entrada pediu vídeo — o LED não acende ao abrir o link',
+    entradaSemVideo.pedidosComVideo === 0 && entradaSemVideo.totalDePedidos > 0,
+    `pedidos com vídeo=${entradaSemVideo.pedidosComVideo} de ${entradaSemVideo.totalDePedidos}`,
+  );
+
+  // O canal de câmera **existe** (A2 acabou de verificar os quatro, na ordem);
+  // o que não existe é track dentro dele. É essa distinção que faz "Ativar
+  // câmera" continuar sendo replaceTrack, sem renegociação.
+  const camSenders = (await peerStats(carol.page)).map(
+    (s) => s.senders.filter((x) => x.kind === 'video').length,
+  );
+  check(
+    'A12. Nenhum sender de câmera nasce com track em quem entrou desligado',
+    camSenders.length === 2 && camSenders.every((n) => n === 0),
+    `senders de vídeo por peer=${JSON.stringify(camSenders)}`,
+  );
+
+  const carolNoTileDeAlice = await alice.page.evaluate(() => ({
+    semPlaceholder: window.__wtkCarolSemPlaceholder,
+    visto: window.__wtkCarolVisto,
+  }));
+  check(
+    'A13. O tile do recém-chegado nunca existiu sem placeholder — nem por um frame',
+    carolNoTileDeAlice.semPlaceholder === 0 && carolNoTileDeAlice.visto > 0,
+    `amostras do tile da Carol=${carolNoTileDeAlice.visto}, ` +
+    `sem placeholder=${carolNoTileDeAlice.semPlaceholder}`,
+  );
+
   // A grade se reorganiza sozinha: 3 tiles num palco em paisagem viram 2 colunas
   // (2x2), e nada disso pode custar uma barra de rolagem na página.
   const trioLayout = await roomLayout(alice.page);
@@ -312,6 +505,23 @@ try {
     'A5. A entrada também é anunciada por um bipe',
     beepsAfterCarol === beepsBeforeCarol + 1,
     `osciladores: ${beepsBeforeCarol} → ${beepsAfterCarol}`,
+  );
+
+  // Estado inicial **não** é mudança de estado. A tentação, ao fazer o
+  // participante remoto nascer `cameraOff: true`, é tratar o primeiro `state`
+  // recebido como uma transição e notificar — o que produziria "Carol desligou a
+  // câmera" no instante seguinte a "Carol entrou na sala", para a sala inteira,
+  // no caminho mais comum que existe. Esta checagem é a que percebe isso.
+  //
+  // Ela também protege o bipe: `A5` acabou de exigir **exatamente um**
+  // oscilador novo, então um bipe de câmera reprovaria lá.
+  const toastsDeCamera = await alice.page.evaluate(() =>
+    window.__wtkToastLog.filter((t) => /c[âa]mera/i.test(t.text)).map((t) => t.text),
+  );
+  check(
+    'A14. Entrar com a câmera desligada não gera toast de câmera em nenhum peer',
+    toastsDeCamera.length === 0,
+    `toasts mencionando câmera=${JSON.stringify(toastsDeCamera)}`,
   );
 
   // ------------------------------------------------------- B. anel de fala
@@ -740,6 +950,48 @@ try {
   await waitFor(everyoneConnected, { timeout: 45000, label: 'mesh reconectado após reload de Bob' });
 
   // ----------------------------------------------------------- E. câmera
+  //
+  // Todo mundo entrou com a câmera **desligada** — é o padrão de fábrica e o
+  // caminho comum. Então esta seção começa ligando, e a subida não é cerimônia
+  // de setup: é a checagem de que "Ativar câmera" funciona a partir de uma
+  // entrada que nunca teve vídeo, sem renegociação (E0b/E0c).
+  //
+  // Esperar o placeholder **sumir** no tile remoto antes de desligar é
+  // obrigatório: sem essa espera, o placeholder de E3 já estaria lá desde antes
+  // do clique e a checagem passaria sem verificar nada — verde decorativo.
+  const aliceTileEmBob = bob.page.locator('.video-tile').filter({ hasText: 'Alice' });
+
+  const sldAntesDeLigar = await alice.page.evaluate(() => window.__wtkCounters.setLocalDescription);
+  await alice.page.getByRole('button', { name: 'Ativar câmera' }).click();
+  await alice.page.getByRole('button', { name: 'Desligar câmera' }).waitFor({ timeout: 10000 });
+
+  await waitFor(
+    async () => (await aliceTileEmBob.locator('.video-placeholder').count()) === 0,
+    { timeout: 15000, label: 'vídeo de Alice chegando em Bob (placeholder some)' },
+  );
+  check('E0a. Ligar a câmera depois de entrar sem vídeo faz o vídeo chegar aos peers', true);
+
+  const sendersAoLigar = (await peerStats(alice.page)).map(
+    (s) => s.senders.filter((x) => x.kind === 'video').length,
+  );
+  check(
+    'E0b. O primeiro track de câmera entra por replaceTrack no canal que já existia',
+    sendersAoLigar.length === 2 && sendersAoLigar.every((n) => n === 1),
+    `senders de vídeo por peer=${JSON.stringify(sendersAoLigar)}`,
+  );
+
+  const sldDepoisDeLigar = await alice.page.evaluate(() => window.__wtkCounters.setLocalDescription);
+  check(
+    'E0c. Ligar a câmera pela primeira vez não renegocia SDP e não derruba a chamada',
+    sldDepoisDeLigar === sldAntesDeLigar && (await everyoneConnected()),
+    `setLocalDescription: ${sldAntesDeLigar} → ${sldDepoisDeLigar}`,
+  );
+
+  const audioAoLigar = await alice.page.evaluate(() =>
+    window.__wtkTrackStates().some((t) => t.kind === 'audio' && t.readyState === 'live'),
+  );
+  check('E0d. Ligar a câmera não derruba o áudio', audioAoLigar);
+
   const gumBefore = await alice.page.evaluate(() => window.__wtkCounters.getUserMedia);
   const sldBeforeCam = await alice.page.evaluate(() => window.__wtkCounters.setLocalDescription);
 
@@ -763,9 +1015,10 @@ try {
     `senders de vídeo por peer=${JSON.stringify(aliceSenders)}`,
   );
 
-  const aliceTileInBob = bob.page.locator('.video-tile').filter({ hasText: 'Alice' });
+  // O placeholder que se espera aqui é o que **voltou**: ele tinha sumido em
+  // E0a, e é essa ida e volta que dá sentido à checagem.
   await waitFor(
-    async () => (await aliceTileInBob.locator('.video-placeholder').count()) === 1,
+    async () => (await aliceTileEmBob.locator('.video-placeholder').count()) === 1,
     { timeout: 10000, label: 'placeholder no tile da Alice, visto por Bob' },
   );
   check('E3. Peers remotos mostram placeholder (deixam de receber vídeo)', true);
@@ -927,13 +1180,18 @@ try {
   );
 
   const savedPrefs = await readPrefs(alice.page);
+  // "Exatamente estas chaves" é o ponto da checagem, e não um detalhe: é o que
+  // pega o dia em que alguém mandar o nome de exibição, o id da sala ou o
+  // histórico para o `localStorage` junto com a preferência de hardware.
+  // `startCameraOff` (a escolha da tela de pré-entrada) é o quinto campo, e
+  // cabe na mesma exceção de persistência — ver ARCHITECTURE.md §6.10.
   check(
-    'S7. A preferência é gravada em localStorage["wtk-meet:devices"] com exatamente as quatro chaves',
+    'S7. A preferência é gravada em localStorage["wtk-meet:devices"] com exatamente as cinco chaves',
     savedPrefs &&
     savedPrefs.videoInputId === 'cam-b' &&
     savedPrefs.audioInputId === 'mic-b' &&
     Object.keys(savedPrefs).sort().join() ===
-    'audioInputId,audioOutputId,soundsEnabled,videoInputId',
+    'audioInputId,audioOutputId,soundsEnabled,startCameraOff,videoInputId',
     JSON.stringify(savedPrefs),
   );
 
@@ -1473,9 +1731,21 @@ try {
   // Dave entra com uma preferência obsoleta gravada (o headset ficou na outra
   // máquina): a mídia tem que abrir pelo padrão, sem nenhuma mensagem de erro, e
   // a preferência tem que se corrigir sozinha.
+  //
+  // Ele é um dos poucos que entra pelo lobby com a câmera **ligada**, e por um
+  // motivo de fundo: a autocorreção compara o que foi pedido com o que o
+  // navegador de fato abriu (`reconcilePreferences`), e sem track de câmera não
+  // existe "o que foi aberto" para comparar. Entrar desligado deixaria o
+  // `videoInputId` obsoleto gravado — o que é **correto**, e não o que esta
+  // checagem existe para verificar.
+  //
+  // A preferência semeada sai sem `startCameraOff` de propósito: é a forma de
+  // encenar o storage gravado por uma versão anterior do app. Quem liga a câmera
+  // é o clique no toggle do lobby, que grava o campo no caminho de verdade.
   const dave = await openParticipant(browser, {
     roomUrl,
     name: 'Dave',
+    cameraOn: true,
     preferences: {
       videoInputId: 'cam-de-outra-maquina',
       audioInputId: 'mic-de-outra-maquina',

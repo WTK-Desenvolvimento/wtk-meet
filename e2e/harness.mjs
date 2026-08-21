@@ -273,6 +273,17 @@ export async function openParticipant(
     name,
     preferences,
     audioPreferences,
+    // Como esta aba passa pela **tela de pré-entrada**.
+    //
+    // O default é `false` de propósito: entrar com a câmera desligada é o
+    // padrão de fábrica do produto e o caminho que 100% de quem abre um link
+    // percorre. Fazer o harness entrar sempre ligado para "não mexer no
+    // roteiro" deixaria justamente esse caminho sem cobertura nenhuma.
+    //
+    // Quando um cenário precisa de vídeo, ligar aqui é pela UI do lobby, e não
+    // por `preferences` semeada: é a única forma de o roteiro exercitar o
+    // toggle — que grava a preferência no clique, não no submit.
+    cameraOn = false,
     forceWorkletNoiseSuppression = false,
     // Como o servidor de TURN responde **para este participante**. O default
     // reproduz o comportamento de sempre (200 com o TURN local e validade
@@ -365,6 +376,21 @@ export async function openParticipant(
   const nameField = page.getByPlaceholder('Como te chamam');
   await nameField.waitFor();
   await setInputValue(nameField, name);
+
+  // O toggle do lobby. Um clique de verdade, e não `check()`: é o caminho que
+  // comprovadamente chega ao React neste headless (a injeção via CDP não chega
+  // ao renderer — ver `setInputValue`).
+  const cameraToggle = page.getByRole('checkbox', { name: 'Entrar com a câmera ligada' });
+  await cameraToggle.waitFor();
+  if ((await cameraToggle.isChecked()) !== cameraOn) {
+    await cameraToggle.click();
+    await page.waitForFunction(
+      (want) => document.querySelector('.prejoin-toggle input')?.checked === want,
+      cameraOn,
+      { timeout: 5000 },
+    );
+  }
+
   await page.getByRole('button', { name: 'Entrar na sala' }).click();
 
   return { context, page, name, consoleErrors, turnRequests };
@@ -733,6 +759,11 @@ export const INSTRUMENTATION = `
   md.getUserMedia = async (constraints, ...rest) => {
     window.__wtkCounters.getUserMedia++;
     const asked = {
+      // requestedId devolve null tanto para "video: false" quanto para
+      // "video: true" sem deviceId — ele responde "qual device", não "pediu?".
+      // videoRequested é a pergunta que o LED da webcam responde, e é o que
+      // torna "nenhum getUserMedia com vídeo" verificável.
+      videoRequested: !!constraints?.video,
       video: requestedId(constraints?.video),
       audio: requestedId(constraints?.audio),
       audioProcessing: requestedProcessing(constraints?.audio),
