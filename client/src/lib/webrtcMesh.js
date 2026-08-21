@@ -48,6 +48,16 @@ const RECOVERY_BACKOFF_MS = [2_000, 4_000, 8_000, 16_000, 30_000];
 const POLITE_RESTART_VALVE_MS = 15_000;
 
 /**
+ * Espaçamento das verificações pós-negociação, e o teto delas.
+ *
+ * A primeira é curta porque é só para deixar a poeira baixar: quando a
+ * negociação volta a `stable`, a segunda rodada automática da spec pode já estar
+ * a caminho, e verificar antes dela veria um falso positivo. As seguintes são
+ * mais espaçadas porque, se a primeira não resolveu, o problema não é de tempo.
+ */
+const VERIFY_DELAYS_MS = [750, 2_000, 5_000];
+
+/**
  * Full-mesh WebRTC: one RTCPeerConnection per remote peer, capped by the
  * room's MAX_PARTICIPANTS on the signaling side. Media never routes through
  * the signaling server — this class only uses it to relay SDP/ICE.
@@ -286,6 +296,8 @@ export class WebRTCMesh {
       recoveryAttempts: 0,
       recoveryExhausted: false,
       politeValveTimer: null,
+      verifyTimer: null,
+      verifyAttempts: 0,
       candidateQueue: [],
       // Serializa o tratamento de sinais: setRemoteDescription/setLocalDescription
       // não podem interleavar, ou o signalingState visto pelo perfect negotiation
@@ -323,6 +335,10 @@ export class WebRTCMesh {
     };
 
     pc.oniceconnectionstatechange = () => this._onConnectivityChange(rec);
+
+    pc.onsignalingstatechange = () => {
+      if (pc.signalingState === 'stable') this._scheduleVerifyNegotiation(rec);
+    };
 
     // Canal de dados negociado fora de banda — mesmo id nos dois lados.
     rec.channel = pc.createDataChannel(CHAT_CHANNEL_LABEL, {
@@ -520,9 +536,79 @@ export class WebRTCMesh {
   _clearPeerTimers(rec) {
     clearTimeout(rec.recoveryTimer);
     clearTimeout(rec.politeValveTimer);
+    clearTimeout(rec.verifyTimer);
     rec.recoveryTimer = null;
     rec.politeValveTimer = null;
+    rec.verifyTimer = null;
     rec.recoveryDelay = Infinity;
+  }
+
+  // ------------------------------------------- verificação da segunda rodada
+
+  /**
+   * Confere que a negociação terminou o serviço, em vez de assumir que sim.
+   *
+   * O contexto: quando alguém entra, os dois lados chamam `addPeer` quase
+   * juntos, os dois criam quatro transceivers `sendonly` e os dois disparam
+   * `negotiationneeded` — **glare em toda entrada, sempre**. O perfect
+   * negotiation resolve a colisão, mas uma answer só espelha as m-lines da
+   * offer, e transceivers de `addTransceiver()` nunca são pareados
+   * implicitamente com m-lines remotas (só os de `addTrack()`). Quem perde o
+   * glare fica, depois da primeira rodada, com os quatro `sendonly` sem `mid` —
+   * e só passa a transmitir depois de uma segunda offer/answer.
+   *
+   * A boa notícia é que **a spec faz essa segunda rodada disparar sozinha**: o
+   * algoritmo de negotiation-needed do JSEP retorna verdadeiro exatamente quando
+   * há transceiver não associado, então o navegador dispara o evento de novo
+   * assim que o lado perdedor volta a `stable`. Não é sorte, é comportamento
+   * especificado — e a checagem A2 do E2E, que exige quatro canais por sentido
+   * com três participantes, passa consistentemente, o que seria impossível se
+   * metade das entradas ficasse pela metade.
+   *
+   * Daí esta função ser **rede de segurança e não correção**: ela só age com
+   * evidência (`mid === null`, o mesmo critério que a spec usa), e como o
+   * vencedor do glare nunca tem transceiver sem `mid`, ela é auto-limitante por
+   * construção — só o perdedor pode renegociar, que é o comportamento correto.
+   */
+  _scheduleVerifyNegotiation(rec) {
+    if (this.closed || !this.peers.has(rec.peerId)) return;
+    if (rec.verifyTimer) return;
+    if (rec.verifyAttempts >= VERIFY_DELAYS_MS.length) return;
+
+    rec.verifyTimer = setTimeout(() => {
+      rec.verifyTimer = null;
+      this._verifyNegotiation(rec);
+    }, VERIFY_DELAYS_MS[rec.verifyAttempts]);
+  }
+
+  _verifyNegotiation(rec) {
+    if (this.closed || !this.peers.has(rec.peerId)) return;
+
+    const { pc } = rec;
+    if (pc.signalingState !== 'stable') return; // há negociação em curso: nada a concluir ainda
+
+    const nossos = [rec.audioT, rec.camT, rec.screenT, rec.musicT].filter(Boolean);
+    const orfaos = nossos.filter((t) => t.mid === null || t.mid === undefined);
+    // Sem evidência não há ação: disparar aqui dobraria a negociação em toda
+    // entrada, inclusive quando a segunda rodada automática já resolveu.
+    if (orfaos.length === 0) return;
+
+    rec.verifyAttempts += 1;
+    console.warn(
+      `[mesh] ${orfaos.length} transceiver(s) local(is) sem mid para ${rec.peerId} ` +
+        `depois da negociação (tentativa ${rec.verifyAttempts}/${VERIFY_DELAYS_MS.length}); ` +
+        'disparando nova rodada.',
+    );
+    if (rec.verifyAttempts >= VERIFY_DELAYS_MS.length) {
+      console.error(
+        `[mesh] metade da mídia de ${rec.peerId} pode não estar sendo transmitida: ` +
+          'a segunda rodada de negociação não associou os transceivers locais.',
+      );
+    }
+    // Pela mesma porta de sempre: se a recuperação já enfileirou uma offer neste
+    // instante — e as duas condições acontecem juntas, por construção — as duas
+    // colapsam numa só.
+    this._queueNegotiation(rec);
   }
 
   /**
@@ -891,6 +977,7 @@ export class WebRTCMesh {
     rec.pc.ontrack = null;
     rec.pc.onconnectionstatechange = null;
     rec.pc.oniceconnectionstatechange = null;
+    rec.pc.onsignalingstatechange = null;
     // Tracks recebidas são de propriedade do receiver; pará-las evita que o
     // decoder continue vivo se algum <video> ainda referenciar o stream.
     for (const stream of [rec.stream, rec.screenStream, rec.musicStream]) {
