@@ -124,7 +124,7 @@ export class MusicEngine {
     let src;
     if (entry.kind === 'file') {
       if (!file) {
-        this.onError?.('missing-file');
+        this.onError?.({ reason: 'missing-file', entryId: entry.id });
         return null;
       }
       this.objectUrl = URL.createObjectURL(file);
@@ -134,7 +134,7 @@ export class MusicEngine {
     } else {
       // YouTube não passa por aqui: o áudio dele vive num iframe cross-origin,
       // fora do alcance de qualquer API de captura (ver `youtubePlayer.js`).
-      this.onError?.('unsupported-kind');
+      this.onError?.({ reason: 'unsupported-kind', entryId: entry.id });
       return null;
     }
 
@@ -153,7 +153,7 @@ export class MusicEngine {
       if (this.entryId === entry.id) this.onEnded?.(entry.id);
     });
     element.addEventListener('error', () => {
-      if (this.entryId === entry.id) this.onError?.('media-error', entry.id);
+      if (this.entryId === entry.id) this.onError?.({ reason: 'media-error', entryId: entry.id });
     });
     element.addEventListener('durationchange', () => {
       if (Number.isFinite(element.duration) && element.duration > 0) {
@@ -164,7 +164,7 @@ export class MusicEngine {
     if (delivery === 'stream' && asOwner) {
       const ctx = this._ensureGraph();
       if (!ctx) {
-        this.onError?.('no-audio-context', entry.id);
+        this.onError?.({ reason: 'no-audio-context', entryId: entry.id });
         return null;
       }
       try {
@@ -174,7 +174,7 @@ export class MusicEngine {
         this.source.connect(this.monitorGain);
       } catch (err) {
         console.warn('[music] createMediaElementSource falhou:', err);
-        this.onError?.('graph-error', entry.id);
+        this.onError?.({ reason: 'graph-error', entryId: entry.id });
         return null;
       }
     } else {
