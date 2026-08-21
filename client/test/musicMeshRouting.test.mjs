@@ -184,6 +184,11 @@ async function meshWithPeer(overrides = {}) {
   const mesh = new WebRTCMesh({
     signaling: { sendSignal: (peerId, data) => events.signals.push([peerId, data]) },
     iceServers: [],
+    // O mesh renova a credencial antes de cada conexão nova. Sem o dublê, ele
+    // cairia no provedor real (sem endpoint, num teste de node) e cada `addPeer`
+    // logaria o erro de "sem TURN" — ruído que não tem nada a ver com o que este
+    // arquivo testa, que é o roteamento das quatro m-lines.
+    getIceServers: async () => [{ urls: ['turn:relay.test:3478'] }],
     localStream,
     getSelfId: () => 'peer-a',
     getRoomKey: () => null,

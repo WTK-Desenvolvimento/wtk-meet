@@ -1,5 +1,10 @@
 import { CHAT_CHANNEL_ID, CHAT_CHANNEL_LABEL, parseChannelPayload } from './chat.js';
 import { isMusicMessage, snapshotMessage } from './musicProtocol.js';
+import {
+  getIceServers as defaultGetIceServers,
+  getIceServersStatus,
+  hasTurnServer,
+} from './iceServers.js';
 
 /**
  * Teto de banda do canal de música. O client roda com
@@ -67,9 +72,18 @@ export class WebRTCMesh {
     onRemoteMusic,
     onMusicMessage,
     getMusicSnapshot,
+    // Opcional e com default de módulo **de propósito**: `pages/Room.jsx` está
+    // fora do alcance desta entrega (é da task irmã, noutra worktree), então
+    // nada aqui pode passar a exigir um parâmetro novo de quem constrói o mesh.
+    // Quem injeta é só o teste, com um dublê.
+    getIceServers = defaultGetIceServers,
   }) {
     this.signaling = signaling;
+    // Semente, não fonte da verdade: é a lista que o `Room.jsx` buscou no setup
+    // da sala e que, numa aba aberta há horas, já está velha. Serve como último
+    // valor conhecido se uma renovação falhar (ver `_currentIceServers`).
     this.iceServers = iceServers;
+    this.getIceServers = getIceServers;
     this.getSelfId = getSelfId;
     this.getRoomKey = getRoomKey;
     this.onRemoteStream = onRemoteStream;
@@ -83,6 +97,10 @@ export class WebRTCMesh {
     this.getMusicSnapshot = getMusicSnapshot;
 
     this.peers = new Map(); // peerId -> peer record (ver _createPeerRecord)
+    // Pares em construção. Existe porque `addPeer` passou a esperar rede antes
+    // de registrar o par — ver a nota grande em `addPeer`.
+    this.pendingPeers = new Map(); // peerId -> Promise
+    this.abandonedPeers = new Set(); // removePeer chamado durante a construção
     this.closed = false;
 
     // Tracks locais correntes. São a fonte da verdade para qualquer peer que
@@ -121,12 +139,101 @@ export class WebRTCMesh {
     return selfId < peerId;
   }
 
+  /**
+   * Lista de ICE servers para uma conexão que está prestes a nascer.
+   *
+   * Renovar aqui, e não uma vez por sessão, é o coração desta correção: a
+   * credencial que o `Room.jsx` buscou no setup da sala pode ter vencido faz
+   * horas, e sob `relay` uma credencial vencida não degrada a conexão — impede
+   * que ela exista.
+   *
+   * Se a renovação falhar, cai para o último valor conhecido (a semente do
+   * construtor ou a última lista boa). É melhor tentar com credencial talvez
+   * velha do que não tentar: velha pode ainda estar válida, vazia nunca está.
+   */
+  async _currentIceServers({ force = false } = {}) {
+    let servers = [];
+    try {
+      servers = (await this.getIceServers?.({ force })) || [];
+    } catch (err) {
+      // O provedor da aplicação nunca rejeita; um dublê de teste pode.
+      console.error('[mesh] falha ao obter ICE servers:', err);
+    }
+
+    if (hasTurnServer(servers)) {
+      this.iceServers = servers;
+      return servers;
+    }
+    if (hasTurnServer(this.iceServers)) return this.iceServers;
+    return servers;
+  }
+
+  /**
+   * Grita quando não há TURN, em vez de esperar o ICE desistir sozinho.
+   *
+   * Sob `iceTransportPolicy: 'relay'` sem nenhum servidor TURN o desfecho é
+   * **determinístico**: zero candidatos, zero conexões. Esperar o timeout do ICE
+   * custa dezenas de segundos de tile mudo antes de o produto admitir o óbvio.
+   *
+   * `'failed'` é valor legítimo de `RTCPeerConnectionState`, então a assinatura
+   * `(peerId, connectionState)` continua exatamente a de hoje — quem consome o
+   * callback não precisa saber que esta verificação existe.
+   */
+  _reportMissingTurn(peerId, iceServers) {
+    if (hasTurnServer(iceServers)) return false;
+    console.error(
+      `[mesh] sem servidor TURN utilizável (provedor: ${getIceServersStatus()}) — ` +
+        `com iceTransportPolicy:'relay' a conexão com ${peerId} não tem como fechar.`,
+    );
+    this.onPeerStateChange?.(peerId, 'failed');
+    return true;
+  }
+
+  /**
+   * Cria a conexão com um par, renovando a credencial antes.
+   *
+   * **A reentrância aqui é armadilha real, não teórica.** Antes desta entrega o
+   * caminho entre a guarda `this.peers.has(peerId)` e o `this.peers.set(...)`
+   * era inteiramente síncrono, então a guarda bastava. O `await` da renovação
+   * abre uma janela no meio — e ela é atingida no cenário mais comum que existe:
+   * o `Room.jsx` chama `addPeer` ao receber `peer-joined` enquanto o primeiro
+   * sinal daquele mesmo par já está chegando, e `handleSignal` chama `addPeer`
+   * também. Sem a reserva, seriam duas `RTCPeerConnection` para o mesmo par: a
+   * segunda sobrescreve o mapa e a primeira fica órfã, viva, com transceivers e
+   * tracks, sem nenhuma referência que permita fechá-la. O sintoma disso é
+   * *exatamente* o que esta task investiga — mídia que não chega,
+   * intermitentemente, num par específico.
+   *
+   * Daí o mapa de em-voo: chamadas concorrentes recebem **a mesma promise**.
+   */
   async addPeer(peerId, { initiator } = {}) {
     void initiator; // perfect negotiation dispensa papel de iniciador
     if (this.closed || this.peers.has(peerId)) return;
 
+    const emVoo = this.pendingPeers.get(peerId);
+    if (emVoo) return emVoo;
+
+    const promise = this._createPeer(peerId);
+    this.pendingPeers.set(peerId, promise);
+    try {
+      return await promise;
+    } finally {
+      this.pendingPeers.delete(peerId);
+      this.abandonedPeers.delete(peerId);
+    }
+  }
+
+  async _createPeer(peerId) {
+    const iceServers = await this._currentIceServers();
+
+    // Depois do await, o mundo pode ter mudado: a sala fechou, o par saiu (e o
+    // `removePeer` não achou nada para remover, porque ainda não havia), ou
+    // outro caminho já registrou este par. Registrar assim mesmo criaria um par
+    // fantasma — conexão viva para quem não está mais na sala.
+    if (this.closed || this.peers.has(peerId) || this.abandonedPeers.has(peerId)) return;
+
     const pc = new RTCPeerConnection({
-      iceServers: this.iceServers,
+      iceServers,
       iceTransportPolicy: 'relay',
     });
 
@@ -151,6 +258,12 @@ export class WebRTCMesh {
       channel: null,
     };
     this.peers.set(peerId, rec);
+
+    // Reportado **depois** do registro, para que o par exista quando a UI
+    // reagir; e sem abortar a construção, porque se a credencial voltar a
+    // recuperação (`_scheduleRecovery`) resgata esta mesma conexão sem precisar
+    // reconstruir nada.
+    this._reportMissingTurn(peerId, iceServers);
 
     pc.onicecandidate = ({ candidate }) => {
       if (candidate) {
@@ -522,6 +635,12 @@ export class WebRTCMesh {
   // ---------------------------------------------------------------- teardown
 
   removePeer(peerId) {
+    // "Saiu antes de terminar de entrar": a construção do par espera a
+    // renovação da credencial, e quem sai nessa janela não está no mapa ainda —
+    // um `removePeer` mudo aqui deixaria a construção registrar, depois, uma
+    // conexão para alguém que já não está na sala.
+    if (this.pendingPeers.has(peerId)) this.abandonedPeers.add(peerId);
+
     const rec = this.peers.get(peerId);
     if (!rec) return;
 
