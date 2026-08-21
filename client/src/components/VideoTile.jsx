@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 /**
  * Um tile de vídeo. Serve tanto para câmera quanto para compartilhamento de
@@ -29,19 +29,42 @@ export default function VideoTile({
 }) {
   const videoRef = useRef(null);
   const sinkAppliedRef = useRef(false);
+  /**
+   * O stream tem track de vídeo **agora**?
+   *
+   * Um stream só de áudio satisfaz `!!stream`, e sem esta pergunta o `<video>`
+   * é montado com nada para decodificar — um retângulo preto no lugar do
+   * placeholder. É o piso estrutural do "placeholder desde o primeiro frame":
+   * não depende de nenhuma mensagem chegar na ordem certa, porque sem track de
+   * vídeo não há o que mostrar, por construção.
+   *
+   * **Não** derive "câmera desligada" de `track.muted`: um `replaceTrack(null)`
+   * do outro lado não remove a track do stream recebido nem dispara `ended` —
+   * ela só fica muda, e também fica muda em soluço de rede. Confundir os dois
+   * faria a sala inteira piscar placeholder a cada engasgo de banda. Quem
+   * responde por "desligou" é a mensagem `state`, e só ela.
+   */
+  const [hasVideoTrack, setHasVideoTrack] = useState(false);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return undefined;
     video.srcObject = stream || null;
-    if (!stream) return undefined;
+    if (!stream) {
+      setHasVideoTrack(false);
+      return undefined;
+    }
 
     // Câmera e tela entram/saem do mesmo MediaStream via replaceTrack, e alguns
     // navegadores não repintam o elemento sozinhos quando o conjunto de tracks
-    // muda. Reatribuir o srcObject força o refresh.
+    // muda. Reatribuir o srcObject força o refresh. Os mesmos dois listeners
+    // mantêm a resposta de `hasVideoTrack` em dia — são exatamente os eventos
+    // que a mudam.
     const refresh = () => {
       if (videoRef.current) videoRef.current.srcObject = stream;
+      setHasVideoTrack(stream.getVideoTracks().length > 0);
     };
+    refresh();
     stream.addEventListener('addtrack', refresh);
     stream.addEventListener('removetrack', refresh);
     return () => {
@@ -72,7 +95,7 @@ export default function VideoTile({
     return undefined;
   }, [sinkId, onSinkError]);
 
-  const showVideo = !!stream && !cameraOff;
+  const showVideo = !!stream && hasVideoTrack && !cameraOff;
   const initial = (label || '?').trim().charAt(0).toUpperCase();
 
   return (
