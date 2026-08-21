@@ -29,6 +29,7 @@ const {
   observeLamport,
   orderedQueue,
   ownerFor,
+  planPositionHeartbeat,
   previousEntry,
   removeEntriesBy,
   removeEntry,
@@ -394,4 +395,104 @@ test('mergeSnapshot ignora snapshot inválido e entradas podres dentro dele', ()
   });
   assert.deepEqual(orderedQueue(sujo).map((e) => e.id), ['e1']);
   assert.deepEqual(sujo.tombstones, ['ok']);
+});
+
+// ------------------------------------------- heartbeat de posição (5s do dono)
+//
+// Os players falsos abaixo espelham os formatos reais, e não uma combinação
+// conveniente. `YouTubeTrackPlayer` em buffering está no estado 3, então o
+// getter `playing` dele devolve `false`; `MusicEngine` engasgado tem
+// `readyState < 3` mas o `element` não está `paused`, então o `playing` dele
+// continua `true`. Ou seja: o bug se manifesta hoje só por um dos dois — e é
+// por isso que os dois são cobertos. O que se fixa aqui é a invariante (o tique
+// nunca rebaixa `playing`), não o sintoma de um player.
+
+/** YouTube: estado 3 (BUFFERING) — `playing` falso, posição válida. */
+function youtubeBuffering(positionSec = 42) {
+  return { loading: false, buffering: true, playing: false, positionSec };
+}
+
+/** MusicEngine: `readyState < 3` com o elemento não pausado. */
+function engineBuffering(positionSec = 42) {
+  return { loading: false, buffering: true, playing: true, positionSec };
+}
+
+function tocando(overrides = {}) {
+  return { ...emptyPlayback(), entryId: 'e1', playing: true, positionSec: 30, version: 3, ownerId: 'peer-a', ...overrides };
+}
+
+test('heartbeat: buffering do YouTube não pausa a sala — publica a intenção, não o transporte', () => {
+  const plan = planPositionHeartbeat({ playback: tocando(), player: youtubeBuffering(42) });
+  assert.deepEqual(plan.publish, { positionSec: 42, playing: true });
+});
+
+test('heartbeat: buffering do MusicEngine (readyState < 3) publica igual', () => {
+  const plan = planPositionHeartbeat({ playback: tocando(), player: engineBuffering(42) });
+  assert.deepEqual(plan.publish, { positionSec: 42, playing: true });
+});
+
+test('heartbeat: com a sala tocando, nenhum estado de player produz playing:false', () => {
+  const players = [
+    youtubeBuffering(42),
+    engineBuffering(42),
+    { loading: false, buffering: false, playing: false, positionSec: 42 }, // autoplay bloqueado
+    { loading: false, buffering: false, playing: true, positionSec: 42 },
+    { loading: false, buffering: true, playing: false, positionSec: 0.5 },
+  ];
+  for (const player of players) {
+    const { publish } = planPositionHeartbeat({ playback: tocando(), player });
+    assert.notEqual(publish?.playing, false, `player ${JSON.stringify(player)} rebaixou a sala`);
+  }
+});
+
+test('heartbeat: a guarda de loading continua valendo na troca de faixa', () => {
+  const trocando = { loading: true, buffering: false, playing: false, positionSec: 0 };
+  assert.equal(planPositionHeartbeat({ playback: tocando(), player: trocando }).publish, null);
+  // Mesmo com o player já reportando posição, `loading` decide: a leitura é da
+  // faixa velha.
+  assert.equal(
+    planPositionHeartbeat({ playback: tocando(), player: { ...trocando, positionSec: 99 } }).publish,
+    null,
+  );
+});
+
+test('heartbeat: leitura 0 em buffering com a sala adiante não rebobina ninguém', () => {
+  const player = youtubeBuffering(0);
+  assert.equal(planPositionHeartbeat({ playback: tocando({ positionSec: 30 }), player }).publish, null);
+  // No começo da faixa não há o que preservar: o tique publica normalmente.
+  assert.deepEqual(
+    planPositionHeartbeat({ playback: tocando({ positionSec: 0 }), player }).publish,
+    { positionSec: 0, playing: true },
+  );
+});
+
+test('heartbeat: sala pausada e player ausente não publicam nada', () => {
+  assert.equal(planPositionHeartbeat({ playback: tocando({ playing: false }), player: youtubeBuffering() }).publish, null);
+  assert.equal(planPositionHeartbeat({ playback: tocando(), player: null }).publish, null);
+  assert.equal(planPositionHeartbeat({}).publish, null);
+});
+
+test('heartbeat: buffering prolongado não interrompe a referência de posição', () => {
+  // Quem está em `local` corrige deriva contra estas publicações; silenciar o
+  // tique durante o engasgo trocaria um bug audível por um silencioso.
+  const posicoes = [42, 42, 42.5, 43];
+  const publicados = posicoes.map(
+    (positionSec) => planPositionHeartbeat({ playback: tocando(), player: engineBuffering(positionSec) }).publish,
+  );
+  assert.equal(publicados.filter(Boolean).length, posicoes.length);
+  assert.deepEqual(publicados.map((p) => p.positionSec), posicoes);
+});
+
+test('heartbeat: pausa deliberada do dono propaga na hora e o tique não a desfaz', () => {
+  // A pausa não passa pelo heartbeat: ela é publicada direto, com `playing`
+  // explícito, e chega a todos por `applyPlayback`.
+  const antes = { ...tocando(), receivedAt: 0 };
+  const pausa = sanitizePlayback({ ...antes, playing: false, version: antes.version + 1 }, { ownerId: 'peer-a' });
+  assert.equal(pausa.playing, false);
+  const naSala = applyPlayback(withEntries(createSession(), [entry({ id: 'e1' })]), pausa, 100);
+  assert.equal(naSala.playback.playing, false);
+  assert.equal(naSala.playback.version, antes.version + 1);
+  // E a partir daí o tique não republica nada: não há `playing: true` para
+  // ressuscitar a faixa por baixo do usuário.
+  assert.equal(planPositionHeartbeat({ playback: naSala.playback, player: engineBuffering(42) }).publish, null);
 });
