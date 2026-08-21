@@ -1,3 +1,252 @@
+# Progresso — WTK-MEET-14: recusar no ato link do YouTube que não pode ser incorporado
+
+**Status: implementação concluída e validada.** Branch
+`agent/wtk-meet-14-recusar-no-ato-links-do-youtube-que-n-o-`. Commit `c3a443b`
+(implementação + testes) e o commit de documentação que fecha a entrega.
+
+Documento de arquitetura seguido:
+`docs/agents/arch-temp-recusa-imediata-youtube-indisponivel.md`. **O DoD do
+board não conflitou com ele desta vez** — os dois pedem a mesma coisa, inclusive
+a pureza de `musicSources.js` (ao contrário da WTK-MEET-12, onde o DoD mandava
+`parseSource` fazer rede).
+
+## O problema
+
+`addToQueue` já fazia a requisição ao oEmbed do YouTube para trocar o
+`YouTube · <id>` pelo título de verdade — e jogava fora o **status** dessa
+resposta, que é justamente o que distingue "vídeo removido" de "incorporação
+bloqueada pelo dono" e de "o oEmbed não respondeu". `fetchYouTubeTitle` fazia
+`if (!response?.ok) return null`, colapsando tudo num `null` indistinguível de
+timeout. O diagnóstico era feito e descartado, e a sala só descobria o problema
+quando a faixa chegava a tocar — minutos e várias faixas depois de quem colou o
+link ter saído da tela de adicionar.
+
+## O que foi entregue
+
+- `client/src/lib/youtubePlayer.js` — `fetchYouTubeOEmbed` (nova, exportada)
+  devolve `{ title, availability, status }`, com o mapa explícito
+  `{401, 403} → 'embed-blocked'`, `404 → 'not-found'` e **todo o resto**
+  `'unknown'`. `fetchYouTubeTitle` virou envelope de duas linhas sobre ela, com
+  o contrato `string | null` que nunca lança **intacto**.
+- `client/src/lib/musicSources.js` — `resolveSourceTitle` virou
+  `resolveSourceMeta`, ainda **pura e por injeção**, devolvendo
+  `{ title, availability }`. Mais `REFUSAL_BY_AVAILABILITY` (a tabela do que
+  recusa) e duas mensagens novas em `SOURCE_ERRORS`.
+- `client/src/lib/useMusicRoom.js` — o segundo item do `Promise.all` passou a
+  resolver o par, e a recusa entrou **entre o `await` e o `bumpLamport`**.
+- `client/test/musicQueueRefusal.test.mjs` (novo) — a recusa exercitada no
+  `addToQueue` de verdade, com o hook rodando sob um dispatcher de teste.
+- `ARCHITECTURE.md` §6.9 — a recusa no ato, o mapa de status e o fail-open.
+
+## As três decisões que sustentam a entrega
+
+**Uma requisição, duas respostas.** O veredito sai da mesma chamada que já
+buscava o título. Uma sonda dedicada dobraria a exposição do IP do usuário à
+Google, dobraria a latência do enfileiramento e abriria a chance de as duas
+respostas discordarem. A promessa do §6.9 ("só quem enfileira fala com a
+Google") continua intacta: os outros participantes recebem o nome pelo data
+channel e não sondam nada.
+
+**Fail-open, por lista explícita.** Só 401, 403 e 404 recusam. 429, 5xx, 400,
+erro de rede, CORS, timeout, corpo que não é JSON, flag desligada e ambiente sem
+`fetch` viram `unknown`, e `unknown` enfileira. Classificar por `!response.ok`
+transformaria um rate-limit de sala movimentada em "ninguém consegue adicionar
+música" — um sintoma que ninguém rastrearia até aqui. O custo de um falso
+negativo é o comportamento de hoje; o de um falso positivo é um recurso quebrado
+sem caminho de contorno.
+
+**A rede não se mudou para `musicSources.js`.** O módulo puro continua sem
+import nenhum — nem de rede, nem de DOM —, e agora isso é **teste**, não
+convenção: um caso lê o arquivo, tira os comentários e falha se aparecer
+`import`, `fetch`, `document`, `window`, `navigator` ou `localStorage`.
+
+## A verificação de CORS (risco 7.1 do documento), com o resultado
+
+Era o risco que decidia se a feature entrega o efeito ou degrada para o
+comportamento atual: o navegador só expõe `response.status` ao JavaScript se a
+resposta trouxer `Access-Control-Allow-Origin`. **Verificado contra o oEmbed
+real em 2026-08-21**, com `Origin: https://meet.example.com`:
+
+| videoId | status | `access-control-allow-origin` |
+|---|---|---|
+| `dQw4w9WgXcQ` (tocável) | 200 | `https://meet.example.com` |
+| `M3fnZUuvJ2M`, `00000000000` (id bem formado, sem vídeo) | 404 | `https://meet.example.com` |
+| `zzzzzzzzzzz`, `A1b2C3d4E5f` (id malformado) | 400 | `https://meet.example.com` |
+
+O cabeçalho vem **também nas respostas de erro**, refletindo a origem — então o
+status chega legível ao JavaScript e a recusa dispara de verdade no navegador.
+O risco 7.1 está resolvido a favor da feature.
+
+Duas constatações que vieram junto, e que valem mais que o "verde":
+
+1. **O 400 existe e não estava previsto.** O oEmbed responde `400 Bad Request`
+   (texto puro, não JSON) para id de 11 caracteres cuja forma o YouTube rejeita
+   — o último caractere de um videoId real é restrito, e `zzzzzzzzzzz` não passa.
+   O documento manda 400 cair em `unknown`, e é o que acontece: esse link entra
+   na fila e falha na hora de tocar, como hoje. **Débito identificado, não
+   implementado** (está fora do escopo do documento): recusar 400 também
+   cobriria o link digitado errado, ao custo de estreitar o fail-open.
+2. **Não foi possível reproduzir 401/403 com um vídeo real** neste ambiente — os
+   12 candidatos de incorporação tipicamente restrita responderam 200. Esse ramo
+   está coberto só por teste unitário. A consequência é conhecida e está
+   documentada: **200 no oEmbed não garante incorporável**, e é por isso que
+   `handlePlayerError` continua obrigatório.
+
+## Verificação, critério a critério (os 15 ACs do documento)
+
+| # | Critério | Como foi verificado |
+|---|---|---|
+| 1 | 404 não enfileira, não envia `music-queue-add`, avisa | `musicQueueRefusal.test.mjs` AC1 — `false`, aviso, `sent === []`, fila vazia, 1 requisição |
+| 2 | 401/403 recusam com mensagem **diferente** | `musicQueueRefusal.test.mjs` AC2 — os dois status, e `notEqual` contra a mensagem do 404 |
+| 3 | `addToQueue` devolve `false`, texto preservado | AC1/AC2 devolvem `false`; `MusicPanel.jsx:49-57` só limpa o `draft` quando `onAdd` devolve verdadeiro (verificado por inspeção, sem alteração) |
+| 4 | Nada criado nem deixado para trás | `musicQueueRefusal.test.mjs` AC4 — `lamport` e `entries` idênticos, `deliveryHint` vazio |
+| 5 | Rede, timeout, 429, 5xx, não-JSON enfileiram com fallback | AC5 no hook (4 casos) e no `youtubePlayer.test.mjs` (7 casos + abort) |
+| 6 | Flag desligada: nenhuma requisição, nenhuma recusa por veredito | `youtubePlayer.test.mjs` AC6/AC7 — `fetchImpl` que falha se for chamado |
+| 7 | Sem `fetch` no ambiente, enfileira | mesmo caso, com `globalThis.fetch` removido |
+| 8 | Link válido enfileira com o título real | `musicQueueRefusal.test.mjs` AC8 — inclusive o `music-queue-add` enviado |
+| 9 | 200 sem título legível **enfileira** com fallback | AC9 no hook e AC8/AC9 no `youtubePlayer.test.mjs` (4 corpos diferentes) |
+| 10 | Uma requisição por link; nenhuma para os demais participantes | AC1 conta as chamadas; AC10 do `youtubePlayer.test.mjs`; quem recebe `music-queue-add` não chama nada (nenhum caminho novo foi adicionado ao receptor) |
+| 11 | `fetchYouTubeTitle` inalterada, suíte AC10 passa **sem edição** | os 28 casos originais de `youtubePlayer.test.mjs` não foram tocados e passam; mais o AC11 novo, sobre o envelope |
+| 12 | `musicSources.test.mjs` sem mock de `fetch` nem de DOM | nenhum mock no arquivo, e o caso de pureza afirma isso sobre o módulo |
+| 13 | Veredito nunca recusa origem que não seja YouTube | AC13 no hook (arquivo local com o oEmbed respondendo 404 o tempo todo) e o caso de arquivo/URL/lixo em `musicSources.test.mjs` |
+| 14 | A ordem de `addToQueue` é preservada | inspeção: a recusa lê só `parsed` e `meta` e não toca em `sessionRef`; a primeira leitura de `sessionRef.current` **destinada ao estado publicado** continua sendo a do `bumpLamport`, depois das duas esperas (as leituras de duplicata e limite, que já ficavam antes, não mudaram de lugar) |
+| 15 | Documentação | `ARCHITECTURE.md` §6.9 e este registro |
+
+## Verificação de QA, item a item do DoD do board (sessão de QA, independente)
+
+Rodada por uma **segunda sessão** (papel de QA), depois de a sessão de
+implementação declarar a entrega fechada. Os comandos foram reexecutados do
+zero, não herdados; as evidências abaixo são de leitura do código de teste, não
+do nome dos casos.
+
+| # | Item do DoD | Resultado | Evidência |
+|---|---|---|---|
+| 1 | Testes em `youtubePlayer.test.mjs` com fetch injetado cobrindo 200, 401, 403, 404 | **OK** | `AC1/AC2` percorre `[[404,'not-found'],[401,'embed-blocked'],[403,'embed-blocked']]` com `fetchImpl` injetado e compara o objeto inteiro por `deepEqual`; `AC8/AC9` cobre o 200 (com título e com quatro corpos sem título legível) |
+| 2 | Timeout/rejeição de rede vira `unknown` e **não** recusa | **OK** | `AC5 (unknown)` cobre 7 desfechos — 429, 503, 400, 302, `TypeError: Failed to fetch`, JSON inválido e resposta nula; `AC5 (timeout/abort)` aborta pelo `signal` e exige `{title:null, availability:'unknown', status:null}`; no hook, `AC5` prova que os mesmos casos **enfileiram** com título de fallback |
+| 3 | `addToQueue` devolve `false` + aviso específico para embed bloqueado e para vídeo removido | **OK** | `musicQueueRefusal.test.mjs` `AC1` (404 → `youtube-unavailable`) e `AC2` (401 **e** 403 → `youtube-embed-blocked`), ambos com `assert.equal(ok,false)`, `sent === []` e fila vazia. O `AC2` ainda exige `notEqual` contra a mensagem do 404 — as duas mensagens são provadamente distintas, não só existentes |
+| 4 | `musicSources.js` segue puro | **OK** | Caso de pureza lê o arquivo, remove comentários e reprova `import`, `fetch`, `XMLHttpRequest`, `document`, `window`, `navigator`, `localStorage`. Conferido também por `grep` direto no módulo: os únicos casamentos de `fetch`/`youtubePlayer` estão em comentário ou no **parâmetro injetado** `fetchMeta` |
+| 5 | `npm test --prefix client` inteiro, sem regressão em `musicSources` e `musicTransitions` | **OK** | **346/346, 0 falhas** nesta sessão. Os dois arquivos rodados isolados: **26/26**. Reforço estrutural: `musicTransitions.test.mjs` **não aparece** em `git diff --name-only main...HEAD` — passa intacto, então "sem regressão" não depende de o teste ter sido adaptado |
+| 6 | `npm run lint --prefix client` sem erros | **OK** | Reexecutado: exit 0, sem saída |
+| 7 | PR aberto explicando 401/403/404 x falha de rede | **OK** | PR **#16**, `open`, `agent/wtk-meet-14-...` → `main`, verificado pela API do GitHub. O corpo traz as duas seções nomeadas — *"Por que 401/403/404 recusam"* e *"Por que falha de rede NÃO recusa"* — com a assimetria de custo (falso negativo = comportamento de hoje; falso positivo = recurso quebrado sem contorno) |
+| 8 | Registro da verificação critério a critério no doc de progresso | **OK** | Os 15 ACs do documento de arquitetura estão na tabela acima; os 8 itens do DoD do board, nesta |
+
+### Ordem das esperas — reconferida por leitura, não por teste
+
+A restrição do enunciado (`useMusicRoom.js:699-707`) foi verificada no código
+entregue: as duas chamadas de rede saem juntas num `Promise.all`, e o bloco de
+recusa vive **entre** o `await` e o `bumpLamport`, decidindo só com `parsed` e o
+veredito — não lê `sessionRef.current`. As leituras de duplicata e de limite
+continuam onde já estavam (antes das esperas, como antes da task). Nenhum teste
+cobre essa ordem diretamente, e isso é uma limitação conhecida da suíte: o
+sintoma (faixa de outro participante sumindo) só aparece com concorrência real.
+
+### O que esta verificação NÃO prova
+
+- **CORS em navegador.** `fetchImpl` injetado não simula CORS. O teste do próprio
+  arquivo diz isso em comentário. A prova é a verificação manual contra o oEmbed
+  real (risco 7.1, tabela acima) — verde na suíte não é verde em produção.
+- **401/403 com vídeo real.** Não reproduzidos neste ambiente; o ramo está
+  coberto só por unitário com status injetado.
+- **O E2E não cobre a recusa** — exigiria um link real de vídeo indisponível.
+
+### Itens do DoD do board não puderam ser marcados como `checked`
+
+Confirmado nesta sessão, de forma independente: o `update_task` do MCP **não
+expõe** `definitionOfDone` (as propriedades são `title`, `description`,
+`priority`, `agentId`, `estimatedHours`, `scope`), `PATCH /api/tasks/:id`
+responde **403 Access denied** e `GET /api/tasks/:id` responde **404** (a rota
+não existe). Os 8 itens permanecem `checked: false` no board por limitação da
+ferramenta, **não** por falta de verificação — a evidência de cada um está na
+tabela acima e no `reason` do `move_task_forward`.
+
+## Terceira verificação, na entrega (sessão de Dev que move a task)
+
+Reexecutada do zero antes do `move_task_forward`, sem herdar número de ninguém.
+O que esta passada acrescenta às duas anteriores é a **leitura do diff de
+produção** (e não só da suíte) e a **prova de que a limitação do board é da
+ferramenta**, obtida por sonda em vez de por repetição do que estava escrito.
+
+| # | Item do DoD do board | Resultado | Evidência desta sessão |
+|---|---|---|---|
+| 1 | 200/401/403/404 com fetch injetado | **OK** | `youtubePlayer.test.mjs:750` percorre `[[404,'not-found'],[401,'embed-blocked'],[403,'embed-blocked']]` e compara o objeto inteiro com `deepEqual`; o 200 (com e sem título legível) sai do `AC8/AC9` |
+| 2 | Timeout/rejeição de rede → `unknown`, sem recusar | **OK** | `AC5 (unknown)` cobre 429, 503, 400, 302, `TypeError: Failed to fetch`, JSON inválido e resposta nula; `AC5 (timeout/abort)` aborta pelo `signal` e exige `{title:null, availability:'unknown', status:null}` |
+| 3 | `addToQueue` → `false` + aviso específico nos dois casos | **OK** | `musicQueueRefusal.test.mjs:146` (404 → `youtube-unavailable`) e `:161` (401 **e** 403 → `youtube-embed-blocked`), com `ok === false`, `sent === []` e fila vazia; o `notEqual` prova que as duas mensagens são distintas |
+| 4 | `musicSources.js` puro | **OK** | `musicSources.test.mjs:281` lê o arquivo, remove comentários e reprova `import`, `fetch`, `XMLHttpRequest`, `document`, `window`, `navigator`, `localStorage`. O parâmetro injetado `fetchMeta` não casa com `\bfetch\b` — a injeção sobrevive à guarda, que é o desenho |
+| 5 | Suíte inteira, sem regressão nos dois arquivos | **OK** | `npm test --prefix client` → **346/346, 0 falhas**; `node --test test/musicSources.test.mjs test/musicTransitions.test.mjs` → **26/26** |
+| 6 | Lint | **OK** | `npm run lint --prefix client` → exit 0, sem saída |
+| 7 | PR explicando a assimetria | **OK** | PR **#16** `open`, `agent/wtk-meet-14-…` → `main`, lido pela API do GitHub nesta sessão. O corpo traz *"Por que 401/403/404 recusam"* e *"Por que falha de rede NÃO recusa"* |
+| 8 | Registro critério a critério | **OK** | Os 15 ACs do documento e os 8 itens do board estão nas tabelas acima; esta é a terceira |
+
+### O diff de produção, lido (e não inferido da suíte)
+
+- `AVAILABILITY_BY_STATUS` é um `Map` de **três entradas** e o `default` é
+  `unknown` — o fail-open é estrutural, não um `if` que alguém pode inverter sem
+  perceber. O `catch` devolve `unknownMeta()` com o comentário do porquê.
+- `fetchYouTubeTitle` sobrevive como envelope de duas linhas, contrato
+  `string | null` intacto — os 28 casos originais passam **sem edição**.
+- `resolveSourceMeta` devolve `{title: fallback, availability: 'unknown'}` para
+  origem que não é YouTube e para buscador não injetado: arquivo e URL nunca
+  entram no caminho de recusa, por construção e não por teste.
+- Em `useMusicRoom.js`, o bloco de recusa fica **entre** o `await` do
+  `Promise.all` e o `bumpLamport`, lê só `parsed` e `meta.availability`, e não
+  toca em `sessionRef.current`. A ordem das esperas do `:699-707` está
+  preservada.
+
+### A limitação do board, provada por sonda
+
+Confirmado por experimento, não por repetição: `tools/list` mostra que
+`update_task` aceita exatamente `taskId`, `version`, `title`, `description`,
+`priority`, `agentId`, `estimatedHours`, `scope` — **sem** `definitionOfDone`.
+Uma chamada com o campo extra retorna **sucesso** e o descarta em silêncio (o
+DoD seguiu com os 8 itens originais e `checked: false`; só a `version` andou,
+23 → 24). `PATCH /api/tasks/:id` responde **403 Access denied**.
+
+Ou seja: os 8 itens ficam `checked: false` por **impossibilidade de escrita**,
+não por verificação faltando. A sonda foi não-destrutiva — vale registrar que
+ela *poderia* não ter sido, e que o campo foi reconferido logo depois.
+
+## Comandos e resultados
+
+```
+npm --prefix client test    # 346/346 (era 328/328 antes da task; +18 casos)
+npm --prefix client run lint  # limpo
+node e2e/run.mjs            # ver abaixo
+```
+
+**E2E: 111/112.** O bloco de música (N1–N10) passou inteiro — fila convergindo
+nos três participantes, áudio no quarto canal, pulo assumido pelos três,
+nenhuma mensagem de música no Socket.IO. A única falha é a **F4a**, que é
+regressão pré-existente e **não pertence a este diff** (o botão de avisos
+sonoros restaurado por engano na barra em `1baa707`; já registrada nas tasks
+anteriores).
+
+O E2E **não cobre** a recusa: exercitá-la exigiria um link real de vídeo
+indisponível e uma requisição à Google de dentro do teste. A cobertura dela é a
+unitária mais a verificação de CORS acima.
+
+## Nota de execução: duas sessões na mesma task, de novo
+
+Duas sessões foram atribuídas à WTK-MEET-14 e ao mesmo worktree. Resolvido por
+mensagem direta antes de qualquer escrita — esta sessão assumiu a implementação
+inteira, a outra parou sem ter tocado no tree. Vale continuar rodando
+`ListAgents` antes da primeira escrita.
+
+O `node_modules` não existia no worktree (nem em `client/`, `server/` ou `e2e/`),
+o que deixava 5 arquivos de teste vermelhos por dependência ausente — não por
+regressão. `npm install` nos três resolveu, e a linha de base antes de qualquer
+edição era 328/328.
+
+## Pendências
+
+Nenhuma para esta task. Dois pontos registrados acima que **não** são pendência
+desta entrega: o `400` do oEmbed caindo em `unknown` (débito identificado, fora
+do escopo do documento) e a F4a.
+
+**Atenção para quem for implementar a WTK-MEET-13** ("classificar o código de
+erro do YouTube e recuperar erro transitório"): ela mexe em `handlePlayerError`
+e em `youtubePlayer.js`, a mesma região deste diff. Este commit **não alterou**
+`handlePlayerError` de propósito — ele continua obrigatório, e o comentário novo
+em `addToQueue` diz por quê.
 # Progresso — WTK-MEET-15: pausa fantasma da sala durante buffering
 
 **Status: COMPLETED.** Branch

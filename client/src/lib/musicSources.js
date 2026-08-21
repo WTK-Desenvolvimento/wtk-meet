@@ -141,33 +141,57 @@ export function parseSource(raw, { allowYouTube = true } = {}) {
 }
 
 /**
- * Melhora o título de uma origem quando dá para descobrir o nome de verdade —
- * hoje, só YouTube, cujo `parseSource` só consegue devolver `YouTube · <id>`
- * sem sair da máquina.
+ * Vereditos de disponibilidade que uma origem pode ter. `unknown` é o padrão de
+ * tudo que não é prova — inclusive origem que não é YouTube, buscador não
+ * injetado e qualquer falha do buscador.
+ */
+export const AVAILABILITY = new Set(['ok', 'embed-blocked', 'not-found', 'unknown']);
+
+/**
+ * Qual veredito recusa a faixa, e com que mensagem. **Só dois**: os dois em que
+ * o vídeo provadamente não vai tocar.
+ *
+ * Mora aqui, e não em quem enfileira, para que "o que é recusável" seja uma
+ * tabela testável em `node:test` em vez de um `if` espalhado pelo hook — e para
+ * que `ok` e `unknown` sigam pelo mesmo caminho, que é entrar na fila.
+ */
+export const REFUSAL_BY_AVAILABILITY = {
+  'not-found': 'youtube-unavailable',
+  'embed-blocked': 'youtube-embed-blocked',
+};
+
+/**
+ * Descobre o que dá para saber sobre uma origem sem tocá-la: o título de
+ * verdade, que `parseSource` só consegue como `YouTube · <id>` sem sair da
+ * máquina, e se o vídeo é incorporável.
  *
  * **Assíncrona, mas ainda pura:** o buscador vem por parâmetro. Quem faz rede é
- * `fetchYouTubeTitle`, em `youtubePlayer.js` — o arquivo onde a dependência do
+ * `fetchYouTubeOEmbed`, em `youtubePlayer.js` — o arquivo onde a dependência do
  * terceiro está confinada e que a `VITE_ENABLE_YOUTUBE` desliga inteiro. Este
  * módulo continua sem DOM e sem rede, que é o que permite testá-lo com entrada
- * hostil em `node:test`.
+ * hostil em `node:test`; importar o buscador aqui, mesmo sem chamá-lo, já
+ * arrastaria a dependência e mataria essa garantia.
  *
- * A função **nunca falha e nunca demora a decidir**: qualquer erro, valor que
- * não é texto ou título vazio mantém o fallback. Enfileirar não pode depender de
- * um nome bonito.
+ * **Título e veredito são independentes.** Qualquer erro, valor que não é texto
+ * ou título vazio mantém o fallback — enfileirar nunca dependeu de um nome
+ * bonito — e um título ausente **não** vira veredito de indisponibilidade: quem
+ * decide isso é o status HTTP, lá onde ele existe.
  */
-export async function resolveSourceTitle(parsed, { fetchTitle } = {}) {
+export async function resolveSourceMeta(parsed, { fetchMeta } = {}) {
   const fallback = parsed?.title || 'Faixa';
-  if (!parsed?.ok || parsed.kind !== 'youtube') return fallback;
-  if (typeof fetchTitle !== 'function') return fallback;
+  const unresolved = { title: fallback, availability: 'unknown' };
+  if (!parsed?.ok || parsed.kind !== 'youtube') return unresolved;
+  if (typeof fetchMeta !== 'function') return unresolved;
 
   let resolved = null;
   try {
-    resolved = await fetchTitle(parsed.sourceRef);
+    resolved = await fetchMeta(parsed.sourceRef);
   } catch {
-    return fallback;
+    return unresolved;
   }
-  if (typeof resolved !== 'string') return fallback;
-  return clampTitle(resolved, fallback);
+  const availability = AVAILABILITY.has(resolved?.availability) ? resolved.availability : 'unknown';
+  const title = typeof resolved?.title === 'string' ? clampTitle(resolved.title, fallback) : fallback;
+  return { title, availability };
 }
 
 /** Entrada a partir de um `File` escolhido no disco. O arquivo nunca sai daqui. */
@@ -202,4 +226,9 @@ export const SOURCE_ERRORS = {
   'queue-full': 'A fila da sala está cheia.',
   'peer-limit': 'Você já tem o máximo de faixas na fila.',
   duplicate: 'Essa faixa já está na fila.',
+  // As duas recusas de disponibilidade do YouTube são mensagens separadas porque
+  // a saída do usuário é diferente: no primeiro caso o link está errado ou morto
+  // e há o que corrigir; no segundo o vídeo existe, mas insistir não adianta.
+  'youtube-unavailable': 'Esse vídeo foi removido, é privado ou não existe mais.',
+  'youtube-embed-blocked': 'O dono desse vídeo não deixa tocá-lo fora do YouTube.',
 };

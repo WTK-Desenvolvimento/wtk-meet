@@ -725,6 +725,166 @@ test('sem fetch no ambiente o título simplesmente não vem', async () => {
   }
 });
 
+// ------------------------------------------- oEmbed: o veredito de disponibilidade
+
+/**
+ * A mesma resposta, agora lida inteira.
+ *
+ * O status do oEmbed distingue o que o corpo não distingue — 401/403 é o dono
+ * que desabilitou a incorporação, 404 é vídeo removido, privado ou id que nunca
+ * existiu — e é isso que permite recusar o link **no instante em que a pessoa
+ * cola**, em vez de a sala descobrir quando a faixa chega a tocar.
+ *
+ * O que estes casos guardam é a assimetria: **só prova recusa**. Tudo que não é
+ * prova (429, 5xx, rede caída, CORS, abort, corpo que não é JSON, flag
+ * desligada, ambiente sem `fetch`) vira `unknown`, e `unknown` enfileira como
+ * sempre enfileirou. Um oEmbed fora do ar não pode virar "ninguém na sala
+ * consegue adicionar música".
+ *
+ * Aviso que a suíte não consegue dar sozinha: `fetchImpl` injetado **não
+ * simula CORS**. Se as respostas de erro do oEmbed vierem sem
+ * `Access-Control-Allow-Origin`, o navegador rejeita o `fetch` antes de haver
+ * status a ler e a recusa degrada para o comportamento de hoje — verde aqui não
+ * prova a feature em produção (risco 7.1 do documento).
+ */
+test('AC1/AC2. 404 é vídeo indisponível; 401 e 403 são incorporação bloqueada', async () => {
+  const { fetchYouTubeOEmbed } = await freshModule();
+  const responde = (status) => async () => ({ ok: false, status, json: async () => ({ title: 'não devia ser lido' }) });
+
+  for (const [status, availability] of [[404, 'not-found'], [401, 'embed-blocked'], [403, 'embed-blocked']]) {
+    const meta = await fetchYouTubeOEmbed('dQw4w9WgXcQ', { fetchImpl: responde(status) });
+    assert.deepEqual(meta, { title: null, availability, status }, String(status));
+  }
+});
+
+test('AC5. o que não é prova de indisponibilidade vira unknown, e unknown enfileira', async () => {
+  const { fetchYouTubeOEmbed } = await freshModule();
+
+  // 429 é rate-limit de sala movimentada e 5xx é a Google tendo um dia ruim:
+  // classificar por `!response.ok` transformaria os dois em "ninguém consegue
+  // adicionar música", com um sintoma que ninguém rastrearia até aqui.
+  const casos = {
+    'rate-limit': async () => ({ ok: false, status: 429, json: async () => ({}) }),
+    'erro da Google': async () => ({ ok: false, status: 503, json: async () => ({}) }),
+    'requisição malformada': async () => ({ ok: false, status: 400, json: async () => ({}) }),
+    'redirect estranho': async () => ({ ok: false, status: 302, json: async () => ({}) }),
+    'rede caída ou CORS': async () => {
+      throw new TypeError('Failed to fetch');
+    },
+    'resposta que não é JSON': async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('Unexpected token <');
+      },
+    }),
+    'sem resposta nenhuma': async () => null,
+  };
+
+  for (const [label, fetchImpl] of Object.entries(casos)) {
+    const meta = await fetchYouTubeOEmbed('dQw4w9WgXcQ', { fetchImpl });
+    assert.equal(meta.availability, 'unknown', label);
+    assert.equal(meta.title, null, label);
+  }
+});
+
+test('AC5. timeout e abort não recusam a faixa', async () => {
+  const { fetchYouTubeOEmbed } = await freshModule();
+  const outer = new AbortController();
+  // O prazo real é de 2,5s; abortar de fora exercita o mesmo caminho sem segurar
+  // a suíte por esse tempo.
+  const fetchImpl = (url, { signal }) =>
+    new Promise((_, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('AbortError')));
+    });
+
+  const pending = fetchYouTubeOEmbed('dQw4w9WgXcQ', { fetchImpl, signal: outer.signal });
+  outer.abort();
+
+  assert.deepEqual(await pending, { title: null, availability: 'unknown', status: null });
+});
+
+test('AC8/AC9. 200 devolve o título e o veredito ok — inclusive sem título legível', async () => {
+  const { fetchYouTubeOEmbed } = await freshModule();
+  const corpo = (json) => async () => ({ ok: true, status: 200, json: async () => json });
+
+  assert.deepEqual(await fetchYouTubeOEmbed('dQw4w9WgXcQ', { fetchImpl: corpo({ title: '  Never Gonna  ' }) }), {
+    title: 'Never Gonna',
+    availability: 'ok',
+    status: 200,
+  });
+
+  // Risco 7.2: derivar o veredito do título ("sem título, logo indisponível")
+  // recusaria um vídeo perfeitamente tocável. Os dois campos são independentes.
+  for (const json of [{ title: '   ' }, { title: 42 }, {}, null]) {
+    const meta = await fetchYouTubeOEmbed('dQw4w9WgXcQ', { fetchImpl: corpo(json) });
+    assert.deepEqual(meta, { title: null, availability: 'ok', status: 200 }, JSON.stringify(json));
+  }
+});
+
+test('AC10. uma requisição por link, e nenhuma quando não há o que perguntar', async () => {
+  const { fetchYouTubeOEmbed } = await freshModule();
+  const chamadas = [];
+  const fetchImpl = async (url) => {
+    chamadas.push(url);
+    return { ok: true, status: 200, json: async () => ({ title: 'Uma só' }) };
+  };
+
+  await fetchYouTubeOEmbed('dQw4w9WgXcQ', { fetchImpl });
+  assert.equal(chamadas.length, 1, 'o veredito e o título saem da mesma resposta');
+
+  const nunca = () => assert.fail('URL montada com lixo não pode sair daqui');
+  for (const bad of ['', 'curto', 'longo-demais-mesmo', '../../etc/passwd', null, 42]) {
+    const meta = await fetchYouTubeOEmbed(bad, { fetchImpl: nunca });
+    assert.deepEqual(meta, { title: null, availability: 'unknown', status: null }, JSON.stringify(bad));
+  }
+});
+
+test('AC6/AC7. com a flag desligada, ou sem fetch no ambiente, não há veredito nenhum', async () => {
+  const { fetchYouTubeOEmbed } = await freshModule();
+  const nunca = () => assert.fail('nenhuma requisição à Google com a flag desligada');
+
+  assert.deepEqual(await fetchYouTubeOEmbed('dQw4w9WgXcQ', { enabled: false, fetchImpl: nunca }), {
+    title: null,
+    availability: 'unknown',
+    status: null,
+  });
+
+  // Sem `fetchImpl` a função cai no `globalThis.fetch` — que **existe** neste
+  // node e alcança a internet de verdade. Tirá-lo do caminho é o que mantém a
+  // promessa do arquivo: nenhum caso desta suíte fala com a Google.
+  const original = globalThis.fetch;
+  delete globalThis.fetch;
+  try {
+    const meta = await fetchYouTubeOEmbed('dQw4w9WgXcQ', { enabled: true });
+    assert.equal(meta.availability, 'unknown');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('AC11. fetchYouTubeTitle continua sendo só o título, e continua não lançando', async () => {
+  const { fetchYouTubeTitle } = await freshModule();
+  const responde = (resposta) => async () => resposta;
+
+  assert.equal(
+    await fetchYouTubeTitle('dQw4w9WgXcQ', {
+      fetchImpl: responde({ ok: true, status: 200, json: async () => ({ title: 'Never Gonna' }) }),
+    }),
+    'Never Gonna',
+    'string quando há título',
+  );
+  // O envelope não deixa vazar o objeto: quem só quer o nome não desembrulha
+  // veredito nenhum, e um 404 vale o mesmo `null` de sempre para este chamador.
+  assert.equal(
+    await fetchYouTubeTitle('dQw4w9WgXcQ', {
+      fetchImpl: responde({ ok: false, status: 404, json: async () => ({}) }),
+    }),
+    null,
+    'null quando não há',
+  );
+});
+
 // -------------------------------------- classificação do erro e política
 
 /**

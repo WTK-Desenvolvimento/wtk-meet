@@ -14,7 +14,9 @@ const {
   parseFileSource,
   parseSource,
   parseYouTubeId,
-  resolveSourceTitle,
+  REFUSAL_BY_AVAILABILITY,
+  resolveSourceMeta,
+  SOURCE_ERRORS,
   titleFromFileName,
   titleFromUrl,
 } = await import('../src/lib/musicSources.js');
@@ -130,47 +132,90 @@ test('títulos são derivados sem baixar nada e ficam limitados', () => {
  * nome bonito**. Qualquer coisa que dê errado mantém o `YouTube · <id>` que o
  * `parseSource` já devolveu.
  */
-test('resolveSourceTitle troca o fallback pelo título real do vídeo', async () => {
+test('resolveSourceMeta troca o fallback pelo título real do vídeo', async () => {
   const parsed = parseSource('https://youtu.be/dQw4w9WgXcQ');
   assert.equal(parsed.title, 'YouTube · dQw4w9WgXcQ', 'sem rede, é só isto que dá para saber');
 
   const pedidos = [];
-  const title = await resolveSourceTitle(parsed, {
-    fetchTitle: async (videoId) => {
+  const meta = await resolveSourceMeta(parsed, {
+    fetchMeta: async (videoId) => {
       pedidos.push(videoId);
-      return 'Rick Astley - Never Gonna Give You Up';
+      return { title: 'Rick Astley - Never Gonna Give You Up', availability: 'ok', status: 200 };
     },
   });
 
-  assert.equal(title, 'Rick Astley - Never Gonna Give You Up');
+  assert.deepEqual(meta, { title: 'Rick Astley - Never Gonna Give You Up', availability: 'ok' });
   assert.deepEqual(pedidos, ['dQw4w9WgXcQ'], 'o buscador recebe o id, não a URL colada');
 });
 
-test('resolveSourceTitle mantém o fallback quando o título não vem', async () => {
+test('resolveSourceMeta mantém o fallback quando o título não vem', async () => {
   const parsed = parseSource('https://youtu.be/dQw4w9WgXcQ');
   const fallback = 'YouTube · dQw4w9WgXcQ';
 
   const casos = {
     'buscador devolve null (rede caída, CORS, timeout)': async () => null,
+    'sem título, veredito desconhecido': async () => ({ title: null, availability: 'unknown' }),
     'buscador estoura': async () => {
       throw new Error('Failed to fetch');
     },
-    'título vazio': async () => '   ',
-    'título que não é texto': async () => ({ title: 'objeto' }),
+    'título vazio': async () => ({ title: '   ', availability: 'ok' }),
+    'título que não é texto': async () => ({ title: 42, availability: 'ok' }),
     'buscador ausente': undefined,
   };
 
-  for (const [label, fetchTitle] of Object.entries(casos)) {
-    assert.equal(await resolveSourceTitle(parsed, { fetchTitle }), fallback, label);
+  for (const [label, fetchMeta] of Object.entries(casos)) {
+    assert.equal((await resolveSourceMeta(parsed, { fetchMeta })).title, fallback, label);
   }
-  assert.equal(await resolveSourceTitle(parsed), fallback, 'sem opções nenhuma');
+  assert.equal((await resolveSourceMeta(parsed)).title, fallback, 'sem opções nenhuma');
 });
 
-test('resolveSourceTitle recorta título longo demais e o resultado ainda é uma entrada válida', async () => {
+/**
+ * O veredito é **transportado, nunca inventado**. Quem sabe se o vídeo toca é o
+ * status HTTP do oEmbed, lá em `youtubePlayer.js`; aqui a única regra é não
+ * deixar passar um valor que não seja um dos quatro combinados — o que chega
+ * pelo buscador é, em última instância, resposta de terceiro.
+ */
+test('resolveSourceMeta propaga o veredito e cai em unknown para tudo que não é um deles', async () => {
+  const parsed = parseSource('https://youtu.be/dQw4w9WgXcQ');
+  const meta = (availability) => resolveSourceMeta(parsed, { fetchMeta: async () => ({ title: 'x', availability }) });
+
+  for (const veredito of ['ok', 'embed-blocked', 'not-found', 'unknown']) {
+    assert.equal((await meta(veredito)).availability, veredito, veredito);
+  }
+  for (const lixo of [undefined, null, '', 'OK', 'blocked', 404, {}]) {
+    assert.equal((await meta(lixo)).availability, 'unknown', JSON.stringify(lixo));
+  }
+  assert.equal(
+    (await resolveSourceMeta(parsed, {
+      fetchMeta: async () => {
+        throw new Error('Failed to fetch');
+      },
+    })).availability,
+    'unknown',
+    'buscador que estoura não prova nada sobre o vídeo',
+  );
+});
+
+/**
+ * Risco 7.2 do documento: título e veredito são independentes. Um 200 sem título
+ * legível é vídeo **tocável** sem nome bonito — derivar "sem título, logo
+ * indisponível" reintroduziria, do outro lado, o colapso de informação que esta
+ * task existe para desfazer.
+ */
+test('resolveSourceMeta não confunde "sem título" com "indisponível"', async () => {
+  const parsed = parseSource('https://youtu.be/dQw4w9WgXcQ');
+
+  const meta = await resolveSourceMeta(parsed, { fetchMeta: async () => ({ title: null, availability: 'ok' }) });
+
+  assert.deepEqual(meta, { title: 'YouTube · dQw4w9WgXcQ', availability: 'ok' });
+  assert.equal(REFUSAL_BY_AVAILABILITY[meta.availability], undefined, 'e isto não recusa nada');
+});
+
+test('resolveSourceMeta recorta título longo demais e o resultado ainda é uma entrada válida', async () => {
   const parsed = parseSource('https://youtu.be/dQw4w9WgXcQ');
   const enorme = `${'ção '.repeat(200)}fim`;
 
-  const title = await resolveSourceTitle(parsed, { fetchTitle: async () => enorme });
+  const { title } = await resolveSourceMeta(parsed, { fetchMeta: async () => ({ title: enorme, availability: 'ok' }) });
 
   assert.equal(title.length, MAX_TITLE, 'o teto é o mesmo do resto do módulo');
   // O que interessa é o efeito: o título recortado sobrevive ao `sanitizeEntry`
@@ -187,19 +232,61 @@ test('resolveSourceTitle recorta título longo demais e o resultado ainda é uma
   assert.equal(entry.title, title.trim());
 });
 
-test('resolveSourceTitle não busca nada para arquivo, URL ou origem recusada', async () => {
-  const nunca = () => assert.fail('só YouTube tem título a descobrir fora da máquina');
+test('resolveSourceMeta não busca nada para arquivo, URL ou origem recusada', async () => {
+  const nunca = () => assert.fail('só YouTube tem o que descobrir fora da máquina');
 
-  assert.equal(
-    await resolveSourceTitle(parseSource('https://cdn.example.com/musica-boa.mp3'), { fetchTitle: nunca }),
-    'musica-boa',
-  );
-  assert.equal(
-    await resolveSourceTitle(parseFileSource({ name: 'demo.mp3', type: 'audio/mpeg' }), { fetchTitle: nunca }),
-    'demo',
-  );
-  assert.equal(await resolveSourceTitle(parseSource('bagunça'), { fetchTitle: nunca }), 'Faixa');
-  assert.equal(await resolveSourceTitle(null, { fetchTitle: nunca }), 'Faixa');
+  const casos = [
+    [parseSource('https://cdn.example.com/musica-boa.mp3'), 'musica-boa'],
+    [parseFileSource({ name: 'demo.mp3', type: 'audio/mpeg' }), 'demo'],
+    [parseSource('bagunça'), 'Faixa'],
+    [null, 'Faixa'],
+  ];
+
+  for (const [parsed, title] of casos) {
+    // `unknown` e não `ok`: o veredito nunca foi consultado, e afirmar
+    // disponibilidade sem prova é tão errado quanto negá-la. O que importa é que
+    // nenhum dos dois recusa.
+    assert.deepEqual(await resolveSourceMeta(parsed, { fetchMeta: nunca }), { title, availability: 'unknown' });
+  }
+});
+
+/**
+ * A tabela que decide o que é recusável, e o motivo de ela morar aqui: as duas
+ * saídas do usuário são diferentes — no vídeo removido há o que corrigir, no
+ * bloqueado pelo dono não adianta insistir —, então as mensagens são duas.
+ */
+test('só os dois vereditos de prova recusam, e cada um com sua mensagem', () => {
+  assert.deepEqual(Object.keys(REFUSAL_BY_AVAILABILITY).sort(), ['embed-blocked', 'not-found']);
+  assert.equal(REFUSAL_BY_AVAILABILITY.ok, undefined, 'vídeo tocável entra na fila');
+  assert.equal(REFUSAL_BY_AVAILABILITY.unknown, undefined, 'fail-open: sem prova, entra na fila');
+
+  const removido = SOURCE_ERRORS[REFUSAL_BY_AVAILABILITY['not-found']];
+  const bloqueado = SOURCE_ERRORS[REFUSAL_BY_AVAILABILITY['embed-blocked']];
+  assert.ok(removido && bloqueado, 'toda recusa tem texto em SOURCE_ERRORS');
+  assert.notEqual(removido, bloqueado, 'a mesma mensagem para os dois casos devolveria a ambiguidade ao usuário');
+  assert.match(bloqueado, /YouTube/, 'o caminho de saída é dizer onde o vídeo toca');
+});
+
+/**
+ * A pureza deste módulo é a razão de ele existir separado: é ele que precisa
+ * valer para entrada hostil vinda do data channel, e entrada hostil se testa em
+ * `node:test`. Um `import` de `youtubePlayer.js` arrastaria a dependência do
+ * terceiro para cá mesmo sem ninguém chamá-la.
+ *
+ * O teste lê o arquivo em vez de exercitá-lo porque a ausência de rede não é
+ * observável por chamada: o `fetch` que não deve existir só apareceria em
+ * produção. Comentários saem antes da varredura — o que está sob exame é o
+ * código, e a prosa do arquivo fala de `fetchYouTubeOEmbed` de propósito.
+ */
+test('musicSources.js continua puro: sem rede, sem DOM, sem import de youtubePlayer.js', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('../src/lib/musicSources.js', import.meta.url), 'utf8');
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+
+  assert.equal(/\bimport\b/.test(code), false, 'o módulo não importa nada — nem estático, nem dinâmico');
+  for (const proibido of [/\bfetch\b/, /XMLHttpRequest/, /\bdocument\b/, /\bwindow\b/, /navigator/, /localStorage/]) {
+    assert.equal(proibido.test(code), false, String(proibido));
+  }
 });
 
 test('formatDuration cobre m:ss, h:mm:ss e desconhecido', () => {

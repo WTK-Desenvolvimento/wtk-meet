@@ -20,7 +20,12 @@
  */
 
 const API_SRC = 'https://www.youtube.com/iframe_api';
-/** oEmbed público: só o título do vídeo, sem chave e sem cookie. */
+/**
+ * oEmbed público, sem chave e sem cookie. **Serve a dois propósitos com uma
+ * requisição só:** o corpo dá o título (enfeite) e o status dá o veredito de
+ * disponibilidade (decisão de recusar o link no ato). Ver
+ * `fetchYouTubeOEmbed`.
+ */
 const OEMBED_SRC = 'https://www.youtube.com/oembed';
 /**
  * O título é enfeite; a faixa entra na fila com ou sem ele. Uma espera longa
@@ -80,27 +85,58 @@ export function loadYouTubeApi() {
 }
 
 /**
- * Título real do vídeo pelo endpoint oEmbed público — sem chave de API, sem
- * cookie, e só para quem **enfileira** a faixa (os outros participantes recebem
- * o nome pelo data channel, sem falar com a Google).
+ * Mapa de status do oEmbed para veredito de disponibilidade — **lista explícita,
+ * e só ela recusa**.
  *
- * Nunca lança e nunca é obrigatório: rede caída, CORS, resposta que não é JSON,
- * título vazio ou estouro do prazo devolvem `null`, e quem chama mantém o
- * `YouTube · <id>`. Um nome bonito não vale bloquear o enfileiramento.
+ * Trocar isto por `!response.ok` é a armadilha que o desenho evita: 429 é
+ * resposta comum de rate-limit numa sala movimentada e 5xx acontece, e os dois
+ * viram "ninguém consegue adicionar música" — um sintoma que ninguém rastreia
+ * até aqui. Tudo que não está nesta lista é `unknown`, e `unknown` enfileira.
+ */
+const AVAILABILITY_BY_STATUS = new Map([
+  [401, 'embed-blocked'], // o dono desabilitou a incorporação
+  [403, 'embed-blocked'],
+  [404, 'not-found'], // removido, privado, ou id que nunca existiu
+]);
+
+/** Nada foi provado sobre o vídeo: quem chama segue como seguia antes. */
+function unknownMeta() {
+  return { title: null, availability: 'unknown', status: null };
+}
+
+/**
+ * O oEmbed público — sem chave de API, sem cookie, e só para quem **enfileira**
+ * a faixa (os outros participantes recebem o nome pelo data channel, sem falar
+ * com a Google).
+ *
+ * **Uma requisição, duas respostas.** O corpo traz o título, que é enfeite; o
+ * status traz o veredito de disponibilidade, que é decisão — 401/403 dizem que o
+ * dono desabilitou a incorporação, 404 diz que o vídeo foi removido, é privado
+ * ou nunca existiu. Os dois saem da mesma resposta de propósito: sondar de novo
+ * dobraria a exposição do IP do usuário à Google e criaria a chance de as duas
+ * respostas discordarem.
+ *
+ * **Os dois campos são independentes.** Um 200 sem título legível é
+ * `{ title: null, availability: 'ok' }` — vídeo tocável sem nome bonito, não
+ * vídeo indisponível.
+ *
+ * Nunca lança: rede caída, CORS, corpo que não é JSON ou estouro do prazo
+ * devolvem `unknown`, e `unknown` deixa a faixa entrar na fila. Um oEmbed fora
+ * do ar não pode virar "ninguém na sala consegue adicionar música".
  *
  * A guarda de `isYouTubeEnabled()` é redundante com a de `parseSource` **de
  * propósito**: a promessa "nenhuma requisição à Google" tem que valer no ponto
  * onde a requisição nasceria, não só no chamador de hoje.
  */
-export async function fetchYouTubeTitle(videoId, { signal, fetchImpl, enabled = isYouTubeEnabled() } = {}) {
+export async function fetchYouTubeOEmbed(videoId, { signal, fetchImpl, enabled = isYouTubeEnabled() } = {}) {
   // `enabled` é a flag, e é parâmetro só porque `import.meta.env` não existe em
   // `node:test`: sem essa costura, "com a flag desligada nenhuma requisição
   // nasce" só seria verificável no navegador. O padrão continua sendo a flag.
-  if (!enabled) return null;
-  if (typeof videoId !== 'string' || !VIDEO_ID.test(videoId)) return null;
+  if (!enabled) return unknownMeta();
+  if (typeof videoId !== 'string' || !VIDEO_ID.test(videoId)) return unknownMeta();
 
   const doFetch = fetchImpl || (typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null);
-  if (!doFetch) return null;
+  if (!doFetch) return unknownMeta();
 
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
   const timer = controller ? setTimeout(() => controller.abort(), OEMBED_TIMEOUT_MS) : null;
@@ -115,16 +151,34 @@ export async function fetchYouTubeTitle(videoId, { signal, fetchImpl, enabled = 
       credentials: 'omit',
       referrerPolicy: 'no-referrer',
     });
-    if (!response?.ok) return null;
+    const status = typeof response?.status === 'number' ? response.status : null;
+    if (!response?.ok) {
+      return { title: null, availability: AVAILABILITY_BY_STATUS.get(status) || 'unknown', status };
+    }
     const data = await response.json();
     const title = typeof data?.title === 'string' ? data.title.trim() : '';
-    return title || null;
+    return { title: title || null, availability: 'ok', status };
   } catch {
-    return null;
+    // Rede, CORS, abort, JSON inválido: não houve prova nenhuma sobre o vídeo, e
+    // o que não é prova não recusa.
+    return unknownMeta();
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener?.('abort', abort);
   }
+}
+
+/**
+ * Só o título, para quem só quer o título.
+ *
+ * Envelope fino sobre `fetchYouTubeOEmbed`, e não uma função substituída: o
+ * contrato `string | null` que nunca lança já é consumido e testado, e mantê-lo
+ * evita obrigar todo chamador futuro a desembrulhar um objeto para pegar um
+ * nome. Um título bonito continua não valendo bloquear o enfileiramento.
+ */
+export async function fetchYouTubeTitle(videoId, options) {
+  const { title } = await fetchYouTubeOEmbed(videoId, options);
+  return title;
 }
 
 /**
@@ -160,11 +214,11 @@ const UNTITLED = 'A faixa';
  * vídeo que existe e toca — e não dizia o que ele podia fazer a respeito.
  */
 const YOUTUBE_ERROR_NOTICES = {
-  retry: (title) => `Falhou ao carregar “${title}”. Tentando de novo…`,
-  'invalid-id': (title) => `O link de “${title}” não é um vídeo válido do YouTube.`,
-  unavailable: (title) => `“${title}” não está mais disponível no YouTube (vídeo removido ou privado).`,
-  'not-embeddable': (title) => `O dono de “${title}” não permite tocar o vídeo fora do YouTube — só dá para ouvir lá.`,
-  generic: (title) => `Não consegui tocar “${title}” aqui.`,
+  retry: (title) => `Falhou ao carregar "${title}". Tentando de novo…`,
+  'invalid-id': (title) => `O link de "${title}" não é um vídeo válido do YouTube.`,
+  unavailable: (title) => `"${title}" não está mais disponível no YouTube (vídeo removido ou privado).`,
+  'not-embeddable': (title) => `O dono de "${title}" não permite tocar o vídeo fora do YouTube — só dá para ouvir lá.`,
+  generic: (title) => `Não consegui tocar "${title}" aqui.`,
 };
 
 /** O que este código de erro quer dizer, e dá para tentar de novo? */
@@ -236,6 +290,7 @@ function pageOrigin() {
   const origin = window.location?.origin;
   return typeof origin === 'string' && /^https?:\/\/./.test(origin) ? origin : null;
 }
+
 
 /**
  * Envelope fino sobre o player do YouTube, com a mesma superfície do
