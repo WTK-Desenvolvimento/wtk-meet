@@ -883,6 +883,8 @@ test('AC11. fetchYouTubeTitle continua sendo só o título, e continua não lan�
     null,
     'null quando não há',
   );
+});
+
 // -------------------------------------- classificação do erro e política
 
 /**
