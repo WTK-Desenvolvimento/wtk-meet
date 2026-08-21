@@ -1353,6 +1353,21 @@ export default function Room() {
           )}
         </div>
 
+        {music.currentEntry && !musicOpen && (
+          <div
+            className="now-playing-bar"
+            onClick={toggleMusic}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => e.key === 'Enter' && toggleMusic()}
+            title={music.currentEntry.title}
+          >
+            <span className="now-playing-label">Tocando</span>
+            <span className="now-playing-title">{music.currentEntry.title}</span>
+            {music.playback.playing && <span className="now-playing-pulse" aria-hidden="true" />}
+          </div>
+        )}
+
         <div className="controls">
           <button onClick={toggleMute}>{muted ? 'Ativar mic' : 'Silenciar'}</button>
           <button onClick={toggleCamera}>{cameraOff ? 'Ativar câmera' : 'Desligar câmera'}</button>
@@ -1367,15 +1382,20 @@ export default function Room() {
               `textContent` exato de botões desta barra. */}
           <button
             onClick={toggleMusic}
-            className="music-button"
+            className={`music-button${music.currentEntry ? ' has-track' : ''}`}
             aria-pressed={musicOpen}
             title={
-              music.enabled
-                ? 'Fila de música da sala'
-                : 'Propor à sala ligar o player de música'
+              music.currentEntry
+                ? music.currentEntry.title
+                : music.enabled
+                  ? 'Fila de música da sala'
+                  : 'Propor à sala ligar o player de música'
             }
           >
             Música
+            {music.currentEntry && (
+              <span className="music-button-track">{music.currentEntry.title}</span>
+            )}
           </button>
           <button
             onClick={() => savePreferences({ soundsEnabled: !soundsEnabled })}

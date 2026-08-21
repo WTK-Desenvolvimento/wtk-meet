@@ -685,6 +685,69 @@ button.thumb-item.spotlighted .video-tile {
   text-align: center;
 }
 
+/* Botão de música com título da faixa */
+.music-button {
+  position: relative;
+}
+.music-button.has-track {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+}
+.music-button-track {
+  display: block;
+  max-width: 10rem;
+  font-size: 0.65rem;
+  opacity: 0.8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Indicador flutuante de "tocando agora" */
+.now-playing-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  justify-content: center;
+  padding: 0.3rem 1rem;
+  background: var(--card-bg, #23272e);
+  border-radius: 999px;
+  cursor: pointer;
+  align-self: center;
+  max-width: 28rem;
+  overflow: hidden;
+}
+.now-playing-bar:hover {
+  opacity: 0.85;
+}
+.now-playing-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent, #5b8def);
+  flex-shrink: 0;
+}
+.now-playing-title {
+  font-size: 0.8rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.now-playing-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent, #5b8def);
+  flex-shrink: 0;
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 /* Linha única de altura previsível: com a URL quebrando em 3–4 linhas, esta
    faixa roubava altura do palco a cada resize. A URL inteira continua acessível
    pelo `title` do parágrafo. */
