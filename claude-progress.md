@@ -112,6 +112,53 @@ Duas constatações que vieram junto, e que valem mais que o "verde":
 | 14 | A ordem de `addToQueue` é preservada | inspeção: a recusa lê só `parsed` e `meta` e não toca em `sessionRef`; a primeira leitura de `sessionRef.current` **destinada ao estado publicado** continua sendo a do `bumpLamport`, depois das duas esperas (as leituras de duplicata e limite, que já ficavam antes, não mudaram de lugar) |
 | 15 | Documentação | `ARCHITECTURE.md` §6.9 e este registro |
 
+## Verificação de QA, item a item do DoD do board (sessão de QA, independente)
+
+Rodada por uma **segunda sessão** (papel de QA), depois de a sessão de
+implementação declarar a entrega fechada. Os comandos foram reexecutados do
+zero, não herdados; as evidências abaixo são de leitura do código de teste, não
+do nome dos casos.
+
+| # | Item do DoD | Resultado | Evidência |
+|---|---|---|---|
+| 1 | Testes em `youtubePlayer.test.mjs` com fetch injetado cobrindo 200, 401, 403, 404 | **OK** | `AC1/AC2` percorre `[[404,'not-found'],[401,'embed-blocked'],[403,'embed-blocked']]` com `fetchImpl` injetado e compara o objeto inteiro por `deepEqual`; `AC8/AC9` cobre o 200 (com título e com quatro corpos sem título legível) |
+| 2 | Timeout/rejeição de rede vira `unknown` e **não** recusa | **OK** | `AC5 (unknown)` cobre 7 desfechos — 429, 503, 400, 302, `TypeError: Failed to fetch`, JSON inválido e resposta nula; `AC5 (timeout/abort)` aborta pelo `signal` e exige `{title:null, availability:'unknown', status:null}`; no hook, `AC5` prova que os mesmos casos **enfileiram** com título de fallback |
+| 3 | `addToQueue` devolve `false` + aviso específico para embed bloqueado e para vídeo removido | **OK** | `musicQueueRefusal.test.mjs` `AC1` (404 → `youtube-unavailable`) e `AC2` (401 **e** 403 → `youtube-embed-blocked`), ambos com `assert.equal(ok,false)`, `sent === []` e fila vazia. O `AC2` ainda exige `notEqual` contra a mensagem do 404 — as duas mensagens são provadamente distintas, não só existentes |
+| 4 | `musicSources.js` segue puro | **OK** | Caso de pureza lê o arquivo, remove comentários e reprova `import`, `fetch`, `XMLHttpRequest`, `document`, `window`, `navigator`, `localStorage`. Conferido também por `grep` direto no módulo: os únicos casamentos de `fetch`/`youtubePlayer` estão em comentário ou no **parâmetro injetado** `fetchMeta` |
+| 5 | `npm test --prefix client` inteiro, sem regressão em `musicSources` e `musicTransitions` | **OK** | **346/346, 0 falhas** nesta sessão. Os dois arquivos rodados isolados: **26/26**. Reforço estrutural: `musicTransitions.test.mjs` **não aparece** em `git diff --name-only main...HEAD` — passa intacto, então "sem regressão" não depende de o teste ter sido adaptado |
+| 6 | `npm run lint --prefix client` sem erros | **OK** | Reexecutado: exit 0, sem saída |
+| 7 | PR aberto explicando 401/403/404 x falha de rede | **OK** | PR **#16**, `open`, `agent/wtk-meet-14-...` → `main`, verificado pela API do GitHub. O corpo traz as duas seções nomeadas — *"Por que 401/403/404 recusam"* e *"Por que falha de rede NÃO recusa"* — com a assimetria de custo (falso negativo = comportamento de hoje; falso positivo = recurso quebrado sem contorno) |
+| 8 | Registro da verificação critério a critério no doc de progresso | **OK** | Os 15 ACs do documento de arquitetura estão na tabela acima; os 8 itens do DoD do board, nesta |
+
+### Ordem das esperas — reconferida por leitura, não por teste
+
+A restrição do enunciado (`useMusicRoom.js:699-707`) foi verificada no código
+entregue: as duas chamadas de rede saem juntas num `Promise.all`, e o bloco de
+recusa vive **entre** o `await` e o `bumpLamport`, decidindo só com `parsed` e o
+veredito — não lê `sessionRef.current`. As leituras de duplicata e de limite
+continuam onde já estavam (antes das esperas, como antes da task). Nenhum teste
+cobre essa ordem diretamente, e isso é uma limitação conhecida da suíte: o
+sintoma (faixa de outro participante sumindo) só aparece com concorrência real.
+
+### O que esta verificação NÃO prova
+
+- **CORS em navegador.** `fetchImpl` injetado não simula CORS. O teste do próprio
+  arquivo diz isso em comentário. A prova é a verificação manual contra o oEmbed
+  real (risco 7.1, tabela acima) — verde na suíte não é verde em produção.
+- **401/403 com vídeo real.** Não reproduzidos neste ambiente; o ramo está
+  coberto só por unitário com status injetado.
+- **O E2E não cobre a recusa** — exigiria um link real de vídeo indisponível.
+
+### Itens do DoD do board não puderam ser marcados como `checked`
+
+Confirmado nesta sessão, de forma independente: o `update_task` do MCP **não
+expõe** `definitionOfDone` (as propriedades são `title`, `description`,
+`priority`, `agentId`, `estimatedHours`, `scope`), `PATCH /api/tasks/:id`
+responde **403 Access denied** e `GET /api/tasks/:id` responde **404** (a rota
+não existe). Os 8 itens permanecem `checked: false` no board por limitação da
+ferramenta, **não** por falta de verificação — a evidência de cada um está na
+tabela acima e no `reason` do `move_task_forward`.
+
 ## Comandos e resultados
 
 ```
