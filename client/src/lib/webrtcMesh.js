@@ -58,6 +58,16 @@ const POLITE_RESTART_VALVE_MS = 15_000;
 const VERIFY_DELAYS_MS = [750, 2_000, 5_000];
 
 /**
+ * Janela de coalescência das respostas a `state-request`.
+ *
+ * A mensagem é idempotente e barata, mas responder a cada pedido sem janela abre
+ * a porta para amplificação numa sala que oscila. Um segundo é longo o bastante
+ * para absorver uma rajada e curto o bastante para que um pedido legítimo depois
+ * de uma reconexão seja atendido na hora.
+ */
+const STATE_REQUEST_COALESCE_MS = 1_000;
+
+/**
  * Full-mesh WebRTC: one RTCPeerConnection per remote peer, capped by the
  * room's MAX_PARTICIPANTS on the signaling side. Media never routes through
  * the signaling server — this class only uses it to relay SDP/ICE.
@@ -298,6 +308,7 @@ export class WebRTCMesh {
       politeValveTimer: null,
       verifyTimer: null,
       verifyAttempts: 0,
+      lastStateRequestAt: -Infinity,
       candidateQueue: [],
       // Serializa o tratamento de sinais: setRemoteDescription/setLocalDescription
       // não podem interleavar, ou o signalingState visto pelo perfect negotiation
@@ -348,12 +359,10 @@ export class WebRTCMesh {
     });
     rec.channel.onopen = () => {
       // Ao abrir, cada lado anuncia seu estado atual para o outro não começar
-      // com uma grade desatualizada (ex.: alguém já compartilhando tela).
-      this._send(rec, { type: 'state', ...this.localState });
-      // …e o estado musical inteiro, que é o que faz quem entra no meio de uma
-      // faixa ver a mesma fila e entrar na música em andamento, não do começo.
-      const snapshot = this.getMusicSnapshot?.();
-      if (snapshot) this._send(rec, snapshotMessage(snapshot));
+      // com uma grade desatualizada (ex.: alguém já compartilhando tela) — e
+      // pede o do outro, para o caso de o `onopen` de lá não ter corrido.
+      this._announceState(rec);
+      this._send(rec, { type: 'state-request' });
     };
     rec.channel.onmessage = (event) => this._handleChannelMessage(rec, event.data);
     rec.channel.onerror = (event) => {
@@ -528,9 +537,17 @@ export class WebRTCMesh {
 
   /** Voltou a `connected`: zera o orçamento de tentativas e desarma tudo. */
   _onPeerRecovered(rec) {
+    const vinhaDeRecuperacao = rec.recoveryAttempts > 0 || rec.recoveryTimer !== null;
+
     this._clearPeerTimers(rec);
     rec.recoveryAttempts = 0;
     rec.recoveryExhausted = false;
+
+    // Uma conexão que se reconstruiu precisa ter o estado reafirmado, ou o par
+    // volta com áudio e sem a tela: a track de tela chega vazia desde a
+    // negociação inicial, e é o `state` que diz se há imagem nela. Só para este
+    // par, e só na borda de subida — não em toda transição.
+    if (vinhaDeRecuperacao) this._announceState(rec);
   }
 
   _clearPeerTimers(rec) {
@@ -901,6 +918,25 @@ export class WebRTCMesh {
     }
   }
 
+  /**
+   * Anuncia o estado corrente **para um par só**, com o snapshot musical junto.
+   *
+   * É a mesma dupla de mensagens do `channel.onopen`, e é o que se reenvia em
+   * transição: canal que abriu, `state-request` recebido, conexão que voltou de
+   * uma recuperação. Nunca `broadcast` — a diferença entre responder a um pedido
+   * com 1 mensagem e com N é a diferença entre correção e amplificação numa sala
+   * que está oscilando. (`setLocalState` usa broadcast e serve de modelo visual
+   * enganoso aqui: lá o destino é a sala inteira porque a mudança é de fato de
+   * todos.)
+   */
+  _announceState(rec) {
+    this._send(rec, { type: 'state', ...this.localState });
+    // …e o estado musical inteiro, que é o que faz quem entra no meio de uma
+    // faixa ver a mesma fila e entrar na música em andamento, não do começo.
+    const snapshot = this.getMusicSnapshot?.();
+    if (snapshot) this._send(rec, snapshotMessage(snapshot));
+  }
+
   /** Envia para todos os peers com canal aberto. Retorna quantos receberam. */
   broadcast(payload) {
     let delivered = 0;
@@ -932,6 +968,30 @@ export class WebRTCMesh {
     // aqui (ver a regra de identidade em `lib/musicProtocol.js`).
     if (isMusicMessage(payload)) {
       this.onMusicMessage?.(rec.peerId, payload);
+      return;
+    }
+
+    /**
+     * "Me diga seu estado."
+     *
+     * Existe porque o `state` era enviado **uma vez**, no `onopen`, e nada o
+     * reafirmava. O `onopen` já manda o estado inteiro (não um delta), então
+     * quem entra no meio de um compartilhamento vê a tela — esse caminho já
+     * estava certo. O que faltava era a assimetria: se por qualquer motivo um
+     * dos dois `onopen` correu e o outro não, aquele lado ficava sem a tela
+     * **para sempre**, com a track chegando normalmente, porque a imagem só
+     * aparece quando `ontrack` e `screenOn` coincidem.
+     *
+     * Um pedido no `onopen` fecha isso com uma mensagem por par e zero tráfego
+     * em regime permanente — em vez de um reenvio periódico, que numa sala de 6
+     * custaria 5 mensagens por aba por intervalo, para sempre, para corrigir um
+     * evento que acontece em transições discretas.
+     */
+    if (payload.type === 'state-request') {
+      const agora = Date.now();
+      if (agora - rec.lastStateRequestAt < STATE_REQUEST_COALESCE_MS) return;
+      rec.lastStateRequestAt = agora;
+      this._announceState(rec);
       return;
     }
 

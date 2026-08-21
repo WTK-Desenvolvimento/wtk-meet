@@ -348,8 +348,11 @@ test('quem entra recebe o estado musical inteiro assim que o canal abre', async 
 
   rec.channel.onopen();
 
-  assert.equal(rec.channel.sent.length, 2, 'estado da grade e estado da música');
-  assert.equal(rec.channel.sent[0].type, 'state');
+  assert.deepEqual(
+    rec.channel.sent.map((payload) => payload.type),
+    ['state', 'music-snapshot', 'state-request'],
+    'estado da grade, estado da música e o pedido do estado do outro lado',
+  );
   const sent = rec.channel.sent[1];
   assert.equal(sent.type, 'music-snapshot');
   assert.equal(sent.lamport, 7);
@@ -358,14 +361,14 @@ test('quem entra recebe o estado musical inteiro assim que o canal abre', async 
   assert.equal(sent.playback.positionSec, 42, 'sem a posição, quem entra ouve a faixa do início');
 });
 
-test('sem estado musical, o canal abre mandando só o estado da grade', async () => {
+test('sem estado musical, o canal abre mandando o estado da grade e o pedido', async () => {
   const { rec } = await meshWithPeer({ getMusicSnapshot: () => null });
 
   rec.channel.onopen();
 
   assert.deepEqual(
     rec.channel.sent.map((payload) => payload.type),
-    ['state'],
+    ['state', 'state-request'],
   );
 });
 
