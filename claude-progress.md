@@ -1,3 +1,132 @@
+# Progresso — WTK-MEET-13: classificar o erro do YouTube e recuperar falha transitória
+
+**Status: implementação concluída.** Branch
+`agent/wtk-meet-13-classificar-o-c-digo-de-erro-do-youtube-`. Commits `f7affb9`
+(funções puras, `playerVars`, payload em objeto e migração dos testes) e
+`d109149` (hook: handler, retentativa, contador, janela de silêncio).
+
+Documento de arquitetura seguido:
+`docs/agents/arch-temp-erro-youtube-classificado-e-retry.md`. **Sem divergência
+com o DoD do board desta vez** — depois de três tasks seguidas com contradição
+(WTK-MEET-10, 11 e 12), os oito itens do DoD e o documento pedem a mesma coisa.
+
+## O problema, na ordem em que ele acontecia
+
+1. `youtubePlayer.js` emitia `this.onError?.('youtube-error', event?.data)` — o
+   segundo argumento é o **código numérico** da IFrame API.
+2. `useMusicRoom.js` declarava `handlePlayerError(code, entryId)` e fazia
+   `typeof entryId === 'string' ? entryId : playback.entryId`. O código é número:
+   reprovava na guarda, caía no fallback, e **nunca era lido, logado ou usado**.
+3. Logo, todo erro recebia o mesmo tratamento — aviso genérico "vídeo
+   indisponível ou sem incorporação" e `advanceFrom(id, 'error')`, que tira a
+   faixa da fila da **sala inteira**. Um soluço momentâneo do player custava a
+   faixa para todo mundo, sem uma única tentativa de recuperação; e como o erro 5
+   e o 153 são justamente os que aparecem "às vezes", eles explicam o caráter
+   intermitente do relato original ("toca 2 segundos e pula sozinha").
+
+## O que foi entregue
+
+- **`classifyYouTubeError(code)`** (`youtubePlayer.js`, puro e exportado):
+  2 → `invalid-id`, 5 → `html5`, 100 → `unavailable`, 101/150 →
+  `not-embeddable`, 153 → `referrer`, resto → `unknown`. **Só 5 e 153 são
+  transitórios.** `unknown` é deliberadamente permanente: sem evidência de que
+  recarregar ajuda, o conservador é o comportamento de hoje, e o código cru
+  sobrevive no retorno para poder ser logado e reclassificado depois.
+- **`planYouTubeError({ code, entryId, title, isOwner, attempts })`** (puro):
+  devolve `{ kind, code, action, notice, attempts }` com
+  `action ∈ retry | skip | notice-only`. `isOwner` e o contador **entram** como
+  argumento — é isso que torna "não-dono nunca pula" e "nunca há duas
+  retentativas" asserção de teste em vez de leitura de código.
+- **Cinco mensagens pt-BR distintas**, uma por classe, com o título embutido e
+  degradação para "A faixa" quando ele não existe.
+- **`playerVars`** ganha `enablejsapi: 1` e `origin` derivado de
+  `window.location`, omitido quando não há origem `http`/`https` real.
+- **Payload de erro em objeto nos dois tocadores** — os seis pontos de emissão
+  (`youtubePlayer.js` + os cinco do `musicEngine.js`) migraram juntos.
+- **Hook:** `handlePlayerError` consome o objeto, resolve o `entryId` pelo
+  `videoId` do evento, loga `console.warn` com contexto, executa a decisão;
+  retentativa única com timer cancelável, contador `{ entryId, count }` e janela
+  de silêncio de publicação.
+
+## As três armadilhas do caminho "óbvio", e por que ele foi evitado
+
+1. **Recarga infinita pelo heartbeat.** Zerar `loadedRef` e deixar
+   `reconcilePlayback` recarregar parece o caminho limpo — e é um laço: o dono
+   republica posição a cada 5s, cada republicação incrementa `playback.version`,
+   e `version` está nas dependências do efeito de reconciliação. O peer que
+   falhou recarregaria o vídeo **a cada 5 segundos, para sempre** — exatamente o
+   laço que o `scope` 4 proíbe, entrando por uma porta lateral. A retentativa
+   chama `load()` direto no envelope e não toca em `loadedRef`.
+2. **`playing: false` publicado durante o erro.** Um `YT.Player` que acabou de
+   errar responde `getPlayerState() !== 1` e posição congelada. Publicar isso é
+   anunciar "pausado" como estado autoritativo para a sala inteira — a mesma
+   falha que a WTK-MEET-12 corrigiu. `player.loading` cobre só o `load()`; a
+   janela entre o erro e o disparo da recarga ficava descoberta, e é por isso que
+   existe o `recoveringRef`.
+3. **Retentativa que carrega a faixa errada.** Agendada na faixa A, disparada
+   depois de a B entrar, ela tocaria o vídeo A por cima do B. O timer é
+   cancelado na troca de faixa e no desmonte, e o disparo reconfere `entryId`
+   antes e `entryId` + `loadTokenRef` **depois** do await. A `generation` do
+   envelope não bastaria: ela protege contra evento *de* player velho, não contra
+   um `load()` novo pedindo o vídeo velho.
+
+## Verificação critério a critério — DoD do board
+
+| # | Critério | Situação |
+|---|---|---|
+| 1 | Testes em `youtubePlayer.test.mjs`: propagação do código, pulo imediato para 2/100/101/150, retry único para 5/153, sem laço quando a retentativa falha | ✅ **com uma ressalva declarada abaixo** — AC1 (payload com código e `videoId`), AC3 (pulo por código permanente), AC4 (retry único), AC5 (varredura fechada provando que nenhuma combinação devolve `retry` com contador ≥ 1) |
+| 2 | A retentativa não chama `advanceFrom` quando o peer não é dono | ✅ AC6: varredura de 11 códigos × 4 contadores × 5 títulos, nenhuma produz `skip` com `isOwner: false` |
+| 3 | O contador zera ao trocar de `entryId` | ✅ AC7 |
+| 4 | `npm test --prefix client` passa inteiro | ✅ **339/339**, 0 falhas |
+| 5 | `npm run lint --prefix client` sem erros | ✅ saída limpa |
+| 6 | Mensagens pt-BR distintas por classe, verificadas em teste | ✅ AC8: as cinco são distintas (`new Set(...).size === 5`), todas com o título, e nenhuma imprime `undefined` quando ele falta |
+| 7 | PR descrevendo causa raiz e a tabela de códigos | ✅ ver abaixo |
+| 8 | Registro critério a critério no doc de progresso | ✅ este bloco |
+
+**A ressalva do DoD 1, dita com todas as letras.** "Propagação do código até o
+handler" está coberta **até a fronteira do callback**: o teste AC1 prova que o
+envelope entrega `{ reason, code, videoId }` com o código intacto, e os testes
+AC2–AC8 provam a decisão inteira que o handler toma com ele. O que **não** está
+coberto por `node:test` é o corpo do handler dentro do hook — chamar
+`showNotice`, `advanceFrom` e `player.load`. `useMusicRoom.js` é um hook React e
+o client não tem test renderer nas devDependencies (`npm test` é `node --test`;
+os dois testes que usam React usam `react-dom/server`, que não roda efeitos). Foi
+por isso que a política inteira saiu do hook e virou função pura no módulo: é a
+única forma de a regra ficar verificável neste projeto. A camada que sobrou no
+hook é deliberadamente fina e sem ramificação própria.
+
+## Verificação critério a critério — `scope` do card
+
+| # | Item do `scope` | Situação |
+|---|---|---|
+| 1 | `handlePlayerError` recebe e usa o código; de preferência via objeto | ✅ objeto `{ reason, code, entryId, videoId }` nos dois tocadores |
+| 2 | 2/100/101/150 pulam na hora, com mensagem específica; 101/150 diz que não toca fora do YouTube | ✅ AC3 |
+| 3 | 5/153 disparam **uma** tentativa de recarga na posição corrente; falhando, pulam com mensagem genérica | ✅ AC4/AC5 + `retryCurrentYouTube` |
+| 4 | Contador por `entryId`; trocar de faixa zera; sem laço infinito | ✅ AC5/AC7 |
+| 5 | Retentativa em cada peer; `advanceFrom` atrás de `isOwner()` | ✅ AC6 no puro, e no hook `skip` é o único ramo que chama `advanceFrom` |
+| 6 | `playerVars` com `origin` e `enablejsapi`, com guarda para ambiente sem `window` | ✅ AC9 (cinco ambientes sem origem válida, nenhum estoura) |
+| 7 | Código do erro no `console.warn` com contexto | ✅ `[music] erro do player YouTube:` com `videoId`, `entryId`, `code`, `kind` e `action` |
+| 8 | Fora do escopo: validação do link antes da fila e o buffering do heartbeat | ✅ nada disso foi tocado (WTK-MEET-14 e WTK-MEET-15) |
+
+## A hipótese do `origin` continua uma hipótese
+
+`origin` e `enablejsapi` entraram por **conformidade com a API documentada**, não
+como correção confirmada do 153. A ausência de `origin` é causa conhecida de erro
+de referrer intermitente, o que bate com o "às vezes" do relato — mas o que fecha
+esse diagnóstico é o `console.warn` que esta entrega acrescenta. Se o sintoma
+reaparecer, o código no log diz qual dos dois caminhos investigar.
+
+## Débito identificado, não corrigido
+
+- **A camada de ação do hook não tem cobertura automatizada** (acima). Fechá-la
+  exigiria `@testing-library/react` + `jsdom` nas devDependencies — decisão de
+  dependência, que o escopo desta task não autoriza. Registrado aqui para quem
+  decidir.
+- **Um vídeo que nunca pode ser incorporado continua entrando na fila** e só
+  falha na hora de tocar. É a WTK-MEET-14, e não foi antecipada aqui de propósito.
+
+---
+
 # Progresso — WTK-MEET-11: supressão de ruído client-side com toggle
 
 **Status: implementação concluída e validada, com uma falha de E2E alheia à task
