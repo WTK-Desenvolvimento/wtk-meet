@@ -3,7 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import { Server } from 'socket.io';
 import { RoomStore, MAX_PARTICIPANTS } from './rooms.js';
-import { fetchCloudflareIceServers } from './turnCredentials.js';
+import { fetchCloudflareIceServers, isTurnConfigured } from './turnCredentials.js';
 import 'dotenv/config';
 
 const PORT = process.env.PORT || 4000;
@@ -13,16 +13,47 @@ const corsOrigin = allowedOrigins.length === 1 ? allowedOrigins[0] : allowedOrig
 
 const app = express();
 app.use(cors({ origin: corsOrigin }));
-app.get('/health', (_req, res) => res.json({ ok: true }));
+/**
+ * `turn.configured` é aditivo: `ok` continua onde estava, e quem só lê `ok` não
+ * quebra. É booleano puro — não diz qual token, não valida a credencial e não
+ * chama a Cloudflare.
+ */
+app.get('/health', (_req, res) => res.json({ ok: true, turn: { configured: isTurnConfigured() } }));
 
-// Short-lived TURN credentials via Cloudflare TURN API — nunca persistidas.
+/**
+ * Short-lived TURN credentials via Cloudflare TURN API — nunca persistidas.
+ *
+ * Três desfechos, três status. Isto **era** um endpoint que respondia `200
+ * {"iceServers": []}` nos três casos, o que tornava um deploy sem
+ * `CF_TURN_TOKEN_ID`/`CF_TURN_API_TOKEN` bit-a-bit indistinguível de uma sala
+ * saudável — para o client, para um probe externo e para qualquer proxy no
+ * caminho. Como o client roda `iceTransportPolicy: 'relay'`, lista vazia é
+ * garantia de que nenhuma conexão fecha; anunciá-la como sucesso é a falha
+ * silenciosa que esta entrega remove.
+ *
+ * 503 é "não estou provisionado para servir isto" e 502 é "meu upstream
+ * falhou": ações de resposta diferentes, distinguíveis na aba de rede sem
+ * ninguém precisar ler log. Nenhuma das mensagens carrega valor de segredo.
+ */
 app.get('/turn-credentials', async (_req, res) => {
   try {
-    const iceServers = await fetchCloudflareIceServers();
-    res.json({ iceServers: iceServers ?? [] });
+    const credentials = await fetchCloudflareIceServers();
+    if (!credentials) {
+      console.error(
+        '[turn] /turn-credentials: CF_TURN_TOKEN_ID/CF_TURN_API_TOKEN ausentes — nenhuma conexão vai fechar.',
+      );
+      return res.status(503).json({
+        error: 'turn-unconfigured',
+        message: 'Servidor sem credenciais de TURN configuradas.',
+      });
+    }
+    return res.json(credentials);
   } catch (err) {
-    console.error('TURN credentials error:', err.message);
-    res.json({ iceServers: [] });
+    console.error('[turn] /turn-credentials: falha no upstream:', err.message);
+    return res.status(502).json({
+      error: 'turn-upstream',
+      message: 'Falha ao obter credenciais de TURN na Cloudflare.',
+    });
   }
 });
 
@@ -190,4 +221,15 @@ function leaveCurrentRoom(socket) {
 
 server.listen(PORT, () => {
   console.log(`wtk-meet signaling server listening on :${PORT} (in-memory only, no persistence)`);
+  // O aviso é no boot, e não na primeira requisição, porque é no boot que
+  // alguém está olhando: subir sem TURN não degrada o produto, desliga-o
+  // inteiro (sob `relay` não há plano B), e descobrir isso pelo relato de um
+  // usuário custa uma reunião.
+  if (!isTurnConfigured()) {
+    console.warn(
+      '[turn] ATENÇÃO: CF_TURN_TOKEN_ID/CF_TURN_API_TOKEN não configurados. ' +
+        'O client usa iceTransportPolicy:"relay" — sem TURN, NENHUMA chamada vai conectar. ' +
+        '/turn-credentials responderá 503 e /health reportará turn.configured:false.',
+    );
+  }
 });

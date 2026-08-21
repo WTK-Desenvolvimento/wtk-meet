@@ -182,6 +182,20 @@ export async function fetchYouTubeTitle(videoId, options) {
 }
 
 /**
+ * Códigos de erro da IFrame API, e o que cada um significa de verdade.
+ *
+ * ... (todo o bloco do lado `main`, sem alteração nenhuma:
+ *      YOUTUBE_ERROR_KINDS, TRANSIENT_KINDS, UNTITLED, YOUTUBE_ERROR_NOTICES,
+ *      classifyYouTubeError, planYouTubeError, pageOrigin) ...
+ */
+function pageOrigin() {
+  if (typeof window === 'undefined') return null;
+  const origin = window.location?.origin;
+  return typeof origin === 'string' && /^https?:\/\/./.test(origin) ? origin : null;
+}
+
+
+/**
  * Envelope fino sobre o player do YouTube, com a mesma superfície do
  * `MusicEngine` (`play`/`pause`/`seek`/`positionSec`), para o `Room` tratar as
  * três origens pelo mesmo caminho.
@@ -265,11 +279,22 @@ export class YouTubeTrackPlayer {
     let instance = null;
     let readyFired = false;
 
+    const origin = pageOrigin();
     instance = new YT.Player(mount, {
       videoId,
       // `playsinline` evita o player em tela cheia no iOS; `rel: 0` corta a
-      // enxurrada de sugestões no fim do vídeo.
-      playerVars: { playsinline: 1, rel: 0, controls: 0, disablekb: 1, start: Math.floor(startSeconds) },
+      // enxurrada de sugestões no fim do vídeo. `enablejsapi` e `origin` são o
+      // que a IFrame API documenta para a página que a controla — a ausência do
+      // `origin` é causa conhecida de erro 153 (referrer recusado) intermitente.
+      playerVars: {
+        playsinline: 1,
+        rel: 0,
+        controls: 0,
+        disablekb: 1,
+        enablejsapi: 1,
+        start: Math.floor(startSeconds),
+        ...(origin ? { origin } : {}),
+      },
       events: {
         onReady: (event) => {
           readyFired = true;
@@ -294,11 +319,14 @@ export class YouTubeTrackPlayer {
           if (event.data === YT.PlayerState.ENDED) this.onEnded?.(videoId);
           if (event.data === YT.PlayerState.PLAYING) this._announceMetadata(videoId);
         },
-        // Vídeo removido, privado ou com incorporação bloqueada. Vira "faixa
-        // pulada com aviso" — nunca um player travado sem explicação.
+        // O evento é **um objeto**, e o motivo é literal: o código numérico já
+        // viajou como segundo argumento posicional para um handler cujo segundo
+        // parâmetro era `entryId`. Passou no `typeof`, caiu no fallback, e o
+        // código foi descartado em silêncio por meses. Campo nomeado não tem
+        // como cair na gaveta errada.
         onError: (event) => {
           if (this._obsolete(generation, instance)) return;
-          this.onError?.('youtube-error', event?.data);
+          this.onError?.({ reason: 'youtube-error', code: event?.data ?? null, videoId });
         },
       },
     });

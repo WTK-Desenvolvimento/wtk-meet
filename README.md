@@ -35,17 +35,67 @@ npm run dev
 
 Abre em `http://localhost:5173`.
 
-### 3. STUN/TURN (coturn) — opcional para dev em uma máquina só
+### 3. TURN — **obrigatório**, inclusive em `localhost`
 
-Só é necessário para testar o fallback de TURN relay (NAT simétrico) ou para chamadas
-entre redes diferentes. Em `localhost`, STUN não chega a ser usado.
+O client roda com `iceTransportPolicy: 'relay'` (decisão de privacidade: nenhum IP
+local vaza entre participantes — ver `ARCHITECTURE.md` §5 e §6.1). A consequência é que
+**o TURN não é fallback, é o caminho único**: sem um TURN acessível o navegador não gera
+*nenhum* candidato — nem host, nem srflx — e nenhuma conexão fecha, nem entre duas abas
+na mesma máquina. Não existe modo degradado.
+
+O servidor de sinalização não hospeda TURN: ele emite **credenciais efêmeras** pela
+Cloudflare TURN API e as entrega em `GET /turn-credentials`. Nenhuma credencial fica
+baked no bundle do client.
 
 ```bash
-cd infra/coturn
-# edite static-auth-secret em turnserver.conf e replique o mesmo valor em
-# server/.env como TURN_SHARED_SECRET
-docker compose up -d
+# server/.env
+CF_TURN_TOKEN_ID=...      # obrigatório
+CF_TURN_API_TOKEN=...     # obrigatório — nunca aparece em log nem em resposta
+CF_TURN_TTL=3600          # opcional: validade da credencial, em segundos
+CF_TURN_TIMEOUT_MS=5000   # opcional: timeout da chamada à Cloudflare
 ```
+
+| Variável | Default | Observações |
+|---|---|---|
+| `CF_TURN_TOKEN_ID` | — | Sem ela, `/turn-credentials` responde **503** e `/health` reporta `turn.configured: false`. |
+| `CF_TURN_API_TOKEN` | — | Idem. Redigido (`***`) em qualquer mensagem de erro ou linha de log. |
+| `CF_TURN_TTL` | **3600** (1h) | Fixado na faixa `[600, 86400]`, com aviso em log quando sofre clamp ou quando o valor é inválido. |
+| `CF_TURN_TIMEOUT_MS` | **5000** | Sem ele, um upstream que aceita a conexão e não responde prenderia a entrada na sala. |
+
+> **Mudança de comportamento:** o default de `CF_TURN_TTL` era **86400 (24h)** e passou a
+> **3600 (1h)**. `docs/architecture.md` §7 sempre especificou "TTL curto, ex. 1h", e a janela de
+> 24h era justamente o que permitia a uma aba aberta desde ontem criar conexões novas com
+> credencial vencida. O client agora renova sozinho, então TTL curto não custa nada em
+> usabilidade. Quem preferir o comportamento antigo põe `CF_TURN_TTL=86400` no `.env`.
+
+`GET /turn-credentials` tem **três desfechos, três status** — nunca `200` com lista vazia,
+que era bit-a-bit indistinguível de uma sala saudável:
+
+| Status | Corpo | Quando |
+|---|---|---|
+| **200** | `{ iceServers, ttl, expiresAt }` | Credencial obtida. `ttl` (segundos) é **autoritativo** — o client soma ao próprio relógio; `expiresAt` é informativo. |
+| **503** | `{ error: 'turn-unconfigured', … }` | Faltam `CF_TURN_TOKEN_ID`/`CF_TURN_API_TOKEN`. Capacidade não provisionada. |
+| **502** | `{ error: 'turn-upstream', … }` | A Cloudflare respondeu não-OK, lançou, devolveu lista vazia ou estourou o timeout. |
+
+`GET /health` responde `{ ok: true, turn: { configured: boolean } }` — booleano puro, sem
+chamar a Cloudflare e sem dizer qual token. E subir o servidor sem as variáveis imprime
+**um** aviso explícito no boot. Diagnóstico rápido:
+
+```bash
+curl -s  localhost:4000/health             # {"ok":true,"turn":{"configured":true}}
+curl -si localhost:4000/turn-credentials   # 200 / 503 / 502
+```
+
+O ciclo de vida completo da credencial (renovação no client, o que acontece quando ela
+vence e como uma conexão caída se recupera) está em `ARCHITECTURE.md` §6.12.
+
+> **Deriva de documentação, registrada de propósito:** `infra/coturn/` e o §7 de
+> `docs/architecture.md` descrevem um TURN self-hosted com TURN REST API (shared secret +
+> HMAC, `TURN_SHARED_SECRET`) que **não é o caminho que o código usa** —
+> `server/src/turnCredentials.js` fala com a Cloudflare. A config de `infra/coturn/`
+> continua válida como referência para quem quiser self-hostar (e é o que o E2E sobe em
+> `127.0.0.1`), mas quem for debugar TURN em produção deve olhar as variáveis `CF_*` acima,
+> e não um `turnserver.conf`. Reconciliar as duas coisas continua em aberto.
 
 ## Fluxo de uma chamada
 
@@ -194,11 +244,13 @@ da sessão. Se a promessa de privacidade for absoluta na sua instalação, desli
 ## Testes
 
 ```bash
-cd client && npm test     # unitários (node:test): histerese do indicador, modelo de
-                          # chat, grade de vídeos e seleção de dispositivos
 cd client && npm test     # unitários (node:test): histerese do indicador, modelo de chat,
-                          # grade de vídeos e o estado do player de música
+                          # grade de vídeos, seleção de dispositivos, o estado do player
+                          # de música e o ciclo de vida da credencial de TURN
 cd client && npm run lint
+
+cd server && npm test     # unitários (node:test): resolução de CF_TURN_TTL e do timeout,
+                          # e os três desfechos de /turn-credentials (200 / 503 / 502)
 
 cd e2e && npm install     # uma vez
 node e2e/run.mjs          # ponta a ponta: 3 participantes Chromium + TURN local
@@ -216,10 +268,6 @@ A flag de câmera falsa do Chromium expõe **um** dispositivo de cada tipo, e n�
 flag para um segundo — então o harness simula um registro de dispositivos
 (`enumerateDevices`, `devicechange`, `setSinkId`) por cima dele. Sem isso, "trocar de
 câmera" seria inexecutável no navegador.
-mesmo tempo, para exercitar glare), trocar mensagens, desligar/religar a câmera, ligar
-o player de música por votação (fila colaborativa, áudio no quarto canal, pular faixa)
-e sair da sala. Requer as dependências de sistema do Chromium
-(`npx playwright install-deps`).
 
 ## Estrutura
 

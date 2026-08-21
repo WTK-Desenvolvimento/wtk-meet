@@ -54,6 +54,7 @@ import {
   orderedQueue,
   ownerFor,
   planAdvance,
+  planPositionHeartbeat,
   removeEntriesBy,
   removeEntry,
   sanitizeEntry,
@@ -77,7 +78,12 @@ import {
   remainingMs,
   VOTE_DURATION_MS,
 } from './musicVote.js';
-import { fetchYouTubeOEmbed, isYouTubeEnabled, YouTubeTrackPlayer } from './youtubePlayer.js';
+import {
+  fetchYouTubeTitle,
+  isYouTubeEnabled,
+  planYouTubeError,
+  YouTubeTrackPlayer,
+} from './youtubePlayer.js';
 
 /** O dono republica a posição a cada 5s (e em toda mudança). */
 const POSITION_PUBLISH_MS = 5_000;
@@ -91,6 +97,12 @@ const SYNC_THRESHOLD_SEC = 1.5;
 const SYNC_MIN_INTERVAL_MS = 5_000;
 /** Quanto tempo o card fica na tela mostrando o resultado antes de sumir. */
 const RESULT_LINGER_MS = 3_000;
+/**
+ * Espera antes de recarregar o player que acabou de errar. Recarregar de forma
+ * síncrona sobre o iframe que morreu há um instante é a tentativa com a menor
+ * chance de dar certo — é a espera curta que dá valor à retentativa.
+ */
+const RETRY_DELAY_MS = 700;
 
 function newId() {
   return globalThis.crypto?.randomUUID?.() || `m-${Math.random().toString(36).slice(2)}-${Date.now()}`;
@@ -124,6 +136,21 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
   const arbiterTimerRef = useRef(null);
   const voteCloseTimerRef = useRef(null);
   const publishTimerRef = useRef(null);
+  /**
+   * Tentativas de recuperação da faixa corrente. É **um** contador, não um mapa:
+   * só existe uma faixa tocando, então "trocar de faixa zera" sai de graça da
+   * comparação de `entryId` — sem varredura nem política de expiração para um
+   * dado que só interessa agora.
+   */
+  const errorAttemptsRef = useRef({ entryId: null, count: 0 });
+  const retryTimerRef = useRef(null);
+  /**
+   * Erro sendo tratado ou retentativa em curso. Enquanto isto for verdadeiro o
+   * dono **não publica**: um player que acabou de errar devolve posição
+   * congelada e `playing: false`, e publicar isso pausaria a sala inteira por
+   * causa de um soluço local.
+   */
+  const recoveringRef = useRef(false);
   const presentIdsRef = useRef([]);
   const knownPeersRef = useRef(new Set());
   const displayNameRef = useRef(displayName);
@@ -273,18 +300,109 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
     [updateSession],
   );
 
+  /** A faixa corrente, se o evento que chegou for mesmo dela. */
+  const currentIfVideo = useCallback((videoId) => {
+    const current = entryById(sessionRef.current, sessionRef.current.playback.entryId);
+    if (!current || current.kind !== 'youtube') return null;
+    return current.sourceRef === videoId ? current : null;
+  }, []);
+
+  /**
+   * Uma única recarga do player, **local a este participante**, na posição em que
+   * a sala está agora. Nada disto trafega: quem errou foi o iframe daqui.
+   *
+   * Carrega direto no envelope de propósito. O caminho "óbvio" — zerar
+   * `loadedRef` e deixar a reconciliação recarregar — tem um laço escondido: o
+   * dono republica posição a cada 5s, cada republicação incrementa
+   * `playback.version`, e `version` está nas dependências do efeito de
+   * reconciliação. Com `loadedRef` nulo, todo heartbeat viraria uma recarga
+   * nova. A faixa carregada continua a mesma, então `loadedRef` continua
+   * verdadeiro e não se mexe nele.
+   */
+  const retryCurrentYouTube = useCallback((entryId) => {
+    clearTimeout(retryTimerRef.current);
+    // A janela de silêncio começa **aqui**, não no disparo: o intervalo entre o
+    // erro e a recarga é justamente o que `player.loading` não cobre.
+    recoveringRef.current = true;
+    retryTimerRef.current = setTimeout(async () => {
+      retryTimerRef.current = null;
+      try {
+        const { playback } = sessionRef.current;
+        const entry = entryById(sessionRef.current, entryId);
+        const player = youtubeRef.current;
+        // A faixa trocou enquanto esperávamos: carregar aqui tocaria o vídeo
+        // velho por cima do novo — bug intermitente do mesmo gênero que a
+        // `generation` do envelope existe para conter.
+        if (!player || !entry || entry.kind !== 'youtube' || playback.entryId !== entryId) return;
+
+        const token = (loadTokenRef.current += 1);
+        const startSeconds = estimatePosition(playback, performance.now());
+        const loaded = await player.load(entry.sourceRef, { startSeconds, autoplay: playback.playing });
+        // Uma reconciliação mais nova assumiu no meio do carregamento: quem manda
+        // é ela, inclusive sobre o `loadedRef`.
+        if (token !== loadTokenRef.current) return;
+        if (sessionRef.current.playback.entryId !== entryId) return;
+        // O envelope recusou: deixar `loadedRef` afirmando que a faixa está no ar
+        // impediria qualquer tentativa futura.
+        if (!loaded) loadedRef.current = null;
+      } finally {
+        recoveringRef.current = false;
+      }
+    }, RETRY_DELAY_MS);
+  }, []);
+
+  /**
+   * Erro de tocador. O evento é **um objeto** — e a razão é a causa raiz desta
+   * correção: o envelope emitia `('youtube-error', 150)` num handler cujo
+   * segundo parâmetro se chamava `entryId`, o `150` reprovava na guarda de
+   * string, caía no fallback, e o código do erro nunca era lido. Todo erro do
+   * YouTube virava o mesmo aviso genérico e tirava a faixa da fila da sala.
+   *
+   * Quem decide é `planYouTubeError`, puro; aqui só se age. E pular continua
+   * sendo prerrogativa do dono: a retentativa é de cada peer, a fila é da sala.
+   */
   const handlePlayerError = useCallback(
-    (code, entryId) => {
-      const id = typeof entryId === 'string' ? entryId : sessionRef.current.playback.entryId;
+    (event) => {
+      const payload = event && typeof event === 'object' ? event : {};
+
+      if (payload.reason === 'youtube-error') {
+        // O erro é do vídeo que **este** iframe estava tocando, que não é
+        // necessariamente a faixa corrente. Agir sobre a corrente por causa do
+        // erro de outra é a outra metade da causa raiz.
+        const entry = currentIfVideo(payload.videoId);
+        const plan = planYouTubeError({
+          code: payload.code,
+          entryId: entry?.id || null,
+          title: entry?.title || null,
+          isOwner: isOwner(),
+          attempts: errorAttemptsRef.current,
+        });
+        // Não é enfeite: é o instrumento que confirma ou derruba a hipótese do
+        // `origin`/153 quando o sintoma reaparecer.
+        console.warn('[music] erro do player YouTube:', {
+          videoId: payload.videoId,
+          entryId: entry?.id || null,
+          code: plan.code,
+          kind: plan.kind,
+          action: plan.action,
+        });
+        errorAttemptsRef.current = plan.attempts;
+        if (!entry) return; // evento de uma faixa que já não é a corrente: só o log
+
+        showNotice(plan.notice);
+        if (plan.action === 'retry') retryCurrentYouTube(entry.id);
+        else if (plan.action === 'skip') advanceFrom(entry.id, 'error');
+        return;
+      }
+
+      // Arquivo e URL não têm código transitório conhecido: recarregar o mesmo
+      // arquivo ou a mesma URL é gastar segundos de silêncio sem chance real.
+      const id = typeof payload.entryId === 'string' ? payload.entryId : null;
       const entry = entryById(sessionRef.current, id);
-      showNotice(
-        code === 'youtube-error'
-          ? `“${entry?.title || 'A faixa'}” não pode ser tocada aqui (vídeo indisponível ou sem incorporação).`
-          : `Não consegui tocar “${entry?.title || 'a faixa'}”.`,
-      );
+      showNotice(`Não consegui tocar “${entry?.title || 'a faixa'}”.`);
       if (id && isOwner()) advanceFrom(id, 'error');
     },
-    [advanceFrom, isOwner, showNotice],
+    [advanceFrom, currentIfVideo, isOwner, retryCurrentYouTube, showNotice],
   );
 
   const ensureEngine = useCallback(() => {
@@ -299,13 +417,6 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
     }
     return engineRef.current;
   }, [handleDuration, handleEnded, handlePlayerError]);
-
-  /** A faixa corrente, se o evento que chegou for mesmo dela. */
-  const currentIfVideo = useCallback((videoId) => {
-    const current = entryById(sessionRef.current, sessionRef.current.playback.entryId);
-    if (!current || current.kind !== 'youtube') return null;
-    return current.sourceRef === videoId ? current : null;
-  }, []);
 
   const ensureYouTube = useCallback(() => {
     if (!youtubeRef.current && youtubeHostRef.current) {
@@ -443,18 +554,31 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
 
   // O dono republica a posição a cada 5s: é o que permite a quem está em modo
   // `local` corrigir a deriva, e a quem entra depois cair no meio da faixa.
-  useEffect(() => {
+  //
+  // Trocando de faixa: o player ainda não sabe nada de si. Publicar ali seria
+  // anunciar `{ positionSec: 0, playing: false }` **para a sala inteira** — o
+  // estado é autoritativo, e todos obedeceriam a um "pausado" que só existe
+  // porque o iframe ainda está subindo.
+  //
+  // A outra metade do mesmo raciocínio: o `playing` republicado é a **intenção**
+  // corrente da sala, nunca o **transporte** do player. `player.playing` é falso
+  // durante buffering (estado 3 do YouTube), com autoplay bloqueado e entre
+  // `onReady` e o primeiro frame — e um tique caído em qualquer um desses
+  // instantes pausava a sala de verdade, sem que ninguém desfizesse depois. Esta
+  // política mora inteira em `planPositionHeartbeat`, e é lá que se testa: não
+  // recrie nenhuma condição aqui, nem traga `player.playing` de volta.
+   useEffect(() => {
     clearInterval(publishTimerRef.current);
     if (!session.playback.playing || session.playback.ownerId !== selfId) return undefined;
     publishTimerRef.current = setInterval(() => {
-      const player = activePlayer();
-      if (!player) return;
-      // Trocando de faixa: o player ainda não sabe nada de si. Publicar aqui
-      // seria anunciar `{ positionSec: 0, playing: false }` **para a sala
-      // inteira** — o estado é autoritativo, e todos obedeceriam a um "pausado"
-      // que só existe porque o iframe ainda está subindo.
-      if (player.loading) return;
-      publishPlayback({ positionSec: player.positionSec, playing: player.playing !== false });
+      // `sessionRef`, não a closure: o efeito não é recriado a cada mudança de
+      // posição, então o `playback` da closure envelhece.
+      const plan = planPositionHeartbeat({
+        playback: sessionRef.current.playback,
+        player: activePlayer(),
+        recovering: recoveringRef.current,
+      });
+      if (plan.publish) publishPlayback(plan.publish);
     }, POSITION_PUBLISH_MS);
     return () => clearInterval(publishTimerRef.current);
   }, [activePlayer, publishPlayback, selfId, session.playback.playing, session.playback.ownerId]);
@@ -501,6 +625,18 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
       endedReason: null,
     });
   }, [deliveryFor, presentIds, publishPlayback, selfId, session]);
+
+  // Uma retentativa agendada na faixa A não pode disparar depois de a faixa B
+  // entrar — o disparo reconfere, e este cancelamento evita até a espera inútil.
+  // A limpeza também roda no desmonte.
+  useEffect(
+    () => () => {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+      recoveringRef.current = false;
+    },
+    [session.playback.entryId],
+  );
 
   // Volume é local e nunca trafega.
   useEffect(() => {
@@ -1074,6 +1210,7 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
       clearTimeout(arbiterTimerRef.current);
       clearTimeout(voteCloseTimerRef.current);
       clearInterval(publishTimerRef.current);
+      clearTimeout(retryTimerRef.current);
       engineRef.current?.destroy();
       engineRef.current = null;
       youtubeRef.current?.destroy();
