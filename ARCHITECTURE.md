@@ -188,12 +188,34 @@ de compartilhamento de tela são `replaceTrack()` num sender que já existe**.
 Não há SDP novo, não há renegociação, e o áudio não é tocado.
 
 Ainda assim a renegociação existe e precisa ser correta — a negociação inicial é
-simétrica (os dois lados disparam `onnegotiationneeded`) e uma queda de rede
-dispara `restartIce()`. O client implementa **perfect negotiation** completo,
-com o papel `polite`/`impolite` decidido por comparação lexicográfica dos socket
-ids (`selfId < peerId`): determinístico, oposto nas duas pontas por construção,
-sem sorteio e sem round-trip extra. Em colisão de ofertas, o `impolite` ignora a
-oferta que chegou e o `polite` faz rollback implícito.
+simétrica (os dois lados disparam `onnegotiationneeded`, ou seja, **há glare em
+toda entrada**) e uma queda de rede pede reinício de ICE. O client implementa
+**perfect negotiation** completo, com o papel `polite`/`impolite` decidido por
+comparação lexicográfica dos socket ids (`selfId < peerId`): determinístico,
+oposto nas duas pontas por construção, sem sorteio e sem round-trip extra. Em
+colisão de ofertas, o `impolite` ignora a oferta que chegou e o `polite` faz
+rollback implícito.
+
+Quem perde o glare fica, depois da primeira rodada, com seus transceivers
+`sendonly` sem `mid` — uma *answer* só pode espelhar as m-lines da *offer*. Isso
+**não** é uma falha: o algoritmo de "negotiation-needed" do JSEP retorna verdadeiro
+justamente quando existe transceiver não associado, então o navegador dispara a
+segunda rodada sozinho assim que o lado perdedor volta a `stable`. O que o client
+acrescenta é **verificação**, não uma renegociação extra: passada a acomodação, se
+ainda sobrar transceiver nosso com `mid === null`, uma nova rodada é disparada, com
+teto de tentativas. No caminho feliz ela não faz nada.
+
+Toda oferta sai de **um** ponto (`_negotiate`), sempre serializada pela fila por par
+(`_enqueue`), e a recuperação de conexão nunca cria oferta diretamente — ela reinicia
+o ICE e deixa o navegador disparar o evento. É o que impede que recuperação e
+verificação, que são vizinhas no arquivo, virem duas ofertas concorrentes para o
+mesmo par.
+
+**`restartIce()` sozinho não recarrega credenciais.** Ele reusa a configuração
+congelada no construtor da `RTCPeerConnection`, então contra o modo de falha mais
+comum — credencial de TURN vencida — reiniciar o ICE regenera candidatos com
+*exatamente* a mesma credencial morta. Recuperar é `renovar → setConfiguration →
+restartIce`, nessa ordem; ver §6.12.
 
 ### 6.2 Compartilhamento de tela
 
@@ -627,14 +649,102 @@ regressão, não melhoria.
 channel, nenhuma mudança no servidor: o processamento acontece antes do encoder, e o
 que trafega continua sendo exatamente o que já trafegava.
 
+### 6.12 Ciclo de vida da credencial de TURN e recuperação de conexão
+
+Esta subseção existe porque, sob `iceTransportPolicy: 'relay'` (§6.1), a credencial de
+TURN deixa de ser um detalhe de infraestrutura e vira **parte do caminho de mídia**. Sem
+TURN válido o navegador não gera nenhum candidato — nem host, nem srflx — e a conexão
+não fecha nem entre duas abas na mesma máquina. Não há plano B, e afrouxar a política
+não está em discussão: ela é a razão de nenhum IP local vazar entre participantes (§5).
+
+**O defeito que esta subseção documenta.** O client guardava a lista de ICE servers num
+singleton de módulo **sem validade**, enquanto a credencial expirava segundo um TTL de
+24h. Uma aba aberta desde ontem seguia criando `RTCPeerConnection` nova com credencial
+vencida. As conexões já de pé continuavam funcionando (a alocação de relay já existe);
+**as novas, não** — daí o sintoma "às vezes, quem entra não escuta um participante
+específico, e o resto da sala está normal": quem tem a aba velha é o incumbente, quem
+sofre é o entrante. E a única recuperação que existia, `restartIce()`, era precisamente
+incapaz de consertar esse caso (§6.1).
+
+**Três desfechos, três status.** `GET /turn-credentials` respondia `200 {"iceServers":
+[]}` para credencial obtida, credencial não configurada e erro de upstream — os três
+iguais. Um deploy sem `CF_TURN_TOKEN_ID`/`CF_TURN_API_TOKEN` era indistinguível de uma
+sala saudável, para o client e para qualquer probe. Agora: **200** com
+`{ iceServers, ttl, expiresAt }`, **503** `turn-unconfigured` (capacidade não
+provisionada) e **502** `turn-upstream` (a Cloudflare falhou, devolveu lista vazia ou
+estourou o timeout) — ações de resposta diferentes, distinguíveis na aba de rede sem
+ninguém ler log. O `/health` reporta `turn.configured` (booleano puro, sem chamar a
+Cloudflare) e o boot avisa quando falta TURN. Nenhuma mensagem carrega valor de segredo:
+a URL da Cloudflare leva o token id no caminho, então a redação é feita na saída, não na
+confiança de que nenhum caminho vaza.
+
+**O servidor devolve duração, não instante.** `ttl` (segundos) é autoritativo e o client
+soma ao próprio relógio no momento da resposta; `expiresAt` é informativo, para log
+humano. O relógio do navegador não está sincronizado com o do servidor, e um instante
+absoluto viraria renovação em laço (relógio adiantado) ou credencial morta para sempre
+(atrasado). Duração é imune a offset de relógio.
+
+**O client renova antes de cada `RTCPeerConnection`, não uma vez por sessão.** A lógica
+de cache vive num provedor próprio (`client/src/lib/iceServers.js`), puro e sem
+`import.meta.env` para ser testável sem subir o Vite; `config.js` fica como camada fina
+por cima, preservando a assinatura de `fetchIceServers()` que a sala já consome. O
+provedor: expira pelo `ttl` do servidor com margem de renovação, **coalesce** chamadas
+concorrentes numa única requisição HTTP, respeita um intervalo mínimo entre tentativas
+após falha, e devolve a credencial anterior marcada como `stale` se a renovação falhar
+mas a validade ainda não tiver vencido. **Nunca** devolve `stun:` em nenhum caminho — o
+fallback de STUN público que existia não era resiliência, era falha silenciosa. O array
+que a sala passa ao mesh deixa de ser a fonte da verdade e vira semente.
+
+**Falta de TURN é reportada na hora, não pelo timeout do ICE.** Se a lista não contiver
+nenhuma URL `turn:`/`turns:`, o mesh emite `console.error` e reporta o par como
+`'failed'` imediatamente, em vez de deixar o tile mudo por dezenas de segundos até o ICE
+desistir sozinho. A conexão continua sendo criada: se a credencial voltar, a recuperação
+resgata o par sem reconstruir nada. `'failed'` é valor legítimo de
+`RTCPeerConnectionState`, então o callback de estado do par mantém a assinatura de
+sempre — nenhum estado novo foi inventado.
+
+**Recuperar é renovar → reconfigurar → reiniciar.** Um único ponto de entrada é
+alimentado por quatro gatilhos, com um só timer e um só flag por par para que não virem
+quatro recuperações concorrentes: `connectionState` e `iceConnectionState` em `'failed'`
+(imediato) e em `'disconnected'` (após carência, cancelada se voltar antes — oscilação de
+Wi-Fi costuma se resolver sozinha, e reiniciar o ICE em cima de uma recuperação natural é
+perda pura). O corpo, sempre dentro da fila do par: renovar as credenciais; se não houver
+TURN, logar, reportar `'failed'` e reagendar **sem** reiniciar nada (reiniciar sem
+credencial é o no-op descrito em §6.1); `setConfiguration` com a lista nova nos dois
+lados; `restartIce()` **só no impolite**, com uma válvula que libera o polite se o
+impolite não voltar (aba fechada, processo suspenso). Tentativas com backoff e **teto**:
+esgotado o teto, um erro final e para — a conexão permanece reportada como `'failed'`,
+que é a verdade. Um par morto em silêncio deixou de ser um desfecho possível.
+
+**Reafirmação de estado, sem heartbeat.** Câmera e tela remotas só viram imagem quando a
+track do transceiver e a mensagem `state` do data channel coincidem (§6.2) — as duas
+ordens de chegada já eram tratadas, mas o `state` era enviado **uma única vez**, no
+`onopen`. Um canal que abre depois de um percalço deixava o compartilhamento invisível
+para sempre. A correção são duas mensagens idempotentes: no `onopen`, além do próprio
+estado, um `state-request` que pede o do outro lado; e uma reafirmação para aquele par
+quando ele volta de uma recuperação. Um par com bundle antigo recebe `state-request`, não
+reconhece o tipo e o ignora — degrada exatamente para o comportamento de hoje, sem
+versionamento de protocolo. **Não** há reenvio periódico: numa sala de 6 seriam 5
+mensagens por aba por intervalo, para sempre, para corrigir um evento que acontece em
+transições discretas e observáveis. Em regime permanente o tráfego adicional é zero.
+
+**O que não mudou:** a política `relay`, a ordem dos transceivers (§6.1), a assinatura
+dos callbacks do mesh e a ausência de telemetria — a observabilidade aqui é log de
+servidor e `console` do navegador (§5), não um endpoint de métricas.
+
 ## 7. Stack
 
 - **Frontend:** React + Vite. `RTCPeerConnection` nativo (sem SDK de terceiros tipo
   PeerJS/Twilio). Socket.IO client apenas para sinalização.
 - **Backend (sinalização):** Node.js + Express + Socket.IO. Estado 100% em memória
   (`Map`), sem banco de dados, sem filas, sem cache externo.
-- **STUN/TURN:** coturn self-hosted (`infra/coturn`), sem depender de STUN público do
-  Google ou de provedores de TURN gerenciados.
+- **TURN:** credenciais efêmeras emitidas pela **Cloudflare TURN API** através do
+  servidor de sinalização (`server/src/turnCredentials.js`), nunca baked no bundle —
+  ver §6.12. Sem STUN público em nenhum caminho: sob `iceTransportPolicy: 'relay'` um
+  STUN não gera candidato utilizável, então oferecê-lo como fallback seria uma falha
+  silenciosa com cara de sucesso. `infra/coturn/` permanece como config de referência
+  para self-hosting (e é o que o E2E sobe em `127.0.0.1`), mas **não** é o caminho de
+  produção; o README §3 registra a deriva.
 - **Sem TypeScript** neste MVP para reduzir footprint de ferramentas — decisão
   reversível se o time crescer.
 
@@ -642,6 +752,8 @@ que trafega continua sendo exatamente o que já trafegava.
 
 ```
 server/        signaling server (Express + Socket.IO, estado em memória)
+server/test/   testes unitários (node:test): TTL e timeout da credencial de TURN e os
+               três desfechos de /turn-credentials (§6.12)
 client/        app React (Vite) — UI, WebRTC mesh, E2EE via insertable streams
 client/test/   testes unitários (node:test): histerese de áudio, modelo de chat,
                cálculo da grade de vídeos (§6.7), do palco em destaque (§6.8)
