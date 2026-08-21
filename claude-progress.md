@@ -159,6 +159,52 @@ não existe). Os 8 itens permanecem `checked: false` no board por limitação da
 ferramenta, **não** por falta de verificação — a evidência de cada um está na
 tabela acima e no `reason` do `move_task_forward`.
 
+## Terceira verificação, na entrega (sessão de Dev que move a task)
+
+Reexecutada do zero antes do `move_task_forward`, sem herdar número de ninguém.
+O que esta passada acrescenta às duas anteriores é a **leitura do diff de
+produção** (e não só da suíte) e a **prova de que a limitação do board é da
+ferramenta**, obtida por sonda em vez de por repetição do que estava escrito.
+
+| # | Item do DoD do board | Resultado | Evidência desta sessão |
+|---|---|---|---|
+| 1 | 200/401/403/404 com fetch injetado | **OK** | `youtubePlayer.test.mjs:750` percorre `[[404,'not-found'],[401,'embed-blocked'],[403,'embed-blocked']]` e compara o objeto inteiro com `deepEqual`; o 200 (com e sem título legível) sai do `AC8/AC9` |
+| 2 | Timeout/rejeição de rede → `unknown`, sem recusar | **OK** | `AC5 (unknown)` cobre 429, 503, 400, 302, `TypeError: Failed to fetch`, JSON inválido e resposta nula; `AC5 (timeout/abort)` aborta pelo `signal` e exige `{title:null, availability:'unknown', status:null}` |
+| 3 | `addToQueue` → `false` + aviso específico nos dois casos | **OK** | `musicQueueRefusal.test.mjs:146` (404 → `youtube-unavailable`) e `:161` (401 **e** 403 → `youtube-embed-blocked`), com `ok === false`, `sent === []` e fila vazia; o `notEqual` prova que as duas mensagens são distintas |
+| 4 | `musicSources.js` puro | **OK** | `musicSources.test.mjs:281` lê o arquivo, remove comentários e reprova `import`, `fetch`, `XMLHttpRequest`, `document`, `window`, `navigator`, `localStorage`. O parâmetro injetado `fetchMeta` não casa com `\bfetch\b` — a injeção sobrevive à guarda, que é o desenho |
+| 5 | Suíte inteira, sem regressão nos dois arquivos | **OK** | `npm test --prefix client` → **346/346, 0 falhas**; `node --test test/musicSources.test.mjs test/musicTransitions.test.mjs` → **26/26** |
+| 6 | Lint | **OK** | `npm run lint --prefix client` → exit 0, sem saída |
+| 7 | PR explicando a assimetria | **OK** | PR **#16** `open`, `agent/wtk-meet-14-…` → `main`, lido pela API do GitHub nesta sessão. O corpo traz *"Por que 401/403/404 recusam"* e *"Por que falha de rede NÃO recusa"* |
+| 8 | Registro critério a critério | **OK** | Os 15 ACs do documento e os 8 itens do board estão nas tabelas acima; esta é a terceira |
+
+### O diff de produção, lido (e não inferido da suíte)
+
+- `AVAILABILITY_BY_STATUS` é um `Map` de **três entradas** e o `default` é
+  `unknown` — o fail-open é estrutural, não um `if` que alguém pode inverter sem
+  perceber. O `catch` devolve `unknownMeta()` com o comentário do porquê.
+- `fetchYouTubeTitle` sobrevive como envelope de duas linhas, contrato
+  `string | null` intacto — os 28 casos originais passam **sem edição**.
+- `resolveSourceMeta` devolve `{title: fallback, availability: 'unknown'}` para
+  origem que não é YouTube e para buscador não injetado: arquivo e URL nunca
+  entram no caminho de recusa, por construção e não por teste.
+- Em `useMusicRoom.js`, o bloco de recusa fica **entre** o `await` do
+  `Promise.all` e o `bumpLamport`, lê só `parsed` e `meta.availability`, e não
+  toca em `sessionRef.current`. A ordem das esperas do `:699-707` está
+  preservada.
+
+### A limitação do board, provada por sonda
+
+Confirmado por experimento, não por repetição: `tools/list` mostra que
+`update_task` aceita exatamente `taskId`, `version`, `title`, `description`,
+`priority`, `agentId`, `estimatedHours`, `scope` — **sem** `definitionOfDone`.
+Uma chamada com o campo extra retorna **sucesso** e o descarta em silêncio (o
+DoD seguiu com os 8 itens originais e `checked: false`; só a `version` andou,
+23 → 24). `PATCH /api/tasks/:id` responde **403 Access denied**.
+
+Ou seja: os 8 itens ficam `checked: false` por **impossibilidade de escrita**,
+não por verificação faltando. A sonda foi não-destrutiva — vale registrar que
+ela *poderia* não ter sido, e que o campo foi reconferido logo depois.
+
 ## Comandos e resultados
 
 ```
