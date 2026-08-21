@@ -38,11 +38,26 @@ encenado **ao contrário**: a primeira resposta a Vera traz uma senha que o TURN
 recusa, com `ttl: 1`; a renovação traz a boa. Uma aba que não renova fica presa
 na senha recusada.
 
-- Antes do fix, V3 falharia nas duas pontas: `turnRequests` de Vera ficaria em
-  **1** (a busca única do setup) e a conexão com quem entra **nunca fecharia**.
-- Depois do fix: `pedidos: 1 → 2`, `renovação em …750`, `conexão criada em …758`
-  — a renovação precede a criação da `RTCPeerConnection` em 8ms —, e as duas
-  pontas conectam.
+**O teste foi rodado nas duas pontas do fix**, que é o que o critério pede — não
+se inferiu do código:
+
+- **Antes do fix** (worktree destacado no merge-base `eac4aeb`, com o harness
+  novo e uma sonda que roda só a V3), as duas asserções falham:
+
+  ```
+  V3  renovou antes de criar a conexão: ❌ (pedidos 1 → 1)
+  V3b a conexão fechou:                 ❌ (vera=0 vitor=0)
+  RESULTADO PRÉ-FIX: V3 FALHOU
+  ```
+
+  `pedidos 1 → 1` é o cache sem prazo: a aba busca a credencial uma vez, no setup
+  da sala, e nunca mais. `vera=0 vitor=0` é a consequência — com a credencial que
+  o TURN recusa congelada na aba, a conexão com quem entra **nunca fecha**,
+  enquanto Vera segue sentada na sala sem nenhum sinal de que algo está errado.
+
+- **Depois do fix:** `pedidos: 1 → 2`, `renovação em …709`, `conexão criada em
+  …720` — a renovação precede a criação da `RTCPeerConnection` em 11ms —, e as
+  duas pontas conectam.
 
 **Limite honesto desta reprodução:** ela demonstra o mecanismo com uma credencial
 que o TURN recusa, não com o relógio real da Cloudflare passando por cima de uma
@@ -237,7 +252,7 @@ zero.
 |---|---|---|
 | V1 | `iceTransportPolicy === 'relay'` em toda PC | ✅ 6 conexões, `["relay"]` |
 | V2 | Sem TURN a aba diz o que houve, e não fica indefinidamente em `connecting` | ✅ `[mesh] sem servidor TURN utilizável (provedor: unconfigured)`; zero conexões |
-| V3 | Renova **antes** de criar a PC de quem entra, e a conexão fecha | ✅ pedidos 1→2; renovação em `…750`, PC criada em `…758` |
+| V3 | Renova **antes** de criar a PC de quem entra, e a conexão fecha | ✅ pedidos 1→2; renovação em `…709`, PC criada em `…720`. **No merge-base falha:** `pedidos 1 → 1`, `vera=0 vitor=0` |
 | V4 | Nenhum transceiver local sem `mid` com 3 participantes | ✅ `[["Vera",[0,0]],["Vitor",[0,0]],["Valter",[0,0]]]` |
 | V5 | Nenhuma rodada extra depois da sala assentar | ✅ `[6,4,5] → [6,4,5]` após 8s |
 | V6 | Quem entra no meio de um compartilhamento vê a tela | ✅ `destaque: Vera — tela` |
