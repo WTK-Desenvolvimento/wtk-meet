@@ -1983,9 +1983,17 @@ try {
     const conexoesDe = async (p) =>
       (await peerStats(p.page)).filter((s) => s.connectionState === 'connected').length;
 
-    // Vera recebe uma credencial que vence em 1 segundo. É a aba velha do
-    // relato — só que em escala de teste, em vez das 24h do default antigo.
-    vera = await openParticipant(browser, { roomUrl: salaTurn, name: 'Vera', turn: { ttl: 1 } });
+    // Vera recebe uma credencial que vence em 1 segundo **e que o TURN recusa**.
+    // É a aba velha do relato, em escala de teste: a primeira credencial não
+    // conecta ninguém, e só a renovação traz uma que conecta. Uma aba que não
+    // renova fica presa na credencial morta — que é o defeito, ponto a ponto.
+    // Sem essa inversão o teste provaria apenas que houve uma requisição a mais;
+    // com ela, prova que sem a requisição a mais **não há conexão**.
+    vera = await openParticipant(browser, {
+      roomUrl: salaTurn,
+      name: 'Vera',
+      turn: { ttl: 1, expiredFirstCredential: true },
+    });
     await entrarNaSalaV(vera, null);
     const pedidosNaEntradaDeVera = vera.turnRequests.length;
 
@@ -2012,8 +2020,9 @@ try {
         `renovação em ${ultimaRenovacaoDeVera}, conexão criada em ${criacoesDeVera[0]}`,
     );
     check(
-      'V3b. E a conexão fecha normalmente (era ela que ficava muda com a credencial morta)',
+      'V3b. E a conexão fecha — com a credencial morta ela nunca fecharia',
       (await conexoesDe(vera)) === 1 && (await conexoesDe(vitor)) === 1,
+      'a primeira credencial de Vera é recusada pelo TURN: só a renovação conecta',
     );
 
     // Vera compartilha a tela **antes** de Valter entrar: é o caso "entrei no

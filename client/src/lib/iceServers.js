@@ -175,6 +175,16 @@ export function createIceServerProvider({
       warn('[ice] /turn-credentials respondeu 200 com lista vazia.');
       return fallbackAfterFailure('unreachable');
     }
+    // Uma lista **sem nenhum TURN** é o mesmo que uma lista vazia, sob `relay`:
+    // zero candidatos utilizáveis. Ela precisa de menção própria porque é o
+    // formato mais enganoso de todos — parece uma configuração de ICE legítima,
+    // sobrevive a qualquer validação de tipo, e era exatamente o que o antigo
+    // fallback de STUN público produzia. Cachear isso por um TTL inteiro
+    // reintroduziria o silêncio pela porta dos fundos.
+    if (!hasTurnServer(iceServers)) {
+      warn('[ice] /turn-credentials respondeu sem nenhum servidor TURN — inútil sob relay.');
+      return fallbackAfterFailure('unreachable');
+    }
 
     const ttl = resolveTtl(body?.ttl);
     if (ttl !== Number(body?.ttl)) {
@@ -220,6 +230,10 @@ export function createIceServerProvider({
       // cheia) compartilham UMA requisição.
       if (inFlight) return inFlight;
 
+      // `ok` aqui sobrescreve um `stale` de uma renovação que falhou antes — e
+      // isso é intencional: o que se devolve é uma credencial dentro da própria
+      // validade, que é o que `ok` afirma. O histórico da falha não se perde,
+      // continua em `describe().lastFailureKind`.
       if (!force && cache && now() < cache.renewAt) {
         status = 'ok';
         return cache.iceServers;

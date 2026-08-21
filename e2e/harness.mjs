@@ -281,10 +281,16 @@ export async function openParticipant(
     // `status: 503` encena o deploy sem `CF_TURN_*`; `ttl` curto encena a
     // credencial que vence com a aba aberta, que é o mecanismo que esta suíte
     // nunca conseguiu exercitar antes.
+    //
+    // `expiredFirstCredential` é o que fecha a reprodução. O TURN local tem
+    // credencial estática e não expira nada, então "vencer" precisa ser
+    // encenado ao contrário: a **primeira** resposta traz uma senha que o TURN
+    // recusa, e a renovação traz a boa. Uma aba que não renova fica presa na
+    // senha recusada — que é, ponto a ponto, o defeito investigado.
     turn = {},
   },
 ) {
-  const { status: turnStatus = 200, ttl: turnTtl = 3600 } = turn;
+  const { status: turnStatus = 200, ttl: turnTtl = 3600, expiredFirstCredential = false } = turn;
   const context = await browser.newContext({
     permissions: ['camera', 'microphone'],
     ignoreHTTPSErrors: true,
@@ -330,11 +336,16 @@ export async function openParticipant(
         body: JSON.stringify({ error: 'turn-unconfigured', message: 'sem TURN neste deploy' }),
       });
     }
+    const vencida = expiredFirstCredential && turnRequests.length === 1;
+    const iceServers = vencida
+      ? ICE_SERVERS.map((server) => ({ ...server, credential: 'senha-que-o-turn-recusa' }))
+      : ICE_SERVERS;
+
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        iceServers: ICE_SERVERS,
+        iceServers,
         ttl: turnTtl,
         expiresAt: new Date(Date.now() + turnTtl * 1000).toISOString(),
       }),

@@ -24,6 +24,7 @@ import {
 
 const ENDPOINT = 'http://signaling.test/turn-credentials';
 const TURN = [{ urls: ['turn:relay.test:3478?transport=udp'], username: 'u', credential: 'c' }];
+const SO_STUN = [{ urls: ['stun:stun.cloudflare.com:3478'] }];
 
 /** Relógio manual: `clock.advance(ms)` é a única forma de o tempo passar. */
 function fakeClock(start = 1_000_000) {
@@ -201,6 +202,11 @@ test('cada falha tem seu status, e NENHUMA devolve STUN (A10, D3)', async () => 
     [{ throws: 'Failed to fetch' }, 'unreachable'],
     [{ ok: true, badJson: true }, 'unreachable'],
     [{ ok: true, body: { iceServers: [] } }, 'unreachable'],
+    // O formato mais enganoso: 200, lista não vazia, tipos todos certos — e
+    // zero candidatos utilizáveis sob `relay`. Era o que o fallback antigo
+    // produzia, e aceitá-lo aqui reintroduziria o silêncio pela porta dos
+    // fundos, cacheado por um TTL inteiro.
+    [{ ok: true, body: { iceServers: SO_STUN, ttl: 3600 } }, 'unreachable'],
   ];
 
   for (const [resposta, esperado] of casos) {
