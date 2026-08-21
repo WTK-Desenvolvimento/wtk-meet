@@ -184,6 +184,11 @@ async function meshWithPeer(overrides = {}) {
   const mesh = new WebRTCMesh({
     signaling: { sendSignal: (peerId, data) => events.signals.push([peerId, data]) },
     iceServers: [],
+    // O mesh renova a credencial antes de cada conexão nova. Sem o dublê, ele
+    // cairia no provedor real (sem endpoint, num teste de node) e cada `addPeer`
+    // logaria o erro de "sem TURN" — ruído que não tem nada a ver com o que este
+    // arquivo testa, que é o roteamento das quatro m-lines.
+    getIceServers: async () => [{ urls: ['turn:relay.test:3478'] }],
     localStream,
     getSelfId: () => 'peer-a',
     getRoomKey: () => null,
@@ -343,8 +348,11 @@ test('quem entra recebe o estado musical inteiro assim que o canal abre', async 
 
   rec.channel.onopen();
 
-  assert.equal(rec.channel.sent.length, 2, 'estado da grade e estado da música');
-  assert.equal(rec.channel.sent[0].type, 'state');
+  assert.deepEqual(
+    rec.channel.sent.map((payload) => payload.type),
+    ['state', 'music-snapshot', 'state-request'],
+    'estado da grade, estado da música e o pedido do estado do outro lado',
+  );
   const sent = rec.channel.sent[1];
   assert.equal(sent.type, 'music-snapshot');
   assert.equal(sent.lamport, 7);
@@ -353,14 +361,14 @@ test('quem entra recebe o estado musical inteiro assim que o canal abre', async 
   assert.equal(sent.playback.positionSec, 42, 'sem a posição, quem entra ouve a faixa do início');
 });
 
-test('sem estado musical, o canal abre mandando só o estado da grade', async () => {
+test('sem estado musical, o canal abre mandando o estado da grade e o pedido', async () => {
   const { rec } = await meshWithPeer({ getMusicSnapshot: () => null });
 
   rec.channel.onopen();
 
   assert.deepEqual(
     rec.channel.sent.map((payload) => payload.type),
-    ['state'],
+    ['state', 'state-request'],
   );
 });
 
