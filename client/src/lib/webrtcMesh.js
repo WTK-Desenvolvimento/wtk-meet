@@ -244,6 +244,7 @@ export class WebRTCMesh {
       makingOffer: false,
       ignoreOffer: false,
       settingRemoteAnswerPending: false,
+      negotiationQueued: false,
       candidateQueue: [],
       // Serializa o tratamento de sinais: setRemoteDescription/setLocalDescription
       // não podem interleavar, ou o signalingState visto pelo perfect negotiation
@@ -271,19 +272,7 @@ export class WebRTCMesh {
       }
     };
 
-    pc.onnegotiationneeded = () => {
-      this._enqueue(rec, async () => {
-        try {
-          rec.makingOffer = true;
-          await pc.setLocalDescription();
-          this.signaling.sendSignal(peerId, { type: 'description', sdp: pc.localDescription });
-        } catch (err) {
-          console.error('[mesh] negotiationneeded failed:', err);
-        } finally {
-          rec.makingOffer = false;
-        }
-      });
-    };
+    pc.onnegotiationneeded = () => this._queueNegotiation(rec);
 
     pc.ontrack = (event) => this._handleTrack(rec, event);
 
@@ -337,6 +326,52 @@ export class WebRTCMesh {
       this._safeReplace(rec.musicT.sender, this.localMusicTrack),
     ]);
     if (this.localMusicTrack) this._applyMusicEncoding(rec);
+  }
+
+  /**
+   * **O único lugar do arquivo que cria uma offer.**
+   *
+   * Ter uma porta só importa porque há mais de um motivo para renegociar (o
+   * evento do navegador e a verificação de `_verifyNegotiation`), eles são
+   * vizinhos no tempo, e duas offers concorrentes para o mesmo par produzem
+   * glare artificial — no pior caso um laço em que cada rodada gera a próxima.
+   *
+   * As duas guardas de saída não são defensivas por hábito: fora de `stable`
+   * existe uma negociação em andamento, e `setLocalDescription` ali é erro
+   * garantido (o `_enqueue` engoliria num `console.error` e a fila seguiria como
+   * se nada fosse).
+   */
+  async _negotiate(rec) {
+    const { pc } = rec;
+    if (this.closed || pc.signalingState === 'closed') return;
+    if (pc.signalingState !== 'stable') return;
+
+    try {
+      rec.makingOffer = true;
+      await pc.setLocalDescription();
+      this.signaling.sendSignal(rec.peerId, { type: 'description', sdp: pc.localDescription });
+    } catch (err) {
+      console.error('[mesh] negotiationneeded failed:', err);
+    } finally {
+      rec.makingOffer = false;
+    }
+  }
+
+  /**
+   * Enfileira uma rodada de negociação, coalescendo pedidos redundantes.
+   *
+   * Um SDP é um retrato completo do estado, não um delta: dois motivos para
+   * renegociar chegando juntos são atendidos por **uma** offer. A flag existe
+   * para que "a conexão recuperou" e "faltou associar um transceiver" — que
+   * acontecem no mesmo instante, por construção — não virem duas.
+   */
+  _queueNegotiation(rec) {
+    if (rec.negotiationQueued) return;
+    rec.negotiationQueued = true;
+    return this._enqueue(rec, async () => {
+      rec.negotiationQueued = false;
+      await this._negotiate(rec);
+    });
   }
 
   _enqueue(rec, fn) {
