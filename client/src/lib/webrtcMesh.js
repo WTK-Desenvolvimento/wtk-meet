@@ -16,6 +16,38 @@ import {
 const MUSIC_MAX_BITRATE = 96_000;
 
 /**
+ * Carência antes de reagir a `disconnected`.
+ *
+ * `disconnected` é frequentemente transitório — troca de rede, Wi-Fi oscilando,
+ * um pacote de keepalive perdido — e o navegador volta sozinho na maioria das
+ * vezes. Reiniciar o ICE em cima de uma recuperação natural é perda pura: gera
+ * sinalização, descarta o progresso do ICE em andamento e ainda pode atrasar o
+ * retorno que já estava a caminho.
+ */
+const DISCONNECTED_GRACE_MS = 5_000;
+
+/**
+ * Backoff das tentativas de recuperação, e o teto delas.
+ *
+ * O teto existe para que a desistência seja **explícita e logada**, em vez de o
+ * par ficar tentando para sempre ou — como era antes — morrer na primeira
+ * tentativa, em silêncio, para o resto da sessão.
+ */
+const RECOVERY_BACKOFF_MS = [2_000, 4_000, 8_000, 16_000, 30_000];
+
+/**
+ * Quanto o lado polite espera antes de reiniciar o ICE por conta própria.
+ *
+ * O restart é do impolite por padrão: se os dois reiniciassem a cada queda de
+ * rede, toda oscilação viraria duas offers — o dobro de sinalização exatamente
+ * no momento em que a rede está pior. Mas se o impolite não voltar (aba fechada,
+ * processo suspenso pelo SO, máquina dormindo), esperar por ele é esperar para
+ * sempre. Daí a válvula: atrasada o bastante para não competir com o impolite
+ * saudável, e o perfect negotiation resolve a colisão se os dois agirem.
+ */
+const POLITE_RESTART_VALVE_MS = 15_000;
+
+/**
  * Full-mesh WebRTC: one RTCPeerConnection per remote peer, capped by the
  * room's MAX_PARTICIPANTS on the signaling side. Media never routes through
  * the signaling server — this class only uses it to relay SDP/ICE.
@@ -245,6 +277,15 @@ export class WebRTCMesh {
       ignoreOffer: false,
       settingRemoteAnswerPending: false,
       negotiationQueued: false,
+      // Recuperação: um flag e um timer, compartilhados pelos quatro gatilhos
+      // (connectionState/iceConnectionState × failed/disconnected). É o que
+      // impede que quatro gatilhos virem quatro recuperações concorrentes.
+      recovering: false,
+      recoveryTimer: null,
+      recoveryDelay: Infinity,
+      recoveryAttempts: 0,
+      recoveryExhausted: false,
+      politeValveTimer: null,
       candidateQueue: [],
       // Serializa o tratamento de sinais: setRemoteDescription/setLocalDescription
       // não podem interleavar, ou o signalingState visto pelo perfect negotiation
@@ -278,15 +319,10 @@ export class WebRTCMesh {
 
     pc.onconnectionstatechange = () => {
       this.onPeerStateChange?.(peerId, pc.connectionState);
+      this._onConnectivityChange(rec);
     };
 
-    pc.oniceconnectionstatechange = () => {
-      // Recuperação barata de queda de rede: o impolite reinicia o ICE e o
-      // perfect negotiation cuida do resto.
-      if (pc.iceConnectionState === 'failed' && !rec.polite) {
-        pc.restartIce();
-      }
-    };
+    pc.oniceconnectionstatechange = () => this._onConnectivityChange(rec);
 
     // Canal de dados negociado fora de banda — mesmo id nos dois lados.
     rec.channel = pc.createDataChannel(CHAT_CHANNEL_LABEL, {
@@ -326,6 +362,167 @@ export class WebRTCMesh {
       this._safeReplace(rec.musicT.sender, this.localMusicTrack),
     ]);
     if (this.localMusicTrack) this._applyMusicEncoding(rec);
+  }
+
+  // ------------------------------------------------------------- recuperação
+
+  /**
+   * O único ponto de entrada da recuperação, alimentado pelos quatro gatilhos.
+   *
+   * Antes desta entrega existia meia recuperação: `restartIce()` no primeiro
+   * `iceConnectionState === 'failed'`, só do lado impolite, sem segunda
+   * tentativa, sem log e sem UI. `connectionState` — que agrega o DTLS e é o
+   * estado que a interface mostra — era ignorado para fins de recuperação, e
+   * `disconnected` não era olhado por ninguém.
+   *
+   * E o que existia não conseguia consertar o modo de falha mais provável:
+   * `restartIce()` **reusa a configuração congelada no construtor da
+   * `RTCPeerConnection`**. Contra credencial vencida ele gera uma geração nova de
+   * ICE com exatamente a mesma credencial morta e falha de novo, idêntico. Por
+   * isso recuperar aqui é, obrigatoriamente e nesta ordem: **renovar →
+   * `setConfiguration` → `restartIce`**.
+   */
+  _onConnectivityChange(rec) {
+    const { pc } = rec;
+
+    if (pc.connectionState === 'connected') {
+      this._onPeerRecovered(rec);
+      return;
+    }
+
+    if (pc.connectionState === 'failed' || pc.iceConnectionState === 'failed') {
+      this._scheduleRecovery(rec, `failed (${pc.connectionState}/${pc.iceConnectionState})`, 0);
+      return;
+    }
+
+    if (pc.connectionState === 'disconnected' || pc.iceConnectionState === 'disconnected') {
+      this._scheduleRecovery(rec, 'disconnected', DISCONNECTED_GRACE_MS);
+    }
+  }
+
+  /**
+   * Agenda uma recuperação, desduplicando os gatilhos e respeitando o backoff.
+   *
+   * O `Math.max` com o backoff é o que impede a tempestade: depois da primeira
+   * tentativa, o `failed` que o próprio `restartIce()` produz ao não dar certo
+   * volta por aqui pedindo recuperação **imediata** — e sem esse piso ele
+   * furaria o backoff e viraria um laço apertado de restarts.
+   */
+  _scheduleRecovery(rec, reason, requestedDelayMs) {
+    if (this.closed || !this.peers.has(rec.peerId) || rec.pc.signalingState === 'closed') return;
+    if (rec.recovering) return;
+
+    const backoff =
+      rec.recoveryAttempts > 0
+        ? RECOVERY_BACKOFF_MS[Math.min(rec.recoveryAttempts - 1, RECOVERY_BACKOFF_MS.length - 1)]
+        : 0;
+    const delay = Math.max(requestedDelayMs, backoff);
+
+    // Já há algo agendado para igual ou mais cedo: o gatilho novo não acrescenta
+    // nada. É assim que `disconnected` seguido de `failed` continua sendo UMA
+    // recuperação — e é assim que um `failed` promove uma carência pendente.
+    if (rec.recoveryTimer) {
+      if (delay >= rec.recoveryDelay) return;
+      clearTimeout(rec.recoveryTimer);
+    }
+
+    rec.recoveryDelay = delay;
+    rec.recoveryTimer = setTimeout(() => {
+      rec.recoveryTimer = null;
+      rec.recoveryDelay = Infinity;
+      // Pela fila do par: recuperação e negociação nunca correm em paralelo.
+      this._enqueue(rec, () => this._recoverPeer(rec, reason));
+    }, delay);
+  }
+
+  async _recoverPeer(rec, reason) {
+    const { pc } = rec;
+    // Tudo o que segue um `setTimeout` reconfere o mundo: o par pode ter saído
+    // da sala, e ressuscitar uma conexão para quem já foi embora é o modo mais
+    // fácil de criar um par fantasma.
+    if (this.closed || !this.peers.has(rec.peerId) || pc.signalingState === 'closed') return;
+    if (pc.connectionState === 'connected') return; // voltou sozinho no meio do caminho
+
+    if (rec.recoveryAttempts >= RECOVERY_BACKOFF_MS.length) {
+      if (!rec.recoveryExhausted) {
+        rec.recoveryExhausted = true;
+        console.error(
+          `[mesh] recuperação esgotada para ${rec.peerId} após ${rec.recoveryAttempts} tentativas ` +
+            `(${reason}). O par permanece reportado como 'failed'.`,
+        );
+        this.onPeerStateChange?.(rec.peerId, 'failed');
+      }
+      return;
+    }
+
+    rec.recovering = true;
+    rec.recoveryAttempts += 1;
+    try {
+      const iceServers = await this._currentIceServers({ force: true });
+      if (this.closed || !this.peers.has(rec.peerId) || pc.signalingState === 'closed') return;
+
+      if (this._reportMissingTurn(rec.peerId, iceServers)) {
+        // Reiniciar o ICE sem credencial é o no-op caro descrito acima: mesma
+        // configuração, mesma falha. Espera-se a credencial voltar.
+        return;
+      }
+
+      try {
+        // Configuração **completa**, com os mesmos campos do construtor: a spec
+        // proíbe alterar alguns campos depois de a conexão existir, e omiti-los
+        // pode ser lido como tentativa de reset conforme a implementação.
+        pc.setConfiguration({ iceServers, iceTransportPolicy: 'relay' });
+      } catch (err) {
+        // Melhor um restart com credencial velha do que nenhuma tentativa — e a
+        // exceção não pode subir para o `_enqueue`, que a transformaria num
+        // console.error e mataria o agendamento do backoff junto.
+        console.warn('[mesh] setConfiguration falhou; seguindo para o restartIce:', err);
+      }
+
+      if (rec.polite) {
+        this._armPoliteValve(rec);
+      } else {
+        // Não criamos offer aqui: `restartIce()` faz o navegador disparar
+        // `negotiationneeded`, e é de lá que a offer sai. Criar uma agora seriam
+        // duas offers para o mesmo restart.
+        pc.restartIce();
+      }
+    } finally {
+      rec.recovering = false;
+      // Reavaliação com backoff: se o restart funcionou, `connected` cancela
+      // isto antes de disparar.
+      this._scheduleRecovery(rec, 'reavaliação', 0);
+    }
+  }
+
+  /**
+   * Válvula do lado polite: se o impolite não voltou, o polite reinicia também.
+   */
+  _armPoliteValve(rec) {
+    if (rec.politeValveTimer) return;
+    rec.politeValveTimer = setTimeout(() => {
+      rec.politeValveTimer = null;
+      if (this.closed || !this.peers.has(rec.peerId)) return;
+      if (rec.pc.signalingState === 'closed') return;
+      if (rec.pc.connectionState === 'connected') return;
+      console.warn(`[mesh] o lado impolite não voltou para ${rec.peerId}; reiniciando o ICE daqui.`);
+      rec.pc.restartIce();
+    }, POLITE_RESTART_VALVE_MS);
+  }
+
+  /** Voltou a `connected`: zera o orçamento de tentativas e desarma tudo. */
+  _onPeerRecovered(rec) {
+    this._clearPeerTimers(rec);
+    rec.recoveryAttempts = 0;
+    rec.recoveryExhausted = false;
+  }
+
+  _clearPeerTimers(rec) {
+    clearTimeout(rec.recoveryTimer);
+    clearTimeout(rec.politeValveTimer);
+    rec.recoveryTimer = null;
+    rec.politeValveTimer = null;
+    rec.recoveryDelay = Infinity;
   }
 
   /**
@@ -678,6 +875,11 @@ export class WebRTCMesh {
 
     const rec = this.peers.get(peerId);
     if (!rec) return;
+
+    // Antes de qualquer outra coisa: um timer sobrevivente dispara depois numa
+    // PC fechada, e o de backoff vive até 30s — tempo de sobra para alguém sair
+    // da sala e ser ressuscitado por um `setTimeout`.
+    this._clearPeerTimers(rec);
 
     try {
       rec.channel?.close();
