@@ -508,6 +508,27 @@ ser conectados, então o grafo da música precisa do mesmo contexto do indicador
 fala. O dono passou a ser o `Room` (`lib/audioContext.js`): enquanto era o
 `AudioLevelMonitor`, um `monitor.close()` mataria a música em silêncio.
 
+**Erro do player do YouTube tem classe, e nem toda classe custa a faixa.** A
+IFrame API devolve um **código numérico**, e eles significam coisas diferentes:
+2 (id malformado), 100 (removido ou privado) e 101/150 (o dono bloqueou a
+incorporação) são sentença — a faixa sai da fila, com uma mensagem que diz o que
+de fato aconteceu, em especial 101/150, que informa que o vídeo só toca no
+YouTube. Já 5 (falha do player HTML5) e 153 (referrer recusado) são **soluços**:
+provocam **uma** recarga do player, na posição estimada da sala, e só desistem se
+falharem de novo. Código fora da tabela é tratado como permanente — sem evidência
+de que recarregar ajuda, o conservador é pular — e vai para o `console.warn` com
+`videoId`, `entryId` e classe, que é o que permite reclassificar com dado real.
+Três regras sustentam isso: a retentativa é **local a quem errou** (o iframe que
+falhou é o daquele participante) e nunca trafega; **pular continua sendo
+exclusividade do dono**, porque dois escritores na mesma transição divergem a
+fila; e o contador é **por `entryId`**, de modo que trocar de faixa o zera e um
+vídeo que erra sempre nunca vira laço de recarga. Enquanto o erro está sendo
+tratado, o dono **não publica** posição: um player que acabou de falhar responde
+`playing: false` e posição congelada, e publicar isso pausaria a sala inteira por
+causa de um soluço de uma máquina só. `playerVars` inclui `enablejsapi` e o
+`origin` **derivado da página** — um `origin` fixo faria a API recusar todos os
+vídeos, inclusive em `localhost`.
+
 ### 6.10 Seleção de dispositivos de mídia
 
 Um modal único de configurações (`components/SettingsModal.jsx`), alcançável em três

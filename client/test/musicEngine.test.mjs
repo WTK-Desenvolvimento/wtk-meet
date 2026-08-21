@@ -203,7 +203,10 @@ function makeEngine(overrides = {}) {
     getContext: () => ctx,
     onEnded: (id) => events.ended.push(id),
     onDurationKnown: (id, value) => events.durations.push([id, value]),
-    onError: (reason, id) => events.errors.push([reason, id]),
+    // O evento de erro é um objeto: campo nomeado, sem ordem posicional para
+    // errar (foi exatamente esse erro de posição que descartava o código do
+    // YouTube do outro lado).
+    onError: (payload) => events.errors.push(payload),
     onBlocked: () => {
       events.blocked += 1;
     },
@@ -324,7 +327,7 @@ test('sem contexto de áudio o motor avisa em vez de tocar no vazio', async () =
   const track = await engine.load(entry({ kind: 'file', sourceRef: '' }), { file: { name: 'a.mp3' } });
 
   assert.equal(track, null);
-  assert.deepEqual(events.errors, [['no-audio-context', 'e1']]);
+  assert.deepEqual(events.errors, [{ reason: 'no-audio-context', entryId: 'e1' }]);
 });
 
 test('origem sem suporte e arquivo ausente viram erro nomeado, não exceção', async () => {
@@ -334,7 +337,7 @@ test('origem sem suporte e arquivo ausente viram erro nomeado, não exceção', 
   assert.equal(await engine.load(entry({ kind: 'file', sourceRef: '' }), { file: null }), null);
   assert.equal(await engine.load(entry({ kind: 'youtube', sourceRef: 'dQw4w9WgXcQ' })), null);
   assert.deepEqual(
-    events.errors.map(([reason]) => reason),
+    events.errors.map((error) => error.reason),
     ['missing-file', 'unsupported-kind'],
   );
   assert.equal(created.length, 0, 'nenhum elemento deve ser criado para origem inválida');
@@ -478,7 +481,7 @@ test('duração inválida não é anunciada e erro de mídia é nomeado', async 
   assert.deepEqual(events.durations, []);
 
   element.emit('error');
-  assert.deepEqual(events.errors, [['media-error', 'e1']]);
+  assert.deepEqual(events.errors, [{ reason: 'media-error', entryId: 'e1' }]);
 });
 
 test('getters de estado refletem o elemento, e sem faixa devolvem o neutro', async () => {
