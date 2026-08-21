@@ -82,7 +82,7 @@ com o DoD do board desta vez** — depois de três tasks seguidas com contradiç
 | 4 | `npm test --prefix client` passa inteiro | ✅ **339/339**, 0 falhas |
 | 5 | `npm run lint --prefix client` sem erros | ✅ saída limpa |
 | 6 | Mensagens pt-BR distintas por classe, verificadas em teste | ✅ AC8: as cinco são distintas (`new Set(...).size === 5`), todas com o título, e nenhuma imprime `undefined` quando ele falta |
-| 7 | PR descrevendo causa raiz e a tabela de códigos | ✅ ver abaixo |
+| 7 | PR descrevendo causa raiz e a tabela de códigos | ✅ [PR #17](https://github.com/WTK-Desenvolvimento/wtk-meet/pull/17) — causa raiz (argumento posicional), tabela dos seis códigos, as três armadilhas e o resultado da suíte |
 | 8 | Registro critério a critério no doc de progresso | ✅ este bloco |
 
 **A ressalva do DoD 1, dita com todas as letras.** "Propagação do código até o
