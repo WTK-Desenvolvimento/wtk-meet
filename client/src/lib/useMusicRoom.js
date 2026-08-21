@@ -54,6 +54,7 @@ import {
   orderedQueue,
   ownerFor,
   planAdvance,
+  planPositionHeartbeat,
   removeEntriesBy,
   removeEntry,
   sanitizeEntry,
@@ -437,18 +438,30 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
 
   // O dono republica a posição a cada 5s: é o que permite a quem está em modo
   // `local` corrigir a deriva, e a quem entra depois cair no meio da faixa.
+  //
+  // Trocando de faixa: o player ainda não sabe nada de si. Publicar ali seria
+  // anunciar `{ positionSec: 0, playing: false }` **para a sala inteira** — o
+  // estado é autoritativo, e todos obedeceriam a um "pausado" que só existe
+  // porque o iframe ainda está subindo.
+  //
+  // A outra metade do mesmo raciocínio: o `playing` republicado é a **intenção**
+  // corrente da sala, nunca o **transporte** do player. `player.playing` é falso
+  // durante buffering (estado 3 do YouTube), com autoplay bloqueado e entre
+  // `onReady` e o primeiro frame — e um tique caído em qualquer um desses
+  // instantes pausava a sala de verdade, sem que ninguém desfizesse depois. Esta
+  // política mora inteira em `planPositionHeartbeat`, e é lá que se testa: não
+  // recrie nenhuma condição aqui, nem traga `player.playing` de volta.
   useEffect(() => {
     clearInterval(publishTimerRef.current);
     if (!session.playback.playing || session.playback.ownerId !== selfId) return undefined;
     publishTimerRef.current = setInterval(() => {
-      const player = activePlayer();
-      if (!player) return;
-      // Trocando de faixa: o player ainda não sabe nada de si. Publicar aqui
-      // seria anunciar `{ positionSec: 0, playing: false }` **para a sala
-      // inteira** — o estado é autoritativo, e todos obedeceriam a um "pausado"
-      // que só existe porque o iframe ainda está subindo.
-      if (player.loading) return;
-      publishPlayback({ positionSec: player.positionSec, playing: player.playing !== false });
+      // `sessionRef`, não a closure: o efeito não é recriado a cada mudança de
+      // posição, então o `playback` da closure envelhece.
+      const plan = planPositionHeartbeat({
+        playback: sessionRef.current.playback,
+        player: activePlayer(),
+      });
+      if (plan.publish) publishPlayback(plan.publish);
     }, POSITION_PUBLISH_MS);
     return () => clearInterval(publishTimerRef.current);
   }, [activePlayer, publishPlayback, selfId, session.playback.playing, session.playback.ownerId]);

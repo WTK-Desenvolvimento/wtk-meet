@@ -1,3 +1,123 @@
+# Progresso — WTK-MEET-15: pausa fantasma da sala durante buffering
+
+**Status: COMPLETED.** Branch
+`agent/wtk-meet-15-corrigir-a-pausa-fantasma-da-sala-quando`. Documento seguido:
+`docs/agents/arch-temp-pausa-fantasma-heartbeat-buffering.md`.
+
+## O problema
+
+O tique de 5s do dono (`useMusicRoom.js`) publicava
+`playing: player.playing !== false`. O getter `playing` do `YouTubeTrackPlayer` é
+`getPlayerState() === 1` — **só** PLAYING. No estado 3 (BUFFERING) ele devolve
+`false`, e o arquivo tem um getter `buffering` dedicado logo abaixo justamente
+para esse estado. A guarda do tique cobria `loading`, não `buffering`.
+
+Consequência: um engasgo de rede de dois segundos no dono, se coincidisse com o
+tique, publicava `playing: false` **como estado autoritativo da sala**. Todos os
+clientes aceitavam a versão maior e chamavam `player.pause()`. Ninguém desfazia —
+o efeito do heartbeat depende de `session.playback.playing`, que agora era
+`false`, então ele mesmo se desligava. Daí o sintoma ser "parou e ficou parado",
+e não "engasgou".
+
+## A escolha entre pular o tique e preservar a intenção
+
+O card oferecia as duas e pedia justificativa. **Preservar a intenção**, por três
+motivos:
+
+1. `if (player.loading || player.buffering) return;` seria a correção de uma
+   palavra, mas em `MusicEngine` `buffering` é `readyState < 3` — verdadeiro
+   logo depois de um seek e recorrente numa URL com banda apertada. Uma faixa
+   nessa condição faria o dono parar de publicar posição **indefinidamente**,
+   sem sintoma visível, até a deriva de quem está em `local` ficar audível.
+   Troca um bug barulhento por um silencioso.
+2. `player.playing` continuaria no caminho. Qualquer estado que não seja o 1
+   (autoplay bloqueado, a janela entre `onReady` e o primeiro frame, estados
+   intermediários do iframe) traria o mesmo bug de volta por outra porta.
+3. O heartbeat era o **único** publicador do arquivo que tirava `playing` de um
+   getter do player. Pausa e retomada do dono, pedido de peer, seek e
+   `planAdvance` todos usam a intenção conhecida. O tique só ecoava — e um eco
+   que só erra não vale a pena manter.
+
+`positionSec` continua sendo publicada durante o buffering: ela é confiável nos
+dois players (`element.currentTime`; no YouTube, a posição em que a reprodução
+vai retomar). A única guarda nova é estreita — leitura `0` em buffering com a
+sala já adiante é pulada, porque publicá-la rebobinaria todo mundo.
+
+## O que foi entregue
+
+- `client/src/lib/musicSession.js` — `planPositionHeartbeat` (nova, **pura**, na
+  família de `planAdvance`). Lê `loading`, `buffering` e `positionSec` do player;
+  **não** lê `playing`. Devolve `{ publish }`, onde `null` significa pular o
+  tique.
+- `client/src/lib/useMusicRoom.js` — o `setInterval` do heartbeat perdeu toda
+  regra: monta o plano com `sessionRef.current.playback` (nunca a closure, que
+  envelhece) e publica se houver o que publicar. O comentário existente sobre
+  `loading` foi preservado e estendido com a outra metade do raciocínio
+  (intenção ≠ transporte), no lugar onde a próxima pessoa seria tentada a
+  reintroduzir o getter. `grep -n "player.playing"` no arquivo só encontra o
+  comentário que avisa para não trazê-lo de volta.
+- `client/test/musicSession.test.mjs` — 8 testes novos.
+- `ARCHITECTURE.md` §6.9, bullet "Posição".
+
+Por que a função é pura e o hook fica sem regra: o projeto não tem renderer
+React (`node --test "test/*.test.mjs"`), então cobrir o efeito exigiria uma
+dependência nova, grande demais para esta correção. É o mesmo argumento que já
+justificou `planAdvance` ser puro. E com a política num lugar só, qualquer volta
+do `player.playing` fica visível numa linha.
+
+## Verificação, critério a critério do DoD
+
+1. **Teste com player falso em buffering: o tique não publica `playing:false`** —
+   OK. `heartbeat: buffering do YouTube não pausa a sala` fixa
+   `{ positionSec: 42, playing: true }` para o falso
+   `{ loading: false, buffering: true, playing: false, positionSec: 42 }`, que é
+   o formato real do YouTube no estado 3. Reforçado por `com a sala tocando,
+   nenhum estado de player produz playing:false`, que varre cinco formatos
+   (incluindo autoplay bloqueado) e assere a invariante diretamente.
+2. **Regressão: pausa deliberada continua publicando `playing:false` e
+   propagando** — OK. `pausa deliberada do dono propaga na hora e o tique não a
+   desfaz` publica a pausa pelo caminho real (`sanitizePlayback` →
+   `applyPlayback`), verifica que a sala recebe `playing: false` com `version`
+   incrementada, e então verifica que o tique seguinte devolve `null` — não
+   ressuscita a faixa por baixo do usuário.
+3. **Caso equivalente com `MusicEngine` (`readyState < 3`)** — OK. `buffering do
+   MusicEngine (readyState < 3) publica igual`, com o falso
+   `{ buffering: true, playing: true }` — que é o que os getters reais produzem
+   num engasgo, já que o `element` não está `paused`. O teste existe para fixar
+   a invariante, não para provar um sintoma: por esse player o bug não se
+   manifestava hoje, e é justamente ele que impede uma mudança futura de
+   reintroduzir o problema pelo outro caminho.
+4. **A guarda de `player.loading` continua valendo na troca de faixa** — OK.
+   `a guarda de loading continua valendo na troca de faixa` cobre o player
+   carregando e também o caso em que ele já reporta posição: `loading` decide,
+   porque a leitura ainda é da faixa velha.
+5. **`npm test --prefix client` passa inteiro** — OK, **336/336**, zero falhas,
+   com `musicSession.test.mjs` (32 testes) e `musicTransitions.test.mjs` verdes.
+   Nota de ambiente: a suíte estava em 290/295 no começo da sessão apenas porque
+   `client/node_modules` e `server/node_modules` não existiam no worktree; os
+   cinco vermelhos precisavam de React/esbuild e do servidor que
+   `roomOccupancy`/`joinRequestSignaling` sobem sozinhos. `npm install` nos dois
+   pacotes zerou tudo — não era regressão nem débito.
+6. **`npm run lint --prefix client` sem erros** — OK, saída vazia.
+7. **PR com causa raiz e justificativa** — OK, corpo com as duas seções acima.
+8. **Registro critério a critério no doc de progresso** — este bloco.
+
+Fora do escopo, por decisão do documento (§2): propagar "áudio bloqueado" como
+pausa da sala (o caminho certo é o evento de bloqueio, que já liga `audioBlocked`
+e mostra a faixa de aviso em `MusicPanel.jsx` — não polling), o laço de correção
+de deriva do receptor (que já ignora `buffering`/`loading` e não mudou), os
+getters dos dois players, e teste e2e (o cenário de engasgo reprodutível em três
+navegadores não é estável o bastante para virar gate).
+
+## Débito identificado, não implementado
+
+Depois desta entrega, com autoplay bloqueado no dono a sala fica com estado
+"tocando" enquanto o áudio dele está em silêncio — antes o heartbeat acabava
+rebaixando para pausado 5s depois. O caminho existente é melhor (aviso dirigido a
+quem pode resolver, em vez de pausa silenciosa para todos) e os dois nunca foram
+alternativas: hoje o usuário recebe os dois. Se a propagação for desejada, ela
+tem que nascer do evento de bloqueio, e é outra task.
+
 # Progresso — WTK-MEET-11: supressão de ruído client-side com toggle
 
 **Status: implementação concluída e validada, com uma falha de E2E alheia à task
