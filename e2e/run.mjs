@@ -1953,6 +1953,188 @@ try {
     await noiseBrowser.close();
   }
 
+  // ------------------------------- V. credencial de TURN e recuperação
+  //
+  // Sala própria, e por um motivo específico: este bloco encena **falhas de
+  // credencial**, e uma delas é um participante que nunca conecta. Rodar isso na
+  // sala principal contaminaria as contagens de tile e de conexão das checagens
+  // anteriores.
+  //
+  // O que se exercita aqui nunca teve teste: o `iceTransportPolicy: 'relay'`
+  // torna o TURN o caminho único (sem ele o navegador não gera **nenhum**
+  // candidato), e ainda assim a credencial ficava cacheada pela sessão inteira
+  // da aba enquanto vencia sozinha. O harness sempre respondeu 200 com validade
+  // infinita, então o modo de falha era literalmente irreproduzível.
+  const salaTurn = `${CLIENT_ORIGIN}/e2e-turn-${sufixo}#chave-do-turn`;
+  let vera = null;
+  let vitor = null;
+  let valter = null;
+  let vanda = null;
+  try {
+    const entrarNaSalaV = (participant, approver) =>
+      waitFor(
+        async () => {
+          if (approver) await approveAll(approver.page);
+          return (await participant.page.locator('.room.in-call').count()) > 0;
+        },
+        { timeout: 40000, label: `${participant.name} entrar na sala do TURN` },
+      );
+
+    const conexoesDe = async (p) =>
+      (await peerStats(p.page)).filter((s) => s.connectionState === 'connected').length;
+
+    // Vera recebe uma credencial que vence em 1 segundo. É a aba velha do
+    // relato — só que em escala de teste, em vez das 24h do default antigo.
+    vera = await openParticipant(browser, { roomUrl: salaTurn, name: 'Vera', turn: { ttl: 1 } });
+    await entrarNaSalaV(vera, null);
+    const pedidosNaEntradaDeVera = vera.turnRequests.length;
+
+    // A credencial de Vera vence enquanto ela está sentada na sala, sem
+    // recarregar a página — exatamente o que acontecia com quem deixou a aba
+    // aberta desde ontem.
+    await sleep(2000);
+
+    vitor = await openParticipant(browser, { roomUrl: salaTurn, name: 'Vitor' });
+    await entrarNaSalaV(vitor, vera);
+    await waitFor(async () => (await conexoesDe(vera)) >= 1 && (await conexoesDe(vitor)) >= 1, {
+      timeout: 45000,
+      label: 'Vera e Vitor conectados apesar da credencial vencida de Vera',
+    });
+
+    const criacoesDeVera = await vera.page.evaluate(() => window.__wtkPeerCreatedAt);
+    const ultimaRenovacaoDeVera = vera.turnRequests.at(-1);
+    check(
+      'V3. Aba com credencial vencida renova ANTES de criar a conexão com quem entra',
+      vera.turnRequests.length > pedidosNaEntradaDeVera &&
+        criacoesDeVera.length === 1 &&
+        ultimaRenovacaoDeVera <= criacoesDeVera[0],
+      `pedidos: ${pedidosNaEntradaDeVera} → ${vera.turnRequests.length}; ` +
+        `renovação em ${ultimaRenovacaoDeVera}, conexão criada em ${criacoesDeVera[0]}`,
+    );
+    check(
+      'V3b. E a conexão fecha normalmente (era ela que ficava muda com a credencial morta)',
+      (await conexoesDe(vera)) === 1 && (await conexoesDe(vitor)) === 1,
+    );
+
+    // Vera compartilha a tela **antes** de Valter entrar: é o caso "entrei no
+    // meio de um compartilhamento", que depende de o `state` chegar e coincidir
+    // com a track de tela do transceiver fixo.
+    await vera.page.getByRole('button', { name: 'Compartilhar tela' }).click();
+    await waitFor(async () => (await spotlightLayout(vitor.page)).active === true, {
+      timeout: 25000,
+      label: 'a tela de Vera aparecer para Vitor',
+    });
+
+    valter = await openParticipant(browser, { roomUrl: salaTurn, name: 'Valter' });
+    await entrarNaSalaV(valter, vera);
+    await waitFor(async () => (await conexoesDe(valter)) === 2, {
+      timeout: 45000,
+      label: 'Valter conectado aos dois',
+    });
+
+    const palcoDeValter = await waitFor(
+      async () => {
+        const layout = await spotlightLayout(valter.page);
+        return layout.active === true ? layout : false;
+      },
+      { timeout: 25000, label: 'Valter ver a tela que já estava sendo compartilhada' },
+    ).catch(() => null);
+    check(
+      'V6. Quem entra no meio de um compartilhamento vê a tela',
+      palcoDeValter !== null && (palcoDeValter.spotlightLabel || '').includes('Vera'),
+      `destaque: ${palcoDeValter?.spotlightLabel ?? 'nenhum'}`,
+    );
+
+    // V1 — a trava contra afrouxar a política "só para testar". Uma reversão
+    // esquecida vazaria IP local entre participantes sem quebrar nenhum teste
+    // funcional; esta checagem é o que faz ela quebrar alguma coisa.
+    const politicas = [];
+    for (const p of [vera, vitor, valter]) {
+      politicas.push(
+        ...(await p.page.evaluate(() =>
+          (window.__wtkPeers || []).map((pc) => pc.getConfiguration().iceTransportPolicy),
+        )),
+      );
+    }
+    check(
+      'V1. Toda RTCPeerConnection roda com iceTransportPolicy "relay"',
+      politicas.length >= 6 && politicas.every((p) => p === 'relay'),
+      `${politicas.length} conexões: ${JSON.stringify([...new Set(politicas)])}`,
+    );
+
+    // V4 — a verificação da hipótese 3. Se a segunda rodada de negociação não
+    // acontecesse, metade dos transceivers do perdedor do glare ficaria sem
+    // `mid` e metade da mídia daquele par nunca sairia.
+    const semMid = [];
+    for (const p of [vera, vitor, valter]) {
+      const orfaos = await p.page.evaluate(() =>
+        (window.__wtkPeers || [])
+          .filter((pc) => pc.connectionState === 'connected')
+          .map(
+            (pc) =>
+              pc.getTransceivers().filter((t) => t.direction === 'sendonly' && t.mid === null).length,
+          ),
+      );
+      semMid.push([p.name, orfaos]);
+    }
+    check(
+      'V4. Nenhum transceiver local fica sem mid no estado estável de 3 participantes',
+      semMid.every(([, orfaos]) => orfaos.every((n) => n === 0)),
+      JSON.stringify(semMid),
+    );
+
+    // V5 — a trava contra a tempestade de renegociação. O jeito honesto de
+    // afirmar "não introduziu rodada extra" sem uma linha de base gravada é
+    // provar que a negociação **para**: as verificações rodam em 750ms, 2s e 5s,
+    // então depois de 8s parados o contador não pode mais andar.
+    const sldAntes = [];
+    for (const p of [vera, vitor, valter]) {
+      sldAntes.push(await p.page.evaluate(() => window.__wtkCounters.setLocalDescription));
+    }
+    await sleep(8000);
+    const sldDepois = [];
+    for (const p of [vera, vitor, valter]) {
+      sldDepois.push(await p.page.evaluate(() => window.__wtkCounters.setLocalDescription));
+    }
+    check(
+      'V5. A negociação estabiliza: nenhuma rodada extra depois da sala assentar',
+      sldAntes.every((n, i) => sldDepois[i] === n),
+      `setLocalDescription: ${JSON.stringify(sldAntes)} → ${JSON.stringify(sldDepois)}`,
+    );
+
+    // V2 — o deploy sem CF_TURN_*. Antes desta entrega o servidor respondia 200
+    // com lista vazia e o client caía num STUN público: nenhum sinal em lugar
+    // nenhum, e uma configuração ausente indistinguível de uma sala saudável.
+    vanda = await openParticipant(browser, {
+      roomUrl: salaTurn,
+      name: 'Vanda',
+      turn: { status: 503 },
+    });
+    await entrarNaSalaV(vanda, vera);
+
+    const avisoDeVanda = await waitFor(
+      async () => vanda.consoleErrors.some((e) => e.includes('sem servidor TURN')) || false,
+      { timeout: 20000, label: 'Vanda reclamar da falta de TURN' },
+    ).catch(() => false);
+    check(
+      'V2. Sem TURN, a aba diz o que houve em vez de ficar muda',
+      avisoDeVanda === true,
+      `erros de console: ${vanda.consoleErrors.slice(0, 2).join(' | ') || 'nenhum'}`,
+    );
+    check(
+      'V2b. E não finge que conectou',
+      (await conexoesDe(vanda)) === 0,
+      'sob relay sem TURN não há candidato: o desfecho é determinístico',
+    );
+    // O reporte `onPeerStateChange(peerId, "failed")` que acompanha esse aviso é
+    // verificado no unitário (A14): nesta worktree o callback ainda não tem
+    // consumidor de UI — quem o constrói é a task irmã.
+  } finally {
+    for (const p of [vera, vitor, valter, vanda]) {
+      await p?.context.close().catch(() => {});
+    }
+  }
+
   // ---------------------------------------------- G. nada de erro no console
   for (const p of [alice, bob]) {
     const relevant = p.consoleErrors.filter((e) => !/favicon|ERR_CONNECTION_REFUSED/i.test(e));

@@ -268,8 +268,23 @@ export async function launchBrowser({ audioFile = null } = {}) {
  */
 export async function openParticipant(
   browser,
-  { roomUrl, name, preferences, audioPreferences, forceWorkletNoiseSuppression = false },
+  {
+    roomUrl,
+    name,
+    preferences,
+    audioPreferences,
+    forceWorkletNoiseSuppression = false,
+    // Como o servidor de TURN responde **para este participante**. O default
+    // reproduz o comportamento de sempre (200 com o TURN local e validade
+    // folgada), então nenhuma chamada existente muda de comportamento.
+    //
+    // `status: 503` encena o deploy sem `CF_TURN_*`; `ttl` curto encena a
+    // credencial que vence com a aba aberta, que é o mecanismo que esta suíte
+    // nunca conseguiu exercitar antes.
+    turn = {},
+  },
 ) {
+  const { status: turnStatus = 200, ttl: turnTtl = 3600 } = turn;
   const context = await browser.newContext({
     permissions: ['camera', 'microphone'],
     ignoreHTTPSErrors: true,
@@ -302,13 +317,29 @@ export async function openParticipant(
     await context.addInitScript({ content: 'window.__wtkForceWorkletNs = true;' });
   }
 
-  await context.route('**/turn-credentials', (route) =>
-    route.fulfill({
+  // Um item por requisição a /turn-credentials, com o instante. É o que permite
+  // afirmar que a credencial foi renovada **antes** de uma conexão nova nascer,
+  // e não só que ela foi renovada em algum momento.
+  const turnRequests = [];
+  await context.route('**/turn-credentials', (route) => {
+    turnRequests.push(Date.now());
+    if (turnStatus !== 200) {
+      return route.fulfill({
+        status: turnStatus,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'turn-unconfigured', message: 'sem TURN neste deploy' }),
+      });
+    }
+    return route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ iceServers: ICE_SERVERS }),
-    }),
-  );
+      body: JSON.stringify({
+        iceServers: ICE_SERVERS,
+        ttl: turnTtl,
+        expiresAt: new Date(Date.now() + turnTtl * 1000).toISOString(),
+      }),
+    });
+  });
 
   await context.addInitScript({ content: INSTRUMENTATION });
 
@@ -325,7 +356,7 @@ export async function openParticipant(
   await setInputValue(nameField, name);
   await page.getByRole('button', { name: 'Entrar na sala' }).click();
 
-  return { context, page, name, consoleErrors };
+  return { context, page, name, consoleErrors, turnRequests };
 }
 
 /**
@@ -586,10 +617,16 @@ export const INSTRUMENTATION = `
   const origRAF = window.requestAnimationFrame.bind(window);
   window.requestAnimationFrame = (cb) => { window.__wtkCounters.raf++; return origRAF(cb); };
 
+  // Instante de criação de cada conexão, na mesma base de \`Date.now()\` do
+  // processo de teste. É o que permite afirmar que a credencial foi renovada
+  // **antes** de a conexão nascer, e não apenas em algum momento.
+  window.__wtkPeerCreatedAt = [];
+
   const OrigPC = window.RTCPeerConnection;
   window.RTCPeerConnection = function (...args) {
     const pc = new OrigPC(...args);
     window.__wtkPeers.push(pc);
+    window.__wtkPeerCreatedAt.push(Date.now());
     const sld = pc.setLocalDescription.bind(pc);
     pc.setLocalDescription = (...a) => { window.__wtkCounters.setLocalDescription++; return sld(...a); };
     const srd = pc.setRemoteDescription.bind(pc);
