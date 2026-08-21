@@ -199,9 +199,15 @@ export class WebRTCMesh {
    * horas, e sob `relay` uma credencial vencida não degrada a conexão — impede
    * que ela exista.
    *
-   * Se a renovação falhar, cai para o último valor conhecido (a semente do
-   * construtor ou a última lista boa). É melhor tentar com credencial talvez
-   * velha do que não tentar: velha pode ainda estar válida, vazia nunca está.
+   * Numa **conexão nova**, se a renovação falhar, cai para o último valor
+   * conhecido: credencial talvez velha ainda pode estar válida, lista vazia
+   * nunca está, e sem nenhuma a conexão nem chega a ser tentada.
+   *
+   * Numa **recuperação** (`force`), não. Ali a semente é exatamente a
+   * configuração sob suspeita — se o provedor devolve vazio, é porque não tem
+   * credencial *e* a que ele tinha já venceu. Reconfigurar a conexão com ela e
+   * reiniciar o ICE seria repetir a mesma falha, gastando uma rodada inteira de
+   * ICE para chegar ao mesmo lugar. Melhor esperar a credencial voltar.
    */
   async _currentIceServers({ force = false } = {}) {
     let servers = [];
@@ -216,7 +222,7 @@ export class WebRTCMesh {
       this.iceServers = servers;
       return servers;
     }
-    if (hasTurnServer(this.iceServers)) return this.iceServers;
+    if (!force && hasTurnServer(this.iceServers)) return this.iceServers;
     return servers;
   }
 
