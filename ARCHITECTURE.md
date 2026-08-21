@@ -448,6 +448,36 @@ cada client tocando a mesma origem, sincronizado por posição.
 | URL direta | `stream` com CORS, `local` sem | `createMediaElementSource` sobre mídia cross-origin sem `Access-Control-Allow-Origin` transmite **silêncio digital**, sem erro. Daí a sonda de `Range: bytes=0-0` antes de tocar, e daí o padrão ser `local` quando a sonda não confirma. |
 | YouTube | `local`, obrigatoriamente | O player roda num iframe cross-origin; não existe API que dê acesso ao áudio dele. Extrair o stream violaria os Termos de Serviço e exigiria servidor; capturar a aba levaria junto a voz dos participantes. |
 
+**O mesmo oEmbed que busca o título decide, no ato, se o vídeo é incorporável.**
+Ao adicionar um link do YouTube, quem enfileira já consultava o oEmbed público
+para trocar o `YouTube · <id>` pelo nome de verdade. O **status** dessa resposta
+diz o que o corpo não diz — **401/403** é incorporação desabilitada pelo dono,
+**404** é vídeo removido, privado ou id inexistente —, e nesses três casos a
+faixa **não entra na fila**: o aviso aparece no campo de adicionar, o texto
+colado continua lá e nenhum `music-queue-add` sai para a sala. Sem isso, a sala
+só descobria o problema quando a faixa chegava a tocar, minutos e várias faixas
+depois de quem colou o link ter saído da tela.
+
+**A recusa é fail-open, e isso é a decisão.** Só status que **provam**
+indisponibilidade recusam. 200, 429, 5xx, erro de rede, CORS, timeout, corpo que
+não é JSON, flag `VITE_ENABLE_YOUTUBE` desligada e ambiente sem `fetch` viram o
+veredito `unknown`, e `unknown` enfileira — o comportamento de sempre. Um oEmbed
+fora do ar ou um 429 de rate-limit numa sala movimentada não podem virar
+"ninguém consegue adicionar música", que é o sintoma que ninguém rastreia até
+aqui. É **uma requisição por link**, a mesma de antes: título e veredito saem da
+mesma resposta, e os outros participantes continuam sem falar com a Google —
+recebem o nome pelo data channel e não sondam nada. Empiricamente, o oEmbed
+responde com `Access-Control-Allow-Origin` refletindo a origem **também nas
+respostas de erro**, então o status chega legível ao JavaScript (verificado em
+2026-08-21; ver `claude-progress.md`).
+
+**O aviso em tempo de execução continua obrigatório.** `handlePlayerError` cobre
+o que a recusa no ato não alcança: o vídeo que fica privado *depois* de entrar na
+fila, a entrada replicada por outro peer (que este client nunca sondou, por
+política), o `unknown` que passou e os erros de player que não são de
+disponibilidade — inclusive o vídeo cujo oEmbed responde 200 mas cuja
+incorporação o player recusa.
+
 **Convergência sem servidor, sem relógio comum e sem eleição.** Cada pedaço do
 estado tem uma regra que converge sozinha (`client/src/lib/musicSession.js`, puro
 e coberto por `client/test/musicSession.test.mjs`):
