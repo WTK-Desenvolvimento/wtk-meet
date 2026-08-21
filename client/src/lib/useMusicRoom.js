@@ -59,7 +59,13 @@ import {
   sanitizeEntry,
   successorOwner,
 } from './musicSession.js';
-import { parseFileSource, parseSource, resolveSourceTitle, SOURCE_ERRORS } from './musicSources.js';
+import {
+  parseFileSource,
+  parseSource,
+  REFUSAL_BY_AVAILABILITY,
+  resolveSourceMeta,
+  SOURCE_ERRORS,
+} from './musicSources.js';
 import {
   canPropose,
   castVote,
@@ -71,7 +77,7 @@ import {
   remainingMs,
   VOTE_DURATION_MS,
 } from './musicVote.js';
-import { fetchYouTubeTitle, isYouTubeEnabled, YouTubeTrackPlayer } from './youtubePlayer.js';
+import { fetchYouTubeOEmbed, isYouTubeEnabled, YouTubeTrackPlayer } from './youtubePlayer.js';
 
 /** O dono republica a posição a cada 5s (e em toda mudança). */
 const POSITION_PUBLISH_MS = 5_000;
@@ -702,24 +708,49 @@ export function useMusicRoom({ meshRef, participants, getSelfId, displayName, pu
       // adicionasse durante a sonda desapareceria da fila deste cliente se ele
       // publicasse um estado calculado antes de ela chegar.
       //
-      // O oEmbed do título é a **segunda** chamada de rede deste caminho e vale
-      // a mesma regra: ela vai junto da sonda, e tudo que lê `sessionRef.current`
-      // para compor o que será publicado fica depois das duas esperas.
+      // O oEmbed é a **segunda** chamada de rede deste caminho e vale a mesma
+      // regra: ela vai junto da sonda, e tudo que lê `sessionRef.current` para
+      // compor o que será publicado fica depois das duas esperas. A recusa por
+      // disponibilidade, logo abaixo, também mora depois delas — e não lê estado
+      // nenhum de propósito: ela decide com `parsed` e o veredito, e nada mais.
       const probeTarget = { kind: parsed.kind, sourceRef: parsed.sourceRef };
-      const [delivery, title] = await Promise.all([
+      const [delivery, meta] = await Promise.all([
         parsed.kind === 'url' ? ensureEngine().probeDelivery(probeTarget) : 'stream',
         // Só quem enfileira fala com a Google: o título viaja replicado no
         // `music-queue-add`, e os outros participantes não fazem requisição
-        // nenhuma para exibir o nome do vídeo.
-        resolveSourceTitle(parsed, { fetchTitle: (videoId) => fetchYouTubeTitle(videoId) }),
+        // nenhuma para exibir o nome do vídeo — nem para saber se ele toca.
+        resolveSourceMeta(parsed, { fetchMeta: (videoId) => fetchYouTubeOEmbed(videoId) }),
       ]);
+
+      // O oEmbed já disse, nesta mesma resposta, que o vídeo não vai tocar:
+      // recusar agora é a única hora em que a pessoa ainda está olhando para o
+      // link que colou. Sem isso, a sala só descobre quando a faixa chega a
+      // tocar, e quem colou já saiu da tela de adicionar.
+      //
+      // **Só prova recusa.** Rede caída, timeout, 429 e oEmbed fora do ar viram
+      // `unknown`, e `unknown` enfileira como sempre enfileirou — um oEmbed
+      // indisponível não pode virar "ninguém na sala consegue adicionar música".
+      // O aviso em tempo de execução (`handlePlayerError`) continua obrigatório:
+      // ele cobre o vídeo que fica privado depois de entrar na fila, a entrada
+      // replicada de outro peer, que este cliente nunca sondou, e o `unknown`
+      // que passou por aqui.
+      //
+      // Nada foi criado até este ponto — sem `newId()`, sem `localFilesRef`, sem
+      // `lamport` consumido —, então a recusa não deixa lixo para trás. Mover a
+      // criação da entrada para antes daqui "para reaproveitar o título" acaba
+      // com essa propriedade.
+      const refusal = REFUSAL_BY_AVAILABILITY[meta.availability];
+      if (refusal) {
+        showNotice(SOURCE_ERRORS[refusal]);
+        return false;
+      }
 
       const { session: bumped, lamport } = bumpLamport(sessionRef.current);
       const entry = sanitizeEntry(
         {
           id: newId(),
           kind: parsed.kind,
-          title,
+          title: meta.title,
           sourceRef: parsed.sourceRef,
           addedByName: displayNameRef.current,
           lamport,
