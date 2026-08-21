@@ -495,3 +495,57 @@ export function planAdvance({
   };
 }
 
+
+/**
+ * Decide o tique de 5s do dono — o heartbeat de **posição**. **Pura**: recebe o
+ * estado e devolve o que publicar; quem age é o hook.
+ *
+ * A regra que dá nome à função: o `playing` publicado é a **intenção corrente
+ * da sala** (`playback.playing`), nunca uma leitura do player. `player.playing`
+ * responde "está soando neste milissegundo?" — pergunta legítima para a UI,
+ * resposta errada para "qual é o estado autoritativo da sala". Durante um
+ * engasgo de rede, o `YouTubeTrackPlayer` está no estado 3 (BUFFERING) e o
+ * getter devolve `false`; um tique caído aí anunciava `playing: false` para
+ * todos, e a sala inteira obedecia a uma pausa que ninguém pediu e que ninguém
+ * desfazia. Estados intermediários do iframe e autoplay bloqueado divergem do
+ * mesmo jeito — buffering só é o caso mais frequente.
+ *
+ * As transições reais de play/pause têm publicadores próprios e síncronos
+ * (pausa e retomada do dono, pedido de um peer, `planAdvance`). O heartbeat
+ * nunca foi a fonte de nenhuma delas; ele só ecoava — e um eco que só erra não
+ * vale a pena manter.
+ *
+ * Buffering **não** interrompe a publicação de posição: `positionSec` continua
+ * correta durante o engasgo (`element.currentTime` no `MusicEngine`; no YouTube,
+ * a posição em que a reprodução vai retomar). Silenciar o tique aqui trocaria um
+ * bug audível por um silencioso — no `MusicEngine`, `buffering` é
+ * `readyState < 3`, verdadeiro em situações banais, e quem está em modo `local`
+ * ficaria sem referência para corrigir deriva por minutos.
+ *
+ * A única leitura que não é do player é a de quem está `loading` (troca de
+ * faixa) — e a janela curta entre `onReady` e o primeiro frame, em que o iframe
+ * pode responder `0` sem saber de nada. Publicar esse `0` mandaria a sala
+ * inteira para o começo da faixa.
+ */
+export function planPositionHeartbeat({ playback, player } = {}) {
+  const idle = { publish: null };
+  if (!player || !playback) return idle;
+
+  // O heartbeat só existe enquanto a sala toca. Com a sala pausada não há
+  // posição a republicar — e é isto que mantém a função segura de chamar em
+  // qualquer contexto, sem nunca produzir um `playing: false`.
+  if (!playback.playing) return idle;
+
+  // Trocando de faixa: o player ainda não sabe nada de si.
+  if (player.loading) return idle;
+
+  const positionSec = player.positionSec;
+  const known = Number.isFinite(positionSec) && positionSec > 0;
+
+  // Entre `onReady` (que já zerou `loading`) e o primeiro frame, o iframe pode
+  // responder `0`. Com a sala já em posição maior que zero, publicar isso é
+  // rebobinar todo mundo.
+  if (player.buffering && !known && playback.positionSec > 0) return idle;
+
+  return { publish: { positionSec, playing: playback.playing } };
+}

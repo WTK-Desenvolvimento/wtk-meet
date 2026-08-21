@@ -491,7 +491,13 @@ e coberto por `client/test/musicSession.test.mjs`):
   `performance.now()` **local** a partir do instante de recepção. Relógios de
   máquinas diferentes nunca são comparados. Correção só acima de 1.5s de desvio e
   no máximo uma a cada 5s — sem essa trava, seek causa buffering, buffering causa
-  deriva e o player gagueja em loop.
+  deriva e o player gagueja em loop. Esse tique é heartbeat **de posição**: ele
+  repete a intenção corrente da sala em `playing` e nunca a infere do transporte
+  do player (`planPositionHeartbeat`). Um getter `playing` responde "está soando
+  neste milissegundo?" — falso durante buffering, com autoplay bloqueado e antes
+  do primeiro frame —, e usá-lo aqui transformava um engasgo de rede do dono numa
+  pausa autoritativa que ninguém pedia e ninguém desfazia. Play/pause têm
+  publicadores próprios e síncronos; o heartbeat só ecoava.
 
 **Identidade é a conexão.** O autor de qualquer mensagem `music-*` é o peer do
 data channel em que ela chegou; nenhum `addedBy`/`voterId` do payload é aceito
