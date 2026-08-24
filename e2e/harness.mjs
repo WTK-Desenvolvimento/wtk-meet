@@ -268,8 +268,40 @@ export async function launchBrowser({ audioFile = null } = {}) {
  */
 export async function openParticipant(
   browser,
-  { roomUrl, name, preferences, audioPreferences, forceWorkletNoiseSuppression = false },
+  {
+    roomUrl,
+    name,
+    preferences,
+    audioPreferences,
+    // Como esta aba passa pela **tela de pré-entrada**.
+    //
+    // O default é `false` de propósito: entrar com a câmera desligada é o
+    // padrão de fábrica do produto e o caminho que 100% de quem abre um link
+    // percorre. Fazer o harness entrar sempre ligado para "não mexer no
+    // roteiro" deixaria justamente esse caminho sem cobertura nenhuma.
+    //
+    // Quando um cenário precisa de vídeo, ligar aqui é pela UI do lobby, e não
+    // por `preferences` semeada: é a única forma de o roteiro exercitar o
+    // toggle — que grava a preferência no clique, não no submit.
+    cameraOn = false,
+    forceWorkletNoiseSuppression = false,
+    // Como o servidor de TURN responde **para este participante**. O default
+    // reproduz o comportamento de sempre (200 com o TURN local e validade
+    // folgada), então nenhuma chamada existente muda de comportamento.
+    //
+    // `status: 503` encena o deploy sem `CF_TURN_*`; `ttl` curto encena a
+    // credencial que vence com a aba aberta, que é o mecanismo que esta suíte
+    // nunca conseguiu exercitar antes.
+    //
+    // `expiredFirstCredential` é o que fecha a reprodução. O TURN local tem
+    // credencial estática e não expira nada, então "vencer" precisa ser
+    // encenado ao contrário: a **primeira** resposta traz uma senha que o TURN
+    // recusa, e a renovação traz a boa. Uma aba que não renova fica presa na
+    // senha recusada — que é, ponto a ponto, o defeito investigado.
+    turn = {},
+  },
 ) {
+  const { status: turnStatus = 200, ttl: turnTtl = 3600, expiredFirstCredential = false } = turn;
   const context = await browser.newContext({
     permissions: ['camera', 'microphone'],
     ignoreHTTPSErrors: true,
@@ -302,13 +334,34 @@ export async function openParticipant(
     await context.addInitScript({ content: 'window.__wtkForceWorkletNs = true;' });
   }
 
-  await context.route('**/turn-credentials', (route) =>
-    route.fulfill({
+  // Um item por requisição a /turn-credentials, com o instante. É o que permite
+  // afirmar que a credencial foi renovada **antes** de uma conexão nova nascer,
+  // e não só que ela foi renovada em algum momento.
+  const turnRequests = [];
+  await context.route('**/turn-credentials', (route) => {
+    turnRequests.push(Date.now());
+    if (turnStatus !== 200) {
+      return route.fulfill({
+        status: turnStatus,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'turn-unconfigured', message: 'sem TURN neste deploy' }),
+      });
+    }
+    const vencida = expiredFirstCredential && turnRequests.length === 1;
+    const iceServers = vencida
+      ? ICE_SERVERS.map((server) => ({ ...server, credential: 'senha-que-o-turn-recusa' }))
+      : ICE_SERVERS;
+
+    return route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ iceServers: ICE_SERVERS }),
-    }),
-  );
+      body: JSON.stringify({
+        iceServers,
+        ttl: turnTtl,
+        expiresAt: new Date(Date.now() + turnTtl * 1000).toISOString(),
+      }),
+    });
+  });
 
   await context.addInitScript({ content: INSTRUMENTATION });
 
@@ -323,9 +376,24 @@ export async function openParticipant(
   const nameField = page.getByPlaceholder('Como te chamam');
   await nameField.waitFor();
   await setInputValue(nameField, name);
+
+  // O toggle do lobby. Um clique de verdade, e não `check()`: é o caminho que
+  // comprovadamente chega ao React neste headless (a injeção via CDP não chega
+  // ao renderer — ver `setInputValue`).
+  const cameraToggle = page.getByRole('checkbox', { name: 'Entrar com a câmera ligada' });
+  await cameraToggle.waitFor();
+  if ((await cameraToggle.isChecked()) !== cameraOn) {
+    await cameraToggle.click();
+    await page.waitForFunction(
+      (want) => document.querySelector('.prejoin-toggle input')?.checked === want,
+      cameraOn,
+      { timeout: 5000 },
+    );
+  }
+
   await page.getByRole('button', { name: 'Entrar na sala' }).click();
 
-  return { context, page, name, consoleErrors };
+  return { context, page, name, consoleErrors, turnRequests };
 }
 
 /**
@@ -586,10 +654,16 @@ export const INSTRUMENTATION = `
   const origRAF = window.requestAnimationFrame.bind(window);
   window.requestAnimationFrame = (cb) => { window.__wtkCounters.raf++; return origRAF(cb); };
 
+  // Instante de criação de cada conexão, na mesma base de \`Date.now()\` do
+  // processo de teste. É o que permite afirmar que a credencial foi renovada
+  // **antes** de a conexão nascer, e não apenas em algum momento.
+  window.__wtkPeerCreatedAt = [];
+
   const OrigPC = window.RTCPeerConnection;
   window.RTCPeerConnection = function (...args) {
     const pc = new OrigPC(...args);
     window.__wtkPeers.push(pc);
+    window.__wtkPeerCreatedAt.push(Date.now());
     const sld = pc.setLocalDescription.bind(pc);
     pc.setLocalDescription = (...a) => { window.__wtkCounters.setLocalDescription++; return sld(...a); };
     const srd = pc.setRemoteDescription.bind(pc);
@@ -696,6 +770,11 @@ export const INSTRUMENTATION = `
   md.getUserMedia = async (constraints, ...rest) => {
     window.__wtkCounters.getUserMedia++;
     const asked = {
+      // requestedId devolve null tanto para "video: false" quanto para
+      // "video: true" sem deviceId — ele responde "qual device", não "pediu?".
+      // videoRequested é a pergunta que o LED da webcam responde, e é o que
+      // torna "nenhum getUserMedia com vídeo" verificável.
+      videoRequested: !!constraints?.video,
       video: requestedId(constraints?.video),
       audio: requestedId(constraints?.audio),
       audioProcessing: requestedProcessing(constraints?.audio),

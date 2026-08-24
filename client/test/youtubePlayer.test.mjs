@@ -198,7 +198,7 @@ function makePlayer(Ctor) {
   const player = new Ctor({
     host,
     onEnded: (videoId) => events.ended.push(videoId),
-    onError: (reason, code) => events.errors.push([reason, code]),
+    onError: (payload) => events.errors.push(payload),
     onDurationKnown: (videoId, value) => events.durations.push([videoId, value]),
     onTitle: (videoId, title) => events.titles.push([videoId, title]),
   });
@@ -530,7 +530,7 @@ test('AC8. destroy sobrevive a um iframe que já sumiu e ainda esvazia o host', 
   assert.equal(countIframes(host), 0, 'o host varrido é a rede de segurança quando o destroy estoura');
 });
 
-test('vídeo privado, removido ou com incorporação bloqueada vira aviso, não travamento', async () => {
+test('AC1. o erro do player chega com o código e o vídeo, num objeto', async () => {
   const YT = fakeYT();
   globalThis.window = { YT };
   const { YouTubeTrackPlayer } = await freshModule();
@@ -539,7 +539,7 @@ test('vídeo privado, removido ou com incorporação bloqueada vira aviso, não 
 
   YT.players[0].options.events.onError({ data: 150 });
 
-  assert.deepEqual(events.errors, [['youtube-error', 150]]);
+  assert.deepEqual(events.errors, [{ reason: 'youtube-error', code: 150, videoId: 'dQw4w9WgXcQ' }]);
 });
 
 test('o fim do vídeo é anunciado para a fila seguir sozinha', async () => {
@@ -723,4 +723,402 @@ test('sem fetch no ambiente o título simplesmente não vem', async () => {
   } finally {
     globalThis.fetch = original;
   }
+});
+
+// ------------------------------------------- oEmbed: o veredito de disponibilidade
+
+/**
+ * A mesma resposta, agora lida inteira.
+ *
+ * O status do oEmbed distingue o que o corpo não distingue — 401/403 é o dono
+ * que desabilitou a incorporação, 404 é vídeo removido, privado ou id que nunca
+ * existiu — e é isso que permite recusar o link **no instante em que a pessoa
+ * cola**, em vez de a sala descobrir quando a faixa chega a tocar.
+ *
+ * O que estes casos guardam é a assimetria: **só prova recusa**. Tudo que não é
+ * prova (429, 5xx, rede caída, CORS, abort, corpo que não é JSON, flag
+ * desligada, ambiente sem `fetch`) vira `unknown`, e `unknown` enfileira como
+ * sempre enfileirou. Um oEmbed fora do ar não pode virar "ninguém na sala
+ * consegue adicionar música".
+ *
+ * Aviso que a suíte não consegue dar sozinha: `fetchImpl` injetado **não
+ * simula CORS**. Se as respostas de erro do oEmbed vierem sem
+ * `Access-Control-Allow-Origin`, o navegador rejeita o `fetch` antes de haver
+ * status a ler e a recusa degrada para o comportamento de hoje — verde aqui não
+ * prova a feature em produção (risco 7.1 do documento).
+ */
+test('AC1/AC2. 404 é vídeo indisponível; 401 e 403 são incorporação bloqueada', async () => {
+  const { fetchYouTubeOEmbed } = await freshModule();
+  const responde = (status) => async () => ({ ok: false, status, json: async () => ({ title: 'não devia ser lido' }) });
+
+  for (const [status, availability] of [[404, 'not-found'], [401, 'embed-blocked'], [403, 'embed-blocked']]) {
+    const meta = await fetchYouTubeOEmbed('dQw4w9WgXcQ', { fetchImpl: responde(status) });
+    assert.deepEqual(meta, { title: null, availability, status }, String(status));
+  }
+});
+
+test('AC5. o que não é prova de indisponibilidade vira unknown, e unknown enfileira', async () => {
+  const { fetchYouTubeOEmbed } = await freshModule();
+
+  // 429 é rate-limit de sala movimentada e 5xx é a Google tendo um dia ruim:
+  // classificar por `!response.ok` transformaria os dois em "ninguém consegue
+  // adicionar música", com um sintoma que ninguém rastrearia até aqui.
+  const casos = {
+    'rate-limit': async () => ({ ok: false, status: 429, json: async () => ({}) }),
+    'erro da Google': async () => ({ ok: false, status: 503, json: async () => ({}) }),
+    'requisição malformada': async () => ({ ok: false, status: 400, json: async () => ({}) }),
+    'redirect estranho': async () => ({ ok: false, status: 302, json: async () => ({}) }),
+    'rede caída ou CORS': async () => {
+      throw new TypeError('Failed to fetch');
+    },
+    'resposta que não é JSON': async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('Unexpected token <');
+      },
+    }),
+    'sem resposta nenhuma': async () => null,
+  };
+
+  for (const [label, fetchImpl] of Object.entries(casos)) {
+    const meta = await fetchYouTubeOEmbed('dQw4w9WgXcQ', { fetchImpl });
+    assert.equal(meta.availability, 'unknown', label);
+    assert.equal(meta.title, null, label);
+  }
+});
+
+test('AC5. timeout e abort não recusam a faixa', async () => {
+  const { fetchYouTubeOEmbed } = await freshModule();
+  const outer = new AbortController();
+  // O prazo real é de 2,5s; abortar de fora exercita o mesmo caminho sem segurar
+  // a suíte por esse tempo.
+  const fetchImpl = (url, { signal }) =>
+    new Promise((_, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('AbortError')));
+    });
+
+  const pending = fetchYouTubeOEmbed('dQw4w9WgXcQ', { fetchImpl, signal: outer.signal });
+  outer.abort();
+
+  assert.deepEqual(await pending, { title: null, availability: 'unknown', status: null });
+});
+
+test('AC8/AC9. 200 devolve o título e o veredito ok — inclusive sem título legível', async () => {
+  const { fetchYouTubeOEmbed } = await freshModule();
+  const corpo = (json) => async () => ({ ok: true, status: 200, json: async () => json });
+
+  assert.deepEqual(await fetchYouTubeOEmbed('dQw4w9WgXcQ', { fetchImpl: corpo({ title: '  Never Gonna  ' }) }), {
+    title: 'Never Gonna',
+    availability: 'ok',
+    status: 200,
+  });
+
+  // Risco 7.2: derivar o veredito do título ("sem título, logo indisponível")
+  // recusaria um vídeo perfeitamente tocável. Os dois campos são independentes.
+  for (const json of [{ title: '   ' }, { title: 42 }, {}, null]) {
+    const meta = await fetchYouTubeOEmbed('dQw4w9WgXcQ', { fetchImpl: corpo(json) });
+    assert.deepEqual(meta, { title: null, availability: 'ok', status: 200 }, JSON.stringify(json));
+  }
+});
+
+test('AC10. uma requisição por link, e nenhuma quando não há o que perguntar', async () => {
+  const { fetchYouTubeOEmbed } = await freshModule();
+  const chamadas = [];
+  const fetchImpl = async (url) => {
+    chamadas.push(url);
+    return { ok: true, status: 200, json: async () => ({ title: 'Uma só' }) };
+  };
+
+  await fetchYouTubeOEmbed('dQw4w9WgXcQ', { fetchImpl });
+  assert.equal(chamadas.length, 1, 'o veredito e o título saem da mesma resposta');
+
+  const nunca = () => assert.fail('URL montada com lixo não pode sair daqui');
+  for (const bad of ['', 'curto', 'longo-demais-mesmo', '../../etc/passwd', null, 42]) {
+    const meta = await fetchYouTubeOEmbed(bad, { fetchImpl: nunca });
+    assert.deepEqual(meta, { title: null, availability: 'unknown', status: null }, JSON.stringify(bad));
+  }
+});
+
+test('AC6/AC7. com a flag desligada, ou sem fetch no ambiente, não há veredito nenhum', async () => {
+  const { fetchYouTubeOEmbed } = await freshModule();
+  const nunca = () => assert.fail('nenhuma requisição à Google com a flag desligada');
+
+  assert.deepEqual(await fetchYouTubeOEmbed('dQw4w9WgXcQ', { enabled: false, fetchImpl: nunca }), {
+    title: null,
+    availability: 'unknown',
+    status: null,
+  });
+
+  // Sem `fetchImpl` a função cai no `globalThis.fetch` — que **existe** neste
+  // node e alcança a internet de verdade. Tirá-lo do caminho é o que mantém a
+  // promessa do arquivo: nenhum caso desta suíte fala com a Google.
+  const original = globalThis.fetch;
+  delete globalThis.fetch;
+  try {
+    const meta = await fetchYouTubeOEmbed('dQw4w9WgXcQ', { enabled: true });
+    assert.equal(meta.availability, 'unknown');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('AC11. fetchYouTubeTitle continua sendo só o título, e continua não lançando', async () => {
+  const { fetchYouTubeTitle } = await freshModule();
+  const responde = (resposta) => async () => resposta;
+
+  assert.equal(
+    await fetchYouTubeTitle('dQw4w9WgXcQ', {
+      fetchImpl: responde({ ok: true, status: 200, json: async () => ({ title: 'Never Gonna' }) }),
+    }),
+    'Never Gonna',
+    'string quando há título',
+  );
+  // O envelope não deixa vazar o objeto: quem só quer o nome não desembrulha
+  // veredito nenhum, e um 404 vale o mesmo `null` de sempre para este chamador.
+  assert.equal(
+    await fetchYouTubeTitle('dQw4w9WgXcQ', {
+      fetchImpl: responde({ ok: false, status: 404, json: async () => ({}) }),
+    }),
+    null,
+    'null quando não há',
+  );
+});
+
+// -------------------------------------- classificação do erro e política
+
+/**
+ * O que segue cobre a correção da WTK-MEET-13. O bug era de argumento
+ * posicional: o envelope emitia `('youtube-error', 150)` e o handler declarava
+ * `(code, entryId)` — o `150` passava pela guarda `typeof entryId === 'string'`
+ * como "não é string", caía no fallback e **o código nunca era lido**. Todos os
+ * erros do YouTube, do vídeo removido ao soluço momentâneo do player, recebiam o
+ * mesmo tratamento: aviso genérico e faixa fora da fila da sala inteira.
+ *
+ * Por isso a decisão inteira — classificar, escolher entre retentar/pular/só
+ * avisar, contar tentativa e conferir propriedade — é pura e vive no módulo:
+ * `useMusicRoom.js` é um hook React, e este projeto roda `node --test` sem
+ * renderer. Aqui é o único lugar onde "peer que não é dono nunca pula a faixa"
+ * pode virar asserção em vez de leitura de código.
+ */
+
+/** Todos os códigos que interessam, mais o que a API não documenta. */
+const ERROR_CODES = [2, 5, 100, 101, 150, 153, 999, null, undefined, '150', NaN];
+
+test('AC2. só 5 e 153 são transitórios; o resto é sentença, inclusive o desconhecido', async () => {
+  const { classifyYouTubeError } = await freshModule();
+
+  assert.deepEqual(classifyYouTubeError(2), { code: 2, kind: 'invalid-id', transient: false });
+  assert.deepEqual(classifyYouTubeError(5), { code: 5, kind: 'html5', transient: true });
+  assert.deepEqual(classifyYouTubeError(100), { code: 100, kind: 'unavailable', transient: false });
+  assert.deepEqual(classifyYouTubeError(101), { code: 101, kind: 'not-embeddable', transient: false });
+  assert.deepEqual(classifyYouTubeError(150), { code: 150, kind: 'not-embeddable', transient: false });
+  assert.deepEqual(classifyYouTubeError(153), { code: 153, kind: 'referrer', transient: true });
+
+  // Sem evidência de que recarregar ajuda, o conservador é pular — e o código
+  // cru sobrevive no retorno justamente para poder ser logado e reclassificado.
+  for (const code of [999, null, undefined, '150', NaN, {}]) {
+    const result = classifyYouTubeError(code);
+    assert.equal(result.kind, 'unknown', JSON.stringify(code));
+    assert.equal(result.transient, false, JSON.stringify(code));
+  }
+
+  const transientCodes = ERROR_CODES.filter((code) => classifyYouTubeError(code).transient);
+  assert.deepEqual(transientCodes, [5, 153]);
+});
+
+test('AC3. código permanente com peer dono pula na hora, e a mensagem diz o que houve', async () => {
+  const { planYouTubeError } = await freshModule();
+  const base = { entryId: 'e1', title: 'Faixa X', isOwner: true, attempts: null };
+
+  for (const code of [2, 100, 101, 150, 999, null]) {
+    const plan = planYouTubeError({ ...base, code });
+    assert.equal(plan.action, 'skip', `código ${code}`);
+    assert.equal(plan.code, typeof code === 'number' ? code : null);
+    assert.match(plan.notice, /Faixa X/);
+  }
+
+  assert.match(planYouTubeError({ ...base, code: 2 }).notice, /não é um vídeo válido/);
+  assert.match(planYouTubeError({ ...base, code: 100 }).notice, /removido ou privado/);
+  // 101/150 é o caso acionável: o vídeo existe e toca — só não fora do YouTube.
+  for (const code of [101, 150]) {
+    assert.match(planYouTubeError({ ...base, code }).notice, /fora do YouTube/, `código ${code}`);
+  }
+});
+
+test('AC4. transitório com contador zerado tenta de novo e conta a tentativa', async () => {
+  const { planYouTubeError } = await freshModule();
+
+  for (const code of [5, 153]) {
+    for (const attempts of [null, undefined, { entryId: 'outra', count: 1 }, { entryId: 'e1', count: 0 }]) {
+      const plan = planYouTubeError({ code, entryId: 'e1', title: 'Faixa X', isOwner: true, attempts });
+      assert.equal(plan.action, 'retry', `código ${code} / ${JSON.stringify(attempts)}`);
+      assert.deepEqual(plan.attempts, { entryId: 'e1', count: 1 });
+      assert.match(plan.notice, /Tentando de novo/);
+    }
+  }
+});
+
+test('AC5. a segunda falha na mesma faixa não retenta: pula (dono) ou só avisa', async () => {
+  const { planYouTubeError } = await freshModule();
+
+  for (const code of [5, 153]) {
+    const asOwner = planYouTubeError({
+      code,
+      entryId: 'e1',
+      title: 'Faixa X',
+      isOwner: true,
+      attempts: { entryId: 'e1', count: 1 },
+    });
+    assert.equal(asOwner.action, 'skip', `código ${code}`);
+    assert.match(asOwner.notice, /Não consegui tocar/);
+
+    const asPeer = planYouTubeError({
+      code,
+      entryId: 'e1',
+      title: 'Faixa X',
+      isOwner: false,
+      attempts: { entryId: 'e1', count: 1 },
+    });
+    assert.equal(asPeer.action, 'notice-only', `código ${code}`);
+  }
+});
+
+test('AC5. nenhuma combinação produz duas retentativas na mesma faixa — o laço não existe', async () => {
+  const { planYouTubeError } = await freshModule();
+
+  // Varredura fechada: qualquer contador já ≥ 1 na faixa corrente, qualquer
+  // código, qualquer papel. Se algum caminho devolvesse 'retry' aqui, um vídeo
+  // que erra sempre recarregaria para sempre — que é o que o card proíbe.
+  for (const code of ERROR_CODES) {
+    for (const count of [1, 2, 7]) {
+      for (const isOwner of [true, false]) {
+        const plan = planYouTubeError({
+          code,
+          entryId: 'e1',
+          title: 'Faixa X',
+          isOwner,
+          attempts: { entryId: 'e1', count },
+        });
+        assert.notEqual(plan.action, 'retry', `código ${code}, count ${count}, dono ${isOwner}`);
+        assert.equal(plan.attempts.count, count, 'o contador esgotado não volta atrás');
+      }
+    }
+  }
+
+  // E a retentativa que falha de novo entrega o contador que já estava lá: a
+  // sequência real (erro → retry → erro) termina em pulo, nunca em novo retry.
+  const first = planYouTubeError({ code: 5, entryId: 'e1', isOwner: true, attempts: null });
+  const second = planYouTubeError({ code: 5, entryId: 'e1', isOwner: true, attempts: first.attempts });
+  assert.deepEqual([first.action, second.action], ['retry', 'skip']);
+});
+
+test('AC6. sem ser dono, nenhuma combinação de código, contador e título gera pulo', async () => {
+  const { planYouTubeError } = await freshModule();
+
+  for (const code of ERROR_CODES) {
+    for (const attempts of [null, { entryId: 'e1', count: 0 }, { entryId: 'e1', count: 1 }, { entryId: 'z', count: 3 }]) {
+      for (const title of ['Faixa X', '', null, undefined, '   ']) {
+        const plan = planYouTubeError({ code, entryId: 'e1', title, isOwner: false, attempts });
+        assert.notEqual(
+          plan.action,
+          'skip',
+          `código ${code}, ${JSON.stringify(attempts)}, título ${JSON.stringify(title)}`,
+        );
+        assert.ok(['retry', 'notice-only'].includes(plan.action));
+      }
+    }
+  }
+});
+
+test('AC6. sem entryId a decisão é só avisar, e o contador da faixa corrente fica intacto', async () => {
+  const { planYouTubeError } = await freshModule();
+  const attempts = { entryId: 'e1', count: 1 };
+
+  for (const entryId of [null, undefined, '', 42]) {
+    const plan = planYouTubeError({ code: 5, entryId, title: 'Faixa X', isOwner: true, attempts });
+    assert.equal(plan.action, 'notice-only', JSON.stringify(entryId));
+    assert.deepEqual(plan.attempts, attempts, 'erro de faixa desconhecida não pode zerar o contador da corrente');
+  }
+});
+
+test('AC7. trocar de faixa zera o contador: a nova ganha a retentativa dela', async () => {
+  const { planYouTubeError } = await freshModule();
+
+  const esgotada = planYouTubeError({ code: 5, entryId: 'e1', isOwner: true, attempts: { entryId: 'e1', count: 1 } });
+  assert.equal(esgotada.action, 'skip');
+
+  const outraFaixa = planYouTubeError({ code: 5, entryId: 'e2', isOwner: true, attempts: esgotada.attempts });
+  assert.equal(outraFaixa.action, 'retry', 'o contador é por entryId — a faixa nova não herda a desistência');
+  assert.deepEqual(outraFaixa.attempts, { entryId: 'e2', count: 1 });
+});
+
+test('AC8. cinco mensagens distintas em pt-BR, com o título quando ele existe', async () => {
+  const { planYouTubeError } = await freshModule();
+  const notice = (code, extra = {}) =>
+    planYouTubeError({ code, entryId: 'e1', title: 'Faixa X', isOwner: true, ...extra }).notice;
+
+  const esgotado = { attempts: { entryId: 'e1', count: 1 } };
+  const textos = [
+    notice(5),                 // retentativa
+    notice(2),                 // link inválido
+    notice(100),               // indisponível
+    notice(150),               // sem incorporação
+    notice(5, esgotado),       // esgotado / desconhecido
+  ];
+  assert.equal(new Set(textos).size, 5, 'aviso repetido não dá sinal nenhum de progresso ao usuário');
+  for (const texto of textos) assert.match(texto, /Faixa X/);
+  // O mesmo texto genérico serve para transitório esgotado e para desconhecido.
+  assert.equal(notice(999), notice(5, esgotado));
+
+  // Sem título o aviso continua legível, nunca com “undefined” na cara.
+  for (const title of [null, undefined, '', '   ', 42]) {
+    for (const code of [2, 5, 100, 150, 999]) {
+      const texto = planYouTubeError({ code, entryId: 'e1', title, isOwner: true }).notice;
+      assert.match(texto, /A faixa/, JSON.stringify([code, title]));
+      assert.doesNotMatch(texto, /undefined|null|NaN/);
+    }
+  }
+});
+
+test('AC9. playerVars leva enablejsapi e a origem da página quando ela existe', async () => {
+  const YT = fakeYT();
+  globalThis.window = { YT, location: { origin: 'https://meet.exemplo.br' } };
+  const { YouTubeTrackPlayer } = await freshModule();
+  const { player } = makePlayer(YouTubeTrackPlayer);
+
+  await player.load('dQw4w9WgXcQ', { startSeconds: 42 });
+
+  const { playerVars } = YT.players[0].options;
+  assert.equal(playerVars.enablejsapi, 1);
+  assert.equal(playerVars.origin, 'https://meet.exemplo.br');
+  assert.equal(playerVars.start, 42, 'o resto do playerVars segue igual');
+  globalThis.window = {};
+});
+
+test('AC9. sem origem http(s) de verdade a chave origin nem entra — e nada estoura', async () => {
+  // Um `origin` que não bate com a página faz a IFrame API recusar **todos** os
+  // vídeos: trocaria um erro intermitente por uma quebra total. Daí a omissão
+  // ser o caminho seguro, e não um valor inventado.
+  const semLocation = () => ({ YT: fakeYT() });
+  const casos = [
+    ['sem location (o window dublê da suíte)', semLocation()],
+    ['origin "null" de um contexto file://', { YT: fakeYT(), location: { origin: 'null' } }],
+    ['origin vazio', { YT: fakeYT(), location: { origin: '' } }],
+    ['origin que não é texto', { YT: fakeYT(), location: { origin: 42 } }],
+    ['esquema não-http', { YT: fakeYT(), location: { origin: 'chrome-extension://abc' } }],
+  ];
+
+  for (const [label, fakeWindow] of casos) {
+    globalThis.window = fakeWindow;
+    const { YouTubeTrackPlayer } = await freshModule();
+    const { player } = makePlayer(YouTubeTrackPlayer);
+
+    await assert.doesNotReject(player.load('dQw4w9WgXcQ'), label);
+
+    const { playerVars } = fakeWindow.YT.players[0].options;
+    assert.equal(playerVars.enablejsapi, 1, label);
+    assert.equal('origin' in playerVars, false, label);
+  }
+  globalThis.window = {};
 });

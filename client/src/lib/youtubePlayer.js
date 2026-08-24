@@ -20,7 +20,12 @@
  */
 
 const API_SRC = 'https://www.youtube.com/iframe_api';
-/** oEmbed público: só o título do vídeo, sem chave e sem cookie. */
+/**
+ * oEmbed público, sem chave e sem cookie. **Serve a dois propósitos com uma
+ * requisição só:** o corpo dá o título (enfeite) e o status dá o veredito de
+ * disponibilidade (decisão de recusar o link no ato). Ver
+ * `fetchYouTubeOEmbed`.
+ */
 const OEMBED_SRC = 'https://www.youtube.com/oembed';
 /**
  * O título é enfeite; a faixa entra na fila com ou sem ele. Uma espera longa
@@ -80,27 +85,58 @@ export function loadYouTubeApi() {
 }
 
 /**
- * Título real do vídeo pelo endpoint oEmbed público — sem chave de API, sem
- * cookie, e só para quem **enfileira** a faixa (os outros participantes recebem
- * o nome pelo data channel, sem falar com a Google).
+ * Mapa de status do oEmbed para veredito de disponibilidade — **lista explícita,
+ * e só ela recusa**.
  *
- * Nunca lança e nunca é obrigatório: rede caída, CORS, resposta que não é JSON,
- * título vazio ou estouro do prazo devolvem `null`, e quem chama mantém o
- * `YouTube · <id>`. Um nome bonito não vale bloquear o enfileiramento.
+ * Trocar isto por `!response.ok` é a armadilha que o desenho evita: 429 é
+ * resposta comum de rate-limit numa sala movimentada e 5xx acontece, e os dois
+ * viram "ninguém consegue adicionar música" — um sintoma que ninguém rastreia
+ * até aqui. Tudo que não está nesta lista é `unknown`, e `unknown` enfileira.
+ */
+const AVAILABILITY_BY_STATUS = new Map([
+  [401, 'embed-blocked'], // o dono desabilitou a incorporação
+  [403, 'embed-blocked'],
+  [404, 'not-found'], // removido, privado, ou id que nunca existiu
+]);
+
+/** Nada foi provado sobre o vídeo: quem chama segue como seguia antes. */
+function unknownMeta() {
+  return { title: null, availability: 'unknown', status: null };
+}
+
+/**
+ * O oEmbed público — sem chave de API, sem cookie, e só para quem **enfileira**
+ * a faixa (os outros participantes recebem o nome pelo data channel, sem falar
+ * com a Google).
+ *
+ * **Uma requisição, duas respostas.** O corpo traz o título, que é enfeite; o
+ * status traz o veredito de disponibilidade, que é decisão — 401/403 dizem que o
+ * dono desabilitou a incorporação, 404 diz que o vídeo foi removido, é privado
+ * ou nunca existiu. Os dois saem da mesma resposta de propósito: sondar de novo
+ * dobraria a exposição do IP do usuário à Google e criaria a chance de as duas
+ * respostas discordarem.
+ *
+ * **Os dois campos são independentes.** Um 200 sem título legível é
+ * `{ title: null, availability: 'ok' }` — vídeo tocável sem nome bonito, não
+ * vídeo indisponível.
+ *
+ * Nunca lança: rede caída, CORS, corpo que não é JSON ou estouro do prazo
+ * devolvem `unknown`, e `unknown` deixa a faixa entrar na fila. Um oEmbed fora
+ * do ar não pode virar "ninguém na sala consegue adicionar música".
  *
  * A guarda de `isYouTubeEnabled()` é redundante com a de `parseSource` **de
  * propósito**: a promessa "nenhuma requisição à Google" tem que valer no ponto
  * onde a requisição nasceria, não só no chamador de hoje.
  */
-export async function fetchYouTubeTitle(videoId, { signal, fetchImpl, enabled = isYouTubeEnabled() } = {}) {
+export async function fetchYouTubeOEmbed(videoId, { signal, fetchImpl, enabled = isYouTubeEnabled() } = {}) {
   // `enabled` é a flag, e é parâmetro só porque `import.meta.env` não existe em
   // `node:test`: sem essa costura, "com a flag desligada nenhuma requisição
   // nasce" só seria verificável no navegador. O padrão continua sendo a flag.
-  if (!enabled) return null;
-  if (typeof videoId !== 'string' || !VIDEO_ID.test(videoId)) return null;
+  if (!enabled) return unknownMeta();
+  if (typeof videoId !== 'string' || !VIDEO_ID.test(videoId)) return unknownMeta();
 
   const doFetch = fetchImpl || (typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null);
-  if (!doFetch) return null;
+  if (!doFetch) return unknownMeta();
 
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
   const timer = controller ? setTimeout(() => controller.abort(), OEMBED_TIMEOUT_MS) : null;
@@ -115,17 +151,146 @@ export async function fetchYouTubeTitle(videoId, { signal, fetchImpl, enabled = 
       credentials: 'omit',
       referrerPolicy: 'no-referrer',
     });
-    if (!response?.ok) return null;
+    const status = typeof response?.status === 'number' ? response.status : null;
+    if (!response?.ok) {
+      return { title: null, availability: AVAILABILITY_BY_STATUS.get(status) || 'unknown', status };
+    }
     const data = await response.json();
     const title = typeof data?.title === 'string' ? data.title.trim() : '';
-    return title || null;
+    return { title: title || null, availability: 'ok', status };
   } catch {
-    return null;
+    // Rede, CORS, abort, JSON inválido: não houve prova nenhuma sobre o vídeo, e
+    // o que não é prova não recusa.
+    return unknownMeta();
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener?.('abort', abort);
   }
 }
+
+/**
+ * Só o título, para quem só quer o título.
+ *
+ * Envelope fino sobre `fetchYouTubeOEmbed`, e não uma função substituída: o
+ * contrato `string | null` que nunca lança já é consumido e testado, e mantê-lo
+ * evita obrigar todo chamador futuro a desembrulhar um objeto para pegar um
+ * nome. Um título bonito continua não valendo bloquear o enfileiramento.
+ */
+export async function fetchYouTubeTitle(videoId, options) {
+  const { title } = await fetchYouTubeOEmbed(videoId, options);
+  return title;
+}
+
+/**
+ * Códigos de erro da IFrame API, e o que cada um significa de verdade.
+ *
+ * A tabela mora aqui, junto do resto do conhecimento sobre o terceiro, porque é
+ * exatamente isso que ela é: um detalhe da API da Google. Sendo pura e
+ * exportada, ela é verificável sem DOM e sem `window` — e a decisão de pular ou
+ * retentar deixa de ser um `if` escondido dentro de um hook React.
+ *
+ * `'unknown'` é deliberadamente **não** transitório: sem evidência de que
+ * recarregar ajuda, o comportamento conservador é o de sempre (pular), e é o
+ * `console.warn` com o código cru que permite reclassificar depois com dado real.
+ */
+const YOUTUBE_ERROR_KINDS = new Map([
+  [2, 'invalid-id'],       // videoId malformado
+  [5, 'html5'],            // falha do player HTML5 — soluço, não sentença
+  [100, 'unavailable'],    // removido ou privado
+  [101, 'not-embeddable'], // o dono bloqueou a incorporação
+  [150, 'not-embeddable'], // idem 101, com outro número
+  [153, 'referrer'],       // referrer recusado
+]);
+
+/** As duas classes em que tentar de novo tem chance real de dar certo. */
+const TRANSIENT_KINDS = new Set(['html5', 'referrer']);
+
+/** Nome da faixa quando ela ainda não tem título — o aviso não pode sair vazio. */
+const UNTITLED = 'A faixa';
+
+/**
+ * Mensagens em pt-BR, uma por classe. São textos **distintos** de propósito: um
+ * aviso genérico para tudo é o que fazia o usuário ver "vídeo indisponível" num
+ * vídeo que existe e toca — e não dizia o que ele podia fazer a respeito.
+ */
+const YOUTUBE_ERROR_NOTICES = {
+  retry: (title) => `Falhou ao carregar "${title}". Tentando de novo…`,
+  'invalid-id': (title) => `O link de "${title}" não é um vídeo válido do YouTube.`,
+  unavailable: (title) => `"${title}" não está mais disponível no YouTube (vídeo removido ou privado).`,
+  'not-embeddable': (title) => `O dono de "${title}" não permite tocar o vídeo fora do YouTube — só dá para ouvir lá.`,
+  generic: (title) => `Não consegui tocar "${title}" aqui.`,
+};
+
+/** O que este código de erro quer dizer, e dá para tentar de novo? */
+export function classifyYouTubeError(code) {
+  const numeric = typeof code === 'number' && Number.isFinite(code) ? code : null;
+  const kind = (numeric !== null && YOUTUBE_ERROR_KINDS.get(numeric)) || 'unknown';
+  return { code: numeric, kind, transient: TRANSIENT_KINDS.has(kind) };
+}
+
+/**
+ * Decide o que fazer com um erro do player do YouTube — retentar, pular ou só
+ * avisar. Pura, e é essa a graça: `isOwner` e o contador de tentativas **entram**
+ * como argumento, então "peer que não é dono nunca gera pulo" e "nunca há duas
+ * retentativas na mesma faixa" viram asserção de teste unitário em vez de
+ * inspeção de código.
+ *
+ * O contador é um só (`{ entryId, count }`), porque só existe uma faixa corrente:
+ * erro numa faixa diferente da contada reinicia a contagem, sem `Map` que cresce
+ * a sessão inteira nem política de expiração para um dado que só interessa agora.
+ */
+export function planYouTubeError({ code, entryId = null, title = null, isOwner = false, attempts = null } = {}) {
+  const { code: parsedCode, kind, transient } = classifyYouTubeError(code);
+  const id = typeof entryId === 'string' && entryId ? entryId : null;
+  const trimmed = typeof title === 'string' ? title.trim() : '';
+  const label = trimmed || UNTITLED;
+  const notice = (key) => (YOUTUBE_ERROR_NOTICES[key] || YOUTUBE_ERROR_NOTICES.generic)(label);
+  const message = YOUTUBE_ERROR_NOTICES[kind] ? notice(kind) : notice('generic');
+
+  // Sem faixa identificada não há sobre o que agir: avisa e não toca no contador
+  // da faixa que estiver tocando.
+  if (!id) {
+    const kept = typeof attempts?.entryId === 'string' ? attempts : { entryId: null, count: 0 };
+    return { kind, code: parsedCode, action: 'notice-only', notice: message, attempts: kept };
+  }
+
+  const sameTrack = attempts?.entryId === id;
+  const count = sameTrack && Number.isFinite(attempts?.count) ? attempts.count : 0;
+
+  if (transient && count < 1) {
+    return {
+      kind,
+      code: parsedCode,
+      action: 'retry',
+      notice: notice('retry'),
+      attempts: { entryId: id, count: count + 1 },
+    };
+  }
+
+  // Esgotada a retentativa (ou erro permanente): só o dono mexe na fila da sala.
+  return {
+    kind,
+    code: parsedCode,
+    action: isOwner ? 'skip' : 'notice-only',
+    notice: message,
+    attempts: { entryId: id, count },
+  };
+}
+
+/**
+ * Origem para o `playerVars`, derivada da página — **nunca** um domínio escrito à
+ * mão. Um `origin` que não bate com a página faz a IFrame API recusar todos os
+ * vídeos, trocando um erro intermitente por uma quebra total, `localhost`
+ * inclusive. Sem origem `http`/`https` de verdade (contexto `file://` produz a
+ * string `"null"`, e a suíte roda com um `window` dublê sem `location`), a chave
+ * simplesmente não entra.
+ */
+function pageOrigin() {
+  if (typeof window === 'undefined') return null;
+  const origin = window.location?.origin;
+  return typeof origin === 'string' && /^https?:\/\/./.test(origin) ? origin : null;
+}
+
 
 /**
  * Envelope fino sobre o player do YouTube, com a mesma superfície do
@@ -211,11 +376,22 @@ export class YouTubeTrackPlayer {
     let instance = null;
     let readyFired = false;
 
+    const origin = pageOrigin();
     instance = new YT.Player(mount, {
       videoId,
       // `playsinline` evita o player em tela cheia no iOS; `rel: 0` corta a
-      // enxurrada de sugestões no fim do vídeo.
-      playerVars: { playsinline: 1, rel: 0, controls: 0, disablekb: 1, start: Math.floor(startSeconds) },
+      // enxurrada de sugestões no fim do vídeo. `enablejsapi` e `origin` são o
+      // que a IFrame API documenta para a página que a controla — a ausência do
+      // `origin` é causa conhecida de erro 153 (referrer recusado) intermitente.
+      playerVars: {
+        playsinline: 1,
+        rel: 0,
+        controls: 0,
+        disablekb: 1,
+        enablejsapi: 1,
+        start: Math.floor(startSeconds),
+        ...(origin ? { origin } : {}),
+      },
       events: {
         onReady: (event) => {
           readyFired = true;
@@ -240,11 +416,14 @@ export class YouTubeTrackPlayer {
           if (event.data === YT.PlayerState.ENDED) this.onEnded?.(videoId);
           if (event.data === YT.PlayerState.PLAYING) this._announceMetadata(videoId);
         },
-        // Vídeo removido, privado ou com incorporação bloqueada. Vira "faixa
-        // pulada com aviso" — nunca um player travado sem explicação.
+        // O evento é **um objeto**, e o motivo é literal: o código numérico já
+        // viajou como segundo argumento posicional para um handler cujo segundo
+        // parâmetro era `entryId`. Passou no `typeof`, caiu no fallback, e o
+        // código foi descartado em silêncio por meses. Campo nomeado não tem
+        // como cair na gaveta errada.
         onError: (event) => {
           if (this._obsolete(generation, instance)) return;
-          this.onError?.('youtube-error', event?.data);
+          this.onError?.({ reason: 'youtube-error', code: event?.data ?? null, videoId });
         },
       },
     });
