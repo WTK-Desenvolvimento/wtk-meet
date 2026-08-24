@@ -1273,3 +1273,39 @@ button.primary {
     min-height: 0;
   }
 }
+
+/* --- pré-entrada (lobby) --- */
+
+/* O lobby reusa `.home` (largura, coluna, gaps) e `.local-preview` (o tile de
+   320px). Só o que é dele mora aqui. */
+.prejoin-preview {
+  /* `.local-preview` tem largura fixa; dentro da coluna da `.home` isso deixaria
+     o tile encostado à esquerda. */
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* Rótulo e caixa na mesma linha, e o clique no texto alterna o toggle. */
+.prejoin-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  cursor: pointer;
+}
+
+/* `input` global tem padding e borda de campo de texto — nada disso serve para
+   uma caixa de marcação. */
+.prejoin-toggle input {
+  width: 1.1rem;
+  height: 1.1rem;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* A dica do toggle cola no rótulo: o `gap` da `.home` a jogaria longe dele, e
+   ela deixaria de ser lida como explicação da escolha. */
+.prejoin-toggle + .hint {
+  margin: -0.9rem 0 0;
+}

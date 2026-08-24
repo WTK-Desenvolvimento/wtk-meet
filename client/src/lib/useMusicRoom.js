@@ -79,7 +79,7 @@ import {
   VOTE_DURATION_MS,
 } from './musicVote.js';
 import {
-  fetchYouTubeTitle,
+  fetchYouTubeOEmbed,
   isYouTubeEnabled,
   planYouTubeError,
   YouTubeTrackPlayer,

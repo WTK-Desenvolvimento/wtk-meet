@@ -17,8 +17,10 @@ import RemoteMusicAudio from '../components/RemoteMusicAudio.jsx';
 import Toasts from '../components/Toasts.jsx';
 import JoinRequestModal from '../components/JoinRequestModal.jsx';
 import SettingsModal from '../components/SettingsModal.jsx';
+import PreJoin from '../components/PreJoin.jsx';
 import {
   buildConstraints,
+  initialMediaPlan,
   listDevices,
   readPreferences,
   reconcilePreferences,
@@ -43,6 +45,29 @@ const PHASE = {
   WAITING_APPROVAL: 'waiting-approval',
   IN_CALL: 'in-call',
   DENIED: 'denied',
+};
+
+/**
+ * Todo registro de participante nasce assim — e nasce `cameraOff: true`.
+ *
+ * Quem responde por "a câmera dele está ligada" é a mensagem `state` do data
+ * channel, e não há garantia nenhuma de que ela chegue antes do primeiro
+ * `ontrack`. Assumir "ligada" enquanto não se sabe escolhe o erro mais caro:
+ * um retângulo preto, ou um frame de vídeo de alguém que pediu para não
+ * aparecer. O custo do lado oposto é um placeholder que dura algumas centenas
+ * de milissegundos no tile de quem está com a câmera ligada mesmo.
+ *
+ * Ele existe como constante — e não como três objetos escritos à mão — porque
+ * são **três** os pontos que criam registro (o loop de `members`, o
+ * `peer-joined` e o `onRemoteStream`, que também cria quando o peer ainda é
+ * desconhecido). Corrigir só um deixa a corrida viva.
+ */
+const DEFAULT_PARTICIPANT = {
+  displayName: '',
+  stream: null,
+  screenStream: null,
+  cameraOff: true,
+  micOff: false,
 };
 
 const TOAST_MS = 4000;
@@ -95,7 +120,13 @@ export default function Room() {
   // peerId -> { displayName, stream, screenStream, cameraOff, micOff }
   const [participants, setParticipants] = useState(new Map());
   const [muted, setMuted] = useState(false);
-  const [cameraOff, setCameraOff] = useState(false);
+  // O padrão de fábrica é entrar **desligado**: sem preferência gravada,
+  // `startCameraOff` é `true` e nenhum `getUserMedia` desta aba pede vídeo.
+  // `muted` acima continua nascendo `false` de propósito — entrar sem
+  // microfone é outra demanda, e nenhuma constraint de áudio muda aqui.
+  const [cameraOff, setCameraOff] = useState(
+    () => readPreferences(window.localStorage).startCameraOff,
+  );
   const [sharingScreen, setSharingScreen] = useState(false);
   const [mediaError, setMediaError] = useState(null);
   // Qual tela **esta aba** vê em destaque. Preferência puramente local: não vai
@@ -115,7 +146,7 @@ export default function Room() {
   const [audioLevels, setAudioLevels] = useState({});
 
   // Preferência de dispositivos: a única coisa que este app grava em
-  // `localStorage` (ver `lib/devices.js` e `ARCHITECTURE.md` §6.8). O toggle de
+  // `localStorage` (ver `lib/devices.js` e `ARCHITECTURE.md` §6.10). O toggle de
   // avisos sonoros mora aqui desde que saiu da barra de controles.
   const [preferences, setPreferences] = useState(() => readPreferences(window.localStorage));
   // Supressão de ruído: chave própria (`wtk-meet:audio`), pelas razões em
@@ -174,6 +205,38 @@ export default function Room() {
     preferencesRef.current = saved;
     setPreferences(saved);
     return saved;
+  }, []);
+
+  /**
+   * O toggle de câmera da tela de pré-entrada.
+   *
+   * Duas escritas, nesta ordem: a preferência (que é o que sobrevive a fechar a
+   * aba antes de entrar) e o estado da sala. O `cameraOff` daqui é a **única**
+   * fonte da verdade da escolha — o toggle do lobby não tem estado próprio.
+   * Com dois estados existiria o caminho em que a pessoa vê o toggle ligado e
+   * entra desligada.
+   *
+   * Gravar no clique, e não no submit, é o que faz a escolha valer para a
+   * próxima sala mesmo se a pessoa desistir de entrar nesta.
+   */
+  const chooseStartCamera = useCallback(
+    (on) => {
+      savePreferences({ startCameraOff: !on });
+      setCameraOff(!on);
+    },
+    [savePreferences],
+  );
+
+  /**
+   * Sair do lobby. É a mudança de `displayName` que libera o efeito de setup —
+   * o lobby não conecta nada, não abre socket e não entrega stream nenhum.
+   */
+  const enterRoom = useCallback((name) => {
+    // Um aviso de preview que ficou na tela do lobby não tem por que atravessar
+    // a entrada: o que valer na sala será dito de novo pelo efeito de setup.
+    setMediaError(null);
+    sessionStorage.setItem('displayName', name);
+    setDisplayName(name);
   }, []);
 
   const saveAudioPreferences = useCallback((patch) => {
@@ -311,18 +374,21 @@ export default function Room() {
     const toastTimers = toastTimersRef.current;
 
     /**
-     * Cadeia de fallback, do mais desejado ao mínimo viável. O terceiro passo
-     * ignora a preferência de microfone de propósito: sem ele, uma preferência
-     * obsoleta (headset que ficou em outra máquina) faria a pessoa entrar sem
-     * áudio nenhum — e nada disso pode virar erro na tela.
+     * O que pedir na entrada, e em que ordem. A cadeia vem de `initialMediaPlan`
+     * (pura, coberta em `test/joinCameraDefault.test.mjs`) e não de um `if`
+     * aqui: é a preferência que decide se **alguma** tentativa pede vídeo, e é
+     * disso que depende o LED da webcam ficar apagado para quem só abriu o link.
+     *
+     * A última tentativa ignora a preferência de microfone de propósito: sem
+     * ela, uma preferência obsoleta (headset que ficou em outra máquina) faria a
+     * pessoa entrar sem áudio nenhum — e nada disso pode virar erro na tela.
      */
+    const mediaPlan = initialMediaPlan(preferencesRef.current, {
+      audioProcessing: noiseConstraints(audioPrefsRef.current),
+    });
+
     async function getLocalStream() {
-      const attempts = [
-        micConstraints({ video: true, audio: true }),
-        micConstraints({ video: false, audio: true }),
-        { video: false, audio: true },
-      ];
-      for (const constraints of attempts) {
+      for (const constraints of mediaPlan.attempts) {
         try {
           return await navigator.mediaDevices.getUserMedia(constraints);
         } catch {
@@ -349,7 +415,16 @@ export default function Room() {
 
       localStreamRef.current = localStream;
       cameraTrackRef.current = localStream?.getVideoTracks()[0] || null;
+      // Confirmação, não correção: com `startCameraOff`, entrar sem track de
+      // vídeo é o caminho normal.
       if (!cameraTrackRef.current) setCameraOff(true);
+      // Mas pedir vídeo e não conseguir é outra coisa: é uma discrepância entre
+      // o que a pessoa escolheu e o que aconteceu, e sem aviso ela conclui que
+      // os outros estão vendo a imagem dela. Quem entrou desligado não teve
+      // falha nenhuma e não ouve nada.
+      if (mediaPlan.wantsVideo && !cameraTrackRef.current) {
+        setMediaError('Não foi possível abrir a câmera: você entrou sem vídeo. Dá para tentar de novo em "Ativar câmera".');
+      }
 
       // O `AudioContext` é um só para a sala e o dono dele é este componente:
       // nós de contextos diferentes não podem ser conectados, e o grafo da
@@ -458,7 +533,7 @@ export default function Room() {
         onRemoteStream: (peerId, stream) => {
           setParticipants((prev) => {
             const next = new Map(prev);
-            next.set(peerId, { ...(next.get(peerId) || {}), stream });
+            next.set(peerId, { ...DEFAULT_PARTICIPANT, ...(next.get(peerId) || {}), stream });
             return next;
           });
         },
@@ -524,7 +599,11 @@ export default function Room() {
         setParticipants((prev) => {
           const next = new Map(prev);
           for (const member of members) {
-            next.set(member.id, { ...(next.get(member.id) || {}), displayName: member.displayName });
+            next.set(member.id, {
+              ...DEFAULT_PARTICIPANT,
+              ...(next.get(member.id) || {}),
+              displayName: member.displayName,
+            });
           }
           return next;
         });
@@ -560,7 +639,7 @@ export default function Room() {
         setPendingRequests((prev) => prev.filter((r) => r.requesterId !== peerId));
         setParticipants((prev) => {
           const next = new Map(prev);
-          next.set(peerId, { ...(next.get(peerId) || {}), displayName: name });
+          next.set(peerId, { ...DEFAULT_PARTICIPANT, ...(next.get(peerId) || {}), displayName: name });
           return next;
         });
         pushToast('join', `${name} entrou na sala`);
@@ -1209,38 +1288,29 @@ export default function Room() {
     </>
   );
 
+  // Tela de pré-entrada. Continua sendo o ramo `!displayName`, e não um estado
+  // `joined` novo: quem já tem nome em `sessionStorage` (quem veio da Home,
+  // quem recarregou a página) entra direto, com a preferência gravada decidindo
+  // a câmera. Exigir um clique para reconfirmar a cada F5 seria ruído — e o
+  // ganho de privacidade é nulo, já que sem preferência o padrão já é desligada.
   if (!displayName) {
-    const handleNameSubmit = (e) => {
-      e.preventDefault();
-      const name = nameInput.trim();
-      if (!name) return;
-      sessionStorage.setItem('displayName', name);
-      setDisplayName(name);
-    };
     return (
       <>
         {overlays}
-        <main className="home">
-          <h1>wtk-meet</h1>
-          <p className="tagline">Você foi convidado para uma sala. Escolha um nome para entrar.</p>
-          <form onSubmit={handleNameSubmit}>
-            <label className="field">
-              Seu nome
-              <input
-                value={nameInput}
-                onChange={(e) => setNameInput(e.target.value)}
-                placeholder="Como te chamam"
-                maxLength={40}
-                autoFocus
-              />
-            </label>
-            <div className="actions">
-              <button type="submit" disabled={!nameInput.trim()}>
-                Entrar na sala
-              </button>
-            </div>
-          </form>
-        </main>
+        <PreJoin
+          preferences={preferences}
+          nameInput={nameInput}
+          onNameChange={setNameInput}
+          cameraOn={!cameraOff}
+          onToggleCamera={chooseStartCamera}
+          // O `SettingsModal` abre o próprio preview de câmera: enquanto ele
+          // estiver aberto, o do lobby precisa estar parado.
+          previewPaused={settingsOpen}
+          onSubmit={enterRoom}
+          onOpenSettings={openSettings}
+          onPreviewError={setMediaError}
+          previewError={mediaError}
+        />
       </>
     );
   }
@@ -1280,7 +1350,14 @@ export default function Room() {
                 : 'Aguardando aprovação de quem já está na sala…'}
             </h2>
             <div className="local-preview">
-              <VideoTile stream={localStreamRef.current} label={displayName} mirrored />
+              {/* `cameraOff` é obrigatório aqui: sem ele o tile ficaria preto
+                  para quem entrou sem vídeo, que passou a ser o caminho comum. */}
+              <VideoTile
+                stream={localStreamRef.current}
+                label={displayName}
+                mirrored
+                cameraOff={cameraOff}
+              />
             </div>
             {/* Momento certo para descobrir que a câmera errada está ativa: aqui,
                 e não já visível para todo mundo na grade. */}

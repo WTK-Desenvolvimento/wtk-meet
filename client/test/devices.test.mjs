@@ -15,6 +15,7 @@ import {
   DEFAULT_PREFERENCES,
   STORAGE_KEY,
   buildConstraints,
+  initialMediaPlan,
   isSinkIdSupported,
   listDevices,
   preferenceKeyForKind,
@@ -219,6 +220,7 @@ test('readPreferences valida tipos por campo e descarta chaves desconhecidas', (
     audioInputId: '',
     audioOutputId: '',
     soundsEnabled: true, // qualquer coisa que não seja boolean cai no comportamento atual
+    startCameraOff: true,
   });
 });
 
@@ -232,11 +234,13 @@ test('writePreferences faz merge sobre o gravado, sob a chave wtk-meet:devices',
     audioInputId: '',
     audioOutputId: '',
     soundsEnabled: false,
+    startCameraOff: true,
   });
   assert.deepEqual(Object.keys(JSON.parse(storage.data.get(STORAGE_KEY))).sort(), [
     'audioInputId',
     'audioOutputId',
     'soundsEnabled',
+    'startCameraOff',
     'videoInputId',
   ]);
 });
@@ -325,4 +329,154 @@ test('preferenceKeyForKind mapeia kind do navegador para chave de preferência',
   assert.equal(preferenceKeyForKind('audioinput'), 'audioInputId');
   assert.equal(preferenceKeyForKind('audiooutput'), 'audioOutputId');
   assert.equal(preferenceKeyForKind('teleporte'), null);
+});
+
+// ------------------------------------------ preferência de entrada da câmera
+
+/**
+ * `startCameraOff` é a única preferência cujo default **não** é neutro: ele
+ * decide se o LED da webcam acende ao abrir um link de sala. Por isso cada
+ * caminho que pode produzir um valor — ausência, tipo errado, versão anterior
+ * do app, merge parcial, reconciliação — tem um caso aqui.
+ */
+
+test('startCameraOff nasce `true`: o padrão de fábrica é entrar sem transmitir vídeo', () => {
+  assert.equal(DEFAULT_PREFERENCES.startCameraOff, true);
+  assert.equal(readPreferences(fakeStorage()).startCameraOff, true);
+  assert.equal(readPreferences(undefined).startCameraOff, true);
+});
+
+test('startCameraOff: preferência gravada por versão anterior (sem o campo) resolve para `true`', () => {
+  // Exatamente o que a v1 gravava: os três ids e o toggle de sons, sem o campo.
+  const legado = JSON.stringify({
+    videoInputId: 'cam-1',
+    audioInputId: 'mic-1',
+    audioOutputId: 'spk-1',
+    soundsEnabled: false,
+  });
+  const prefs = readPreferences(fakeStorage({ [STORAGE_KEY]: legado }));
+
+  assert.equal(prefs.startCameraOff, true, 'o campo ausente cai no lado seguro');
+  // E o resto da preferência antiga continua de pé — o campo novo não invalida
+  // a escolha de hardware que a pessoa já tinha feito.
+  assert.equal(prefs.videoInputId, 'cam-1');
+  assert.equal(prefs.audioInputId, 'mic-1');
+  assert.equal(prefs.audioOutputId, 'spk-1');
+  assert.equal(prefs.soundsEnabled, false);
+});
+
+test('startCameraOff só aceita boolean: valor inválido no storage cai no default seguro', () => {
+  // `!'não'` é `false`, e `!0` é `true`: sem a checagem de tipo, metade destes
+  // valores acenderia a câmera de alguém que nunca pediu isso.
+  for (const invalido of ['sim', 'false', 0, 1, null, [], {}]) {
+    const raw = JSON.stringify({ startCameraOff: invalido });
+    assert.equal(
+      readPreferences(fakeStorage({ [STORAGE_KEY]: raw })).startCameraOff,
+      true,
+      `valor inválido ${JSON.stringify(invalido)} deveria cair no default`,
+    );
+  }
+  // `false` é o único valor que tira o default do lugar.
+  assert.equal(
+    readPreferences(fakeStorage({ [STORAGE_KEY]: JSON.stringify({ startCameraOff: false }) })).startCameraOff,
+    false,
+  );
+});
+
+test('startCameraOff: escrever a escolha não apaga as preferências de hardware já salvas', () => {
+  const storage = fakeStorage();
+  writePreferences(storage, { videoInputId: 'cam-1', audioInputId: 'mic-1' });
+
+  // É isto que o clique no toggle do lobby faz: um patch de um campo só.
+  const result = writePreferences(storage, { startCameraOff: false });
+
+  assert.equal(result.startCameraOff, false);
+  assert.equal(result.videoInputId, 'cam-1');
+  assert.equal(result.audioInputId, 'mic-1');
+  // E o que foi gravado é o que se lê de volta — a escolha vale para a próxima
+  // sala mesmo se a aba for fechada antes de entrar nesta.
+  assert.equal(readPreferences(storage).startCameraOff, false);
+
+  // Voltar atrás também persiste (e não vira "campo ausente").
+  assert.equal(writePreferences(storage, { startCameraOff: true }).startCameraOff, true);
+  assert.equal(JSON.parse(storage.data.get(STORAGE_KEY)).startCameraOff, true);
+});
+
+test('startCameraOff sobrevive a reconcilePreferences (que só itera os ids)', () => {
+  // `reconcilePreferences` passa por `sanitize` e mexe apenas nas chaves de
+  // device. Este teste existe porque quem mexer nele depois não vai saber que
+  // um campo não-id depende de o sanitize preservá-lo.
+  const { prefs, changed } = reconcilePreferences(
+    { videoInputId: 'cam-antiga', startCameraOff: false },
+    [track('video', 'cam-nova')],
+  );
+  assert.equal(changed, true);
+  assert.equal(prefs.videoInputId, 'cam-nova');
+  assert.equal(prefs.startCameraOff, false, 'a escolha de entrada não é efeito colateral da troca de câmera');
+});
+
+// -------------------------------------------- plano de mídia da entrada
+
+test('initialMediaPlan: sem preferência gravada, nenhuma tentativa pede vídeo', () => {
+  const plan = initialMediaPlan(readPreferences(fakeStorage()));
+
+  assert.equal(plan.wantsVideo, false);
+  assert.equal(plan.cameraOff, true, 'a UI nasce marcando a câmera como desligada');
+  // O item verificável do DoD: nenhum `getUserMedia` com vídeo verdadeiro.
+  for (const attempt of plan.attempts) {
+    assert.equal(attempt.video, false);
+  }
+});
+
+test('initialMediaPlan: entrar sem vídeo não repete requisição — são duas tentativas, não três', () => {
+  // Com `video: false`, a primeira e a segunda tentativa da cadeia antiga
+  // viravam a MESMA requisição. Um getUserMedia repetido numa falha é meio
+  // segundo de espera que ninguém entende.
+  const plan = initialMediaPlan({ ...DEFAULT_PREFERENCES, audioInputId: 'mic-1' });
+
+  assert.equal(plan.attempts.length, 2);
+  assert.deepEqual(plan.attempts[0], { video: false, audio: { deviceId: { ideal: 'mic-1' } } });
+  // A última **sempre** ignora a preferência de microfone: um headset que ficou
+  // em outra máquina não pode fazer a pessoa entrar sem áudio nenhum.
+  assert.deepEqual(plan.attempts[1], { video: false, audio: true });
+});
+
+test('initialMediaPlan: com a câmera escolhida, a cadeia de três de hoje é preservada', () => {
+  const plan = initialMediaPlan(
+    { ...DEFAULT_PREFERENCES, startCameraOff: false, videoInputId: 'cam-1', audioInputId: 'mic-1' },
+    { audioProcessing: { noiseSuppression: true } },
+  );
+
+  assert.equal(plan.wantsVideo, true);
+  assert.equal(plan.cameraOff, false);
+  assert.equal(plan.attempts.length, 3);
+  assert.deepEqual(plan.attempts, [
+    {
+      video: { deviceId: { ideal: 'cam-1' } },
+      audio: { deviceId: { ideal: 'mic-1' }, noiseSuppression: true },
+    },
+    { video: false, audio: { deviceId: { ideal: 'mic-1' }, noiseSuppression: true } },
+    { video: false, audio: true },
+  ]);
+});
+
+test('initialMediaPlan: o áudio é sempre pedido, nos dois estados da preferência', () => {
+  // O microfone não é assunto desta preferência: entrar mutado é outra demanda.
+  for (const startCameraOff of [true, false]) {
+    const plan = initialMediaPlan({ ...DEFAULT_PREFERENCES, startCameraOff });
+    assert.ok(plan.attempts.length > 0);
+    for (const attempt of plan.attempts) {
+      assert.notEqual(attempt.audio, false, 'nenhuma tentativa pode entrar sem áudio');
+    }
+  }
+});
+
+test('initialMediaPlan: preferência ausente, nula ou com tipo errado nunca pede vídeo', () => {
+  // Defesa em profundidade: mesmo que alguém chame com um objeto cru que não
+  // passou por `sanitize`, só um `false` explícito liga a câmera.
+  for (const prefs of [undefined, null, {}, { startCameraOff: 'não' }, { startCameraOff: 0 }]) {
+    const plan = initialMediaPlan(prefs);
+    assert.equal(plan.wantsVideo, false, `${JSON.stringify(prefs)} não deveria pedir vídeo`);
+    assert.equal(plan.attempts.some((a) => a.video !== false), false);
+  }
 });

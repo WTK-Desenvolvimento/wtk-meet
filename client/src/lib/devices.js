@@ -12,7 +12,12 @@
  * preferência de hardware é a **única** coisa que vai para `localStorage`. Ela
  * não é conteúdo nem metadado de chamada, nunca sai do navegador, e a
  * alternativa (reescolher o headset a cada chamada) é um custo recorrente
- * cobrado justamente de quem tem hardware melhor. Ver `ARCHITECTURE.md` §6.8.
+ * cobrado justamente de quem tem hardware melhor. Ver `ARCHITECTURE.md` §6.10.
+ *
+ * Pelo mesmo argumento mora aqui `startCameraOff`: é decisão da pessoa sobre o
+ * próprio hardware, tomada uma vez e válida para as próximas salas. Não é
+ * conteúdo, não sai do navegador, e o default (`true`) é o lado seguro — o que
+ * ninguém decidiu entra desligado.
  */
 
 export const STORAGE_KEY = 'wtk-meet:devices';
@@ -22,6 +27,10 @@ export const DEFAULT_PREFERENCES = {
   audioInputId: '',
   audioOutputId: '',
   soundsEnabled: true,
+  // Negativo de propósito: com `true` como default, tanto a ausência da chave
+  // quanto uma preferência gravada por versão anterior (que não tem o campo)
+  // resolvem para o comportamento seguro — entrar sem transmitir vídeo.
+  startCameraOff: true,
 };
 
 /** Rótulo da opção sintética de `deviceId: ''` — "siga o sistema". */
@@ -145,6 +154,43 @@ export function buildConstraints(prefs, { video = false, audio = false, audioPro
   };
 }
 
+/**
+ * O plano de mídia da **entrada** na sala: o que pedir, nesta ordem, e com que
+ * estado a UI nasce.
+ *
+ * Existe como função pura, e não como um `if` dentro do efeito de setup do
+ * `Room`, porque é a única forma de cobrir a cadeia de constraints em
+ * `node:test` — o componente inteiro é intestável sem DOM. `audioProcessing`
+ * é injetado por quem chama pelo mesmo motivo que em `buildConstraints`: a
+ * preferência de supressão mora em outra chave de storage.
+ *
+ * A cadeia **encolhe** quando a pessoa entra sem vídeo: com `video: false`, a
+ * primeira e a segunda tentativa de antes viravam a mesma requisição, e um
+ * `getUserMedia` repetido numa falha é meio segundo de espera que ninguém
+ * entende. São duas tentativas, não três com uma repetida.
+ *
+ * A última tentativa ignora a preferência de microfone de propósito, nos dois
+ * ramos: sem ela, um headset que ficou em outra máquina faria a pessoa entrar
+ * sem áudio nenhum — e nada disso pode virar erro na tela.
+ */
+export function initialMediaPlan(prefs, { audioProcessing = null } = {}) {
+  const safe = prefs || DEFAULT_PREFERENCES;
+  // Só um `false` explícito pede vídeo. Preferência ausente, gravada por versão
+  // anterior ou com tipo errado já chegou aqui como `true` via `sanitize`.
+  const wantsVideo = safe.startCameraOff === false;
+  const withPreference = (video) => buildConstraints(safe, { video, audio: true, audioProcessing });
+
+  return {
+    wantsVideo,
+    cameraOff: !wantsVideo,
+    attempts: [
+      ...(wantsVideo ? [withPreference(true)] : []),
+      withPreference(false),
+      { video: false, audio: true },
+    ],
+  };
+}
+
 function sanitize(candidate) {
   const out = { ...DEFAULT_PREFERENCES };
   if (!candidate || typeof candidate !== 'object') return out;
@@ -152,6 +198,10 @@ function sanitize(candidate) {
     if (typeof candidate[key] === 'string') out[key] = candidate[key];
   }
   if (typeof candidate.soundsEnabled === 'boolean') out.soundsEnabled = candidate.soundsEnabled;
+  // Só booleano de verdade. Copiar sem checar faria um `undefined` gravado
+  // virar `undefined` lido, e `!undefined` acenderia a câmera — o oposto do
+  // requisito.
+  if (typeof candidate.startCameraOff === 'boolean') out.startCameraOff = candidate.startCameraOff;
   return out;
 }
 
