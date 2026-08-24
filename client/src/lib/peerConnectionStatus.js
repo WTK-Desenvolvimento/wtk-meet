@@ -52,4 +52,35 @@ export function describeConnection(state) {
   return BY_STATE[state];
 }
 
+/**
+ * Grava a transição de um peer no registro de participantes, com as duas
+ * guardas que a tornam segura.
+ *
+ * Vive aqui, e não dentro do `Room`, pela mesma razão de `describeConnection`:
+ * as guardas são a lógica de verdade desta parte, e enterradas num componente de
+ * 1400 linhas elas não têm como ser exercitadas sem navegador. A função é pura —
+ * devolve um `Map` novo, ou o **mesmo** `Map` quando não há o que mudar.
+ *
+ * @param {Map<string, object>} participants
+ * @param {string} peerId
+ * @param {string} connectionState
+ * @returns {Map<string, object>} O mesmo `Map` quando é no-op.
+ */
+export function applyPeerConnectionState(participants, peerId, connectionState) {
+  // `removePeer` fecha a `RTCPeerConnection`, e a transição para `closed` chega
+  // **depois** da remoção. Sem esta guarda ela recriaria o registro de quem já
+  // saiu: um tile fantasma, sem nome e sem stream. É segura porque os dois
+  // caminhos de entrada (`join-approved` e `peer-joined`) inserem o registro
+  // antes de `mesh.addPeer`.
+  if (!participants.has(peerId)) return participants;
+  const current = participants.get(peerId);
+  // `connectionstatechange` repete o mesmo valor com frequência. Devolver um
+  // `Map` novo a cada repetição re-renderizaria a grade inteira sem trocar um
+  // pixel.
+  if (current.connectionState === connectionState) return participants;
+  const next = new Map(participants);
+  next.set(peerId, { ...current, connectionState });
+  return next;
+}
+
 export default describeConnection;

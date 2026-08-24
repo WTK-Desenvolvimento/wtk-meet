@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useAudibleMedia } from '../lib/audibleMedia.js';
 
 /**
  * Os `<audio>` ocultos que fazem a música do mesh virar som — um por peer,
@@ -19,10 +20,24 @@ import { useEffect, useRef } from 'react';
  *    não ouviria, sem nenhum erro visível. A rejeição vira `onBlocked`, e a UI
  *    mostra um aviso clicável.
  *
+ * A decisão 3 é a referência de onde saiu o `lib/audibleMedia.js`: este era o
+ * único componente do projeto que tratava a rejeição, o `PeerAudio` não tratava,
+ * e a metade que faltava lá era o bug. O hook também traz o `setSinkId` que
+ * faltava nos **dois** — sem ele a música ignorava a preferência de saída
+ * exatamente como a voz dos participantes ignorava.
+ *
  * O volume é **local**: cada participante escolhe o quanto ouve, e isso nunca
  * trafega pelo data channel (o que pode ser local, é local).
  */
-export default function RemoteMusicAudio({ streams = [], volume = 1, muted = false, onBlocked }) {
+export default function RemoteMusicAudio({
+  streams = [],
+  volume = 1,
+  muted = false,
+  onBlocked,
+  sinkId = '',
+  onSinkError,
+  unlockNonce = 0,
+}) {
   return (
     <div className="remote-music-audio" aria-hidden="true">
       {streams.map(({ peerId, stream }) => (
@@ -32,37 +47,26 @@ export default function RemoteMusicAudio({ streams = [], volume = 1, muted = fal
           volume={volume}
           muted={muted}
           onBlocked={onBlocked}
+          sinkId={sinkId}
+          onSinkError={onSinkError}
+          unlockNonce={unlockNonce}
         />
       ))}
     </div>
   );
 }
 
-function PeerMusicAudio({ stream, volume, muted, onBlocked }) {
+function PeerMusicAudio({ stream, volume, muted, onBlocked, sinkId, onSinkError, unlockNonce }) {
   const ref = useRef(null);
-  // O callback muda de identidade a cada render do `Room`; guardá-lo num ref
-  // evita reatribuir o `srcObject` (que reinicia a reprodução) por causa disso.
-  const onBlockedRef = useRef(onBlocked);
-  onBlockedRef.current = onBlocked;
 
-  useEffect(() => {
-    const element = ref.current;
-    if (!element || !stream) return undefined;
+  // Fonte, saída e reprodução — os três com o mesmo tratamento de rejeição do
+  // `PeerAudio`. Os callbacks mudam de identidade a cada render do `Room`; é o
+  // hook que os guarda em refs, para que isso não reatribua o `srcObject` (o que
+  // reiniciaria a reprodução).
+  useAudibleMedia(ref, { stream, sinkId, onSinkError, onBlocked, unlockNonce });
 
-    if (element.srcObject !== stream) element.srcObject = stream;
-
-    let cancelled = false;
-    const promise = element.play();
-    // Nem todo navegador devolve Promise aqui; `Promise.resolve` normaliza.
-    Promise.resolve(promise).catch(() => {
-      if (!cancelled) onBlockedRef.current?.();
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [stream]);
-
+  // Volume e mudo continuam aqui: são só deste componente, e o `PeerAudio` não
+  // tem equivalente — não há controle de volume por participante.
   useEffect(() => {
     const element = ref.current;
     if (!element) return;

@@ -128,6 +128,7 @@ export default function SpotlightStage({
             label={spotlight.label}
             contain={spotlight.contain}
             badge={spotlight.badge}
+            connection={spotlight.connection}
           />
         </div>
 
