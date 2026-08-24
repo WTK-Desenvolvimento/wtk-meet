@@ -233,7 +233,23 @@ toggle de avisos sonoros (que saiu da barra de controles).
   chamada abre pelo padrão do sistema **sem erro na tela** e a preferência se corrige
   sozinha. Desconectar um dispositivo em uso volta ao padrão e avisa.
 - A saída de áudio depende de `setSinkId`: onde o navegador não implementa (Firefox
-  por padrão), o seletor aparece desabilitado com a explicação.
+  por padrão), o seletor aparece desabilitado com a explicação. Onde implementa, a
+  escolha vale para a voz dos participantes **e** para a música do player — os dois
+  saem por `<audio>` dedicados, e é neles que a preferência é aplicada.
+
+**Não estou ouvindo ninguém, mas me ouvem.** São duas causas prováveis, nesta ordem:
+
+1. **A saída de áudio.** Se o padrão do seu sistema for o alto-falante do monitor, uma
+   saída HDMI ou um fone Bluetooth pareado mas ocioso, o som está saindo por lá.
+   Escolha o dispositivo certo em **Configurações → Saída de áudio**.
+2. **O navegador bloqueou o som.** Isso acontece quando a sala é aberta sem nenhum
+   clique — recarregar a página com o nome já preenchido entra direto. Nesse caso
+   aparece um aviso na sala dizendo que o som foi bloqueado; **clicar nele** destrava
+   a voz de todo mundo e a música de uma vez.
+
+Se o problema for de conexão e não de reprodução, o tile da pessoa diz: "Sem conexão"
+(`failed`), "Instável" (`disconnected`) ou "Conectando…". Tile sem nenhum indicador é
+conexão saudável.
 
 ### Supressão de ruído
 

@@ -12,6 +12,19 @@ import { useEffect, useRef, useState } from 'react';
  * dedicado de `PeerAudio.jsx`. Um tile muda de container quando o palco entra ou
  * sai do modo destaque, e o remonte do elemento cortaria o som do peer a cada
  * mudança de layout — desacoplar as duas coisas é o que impede esse bug.
+ *
+ * Por isso **não há `setSinkId` aqui**. Ele existiu, sobre este `<video>` mudo,
+ * e era inerte por construção: a chamada tinha sucesso, não produzia som nenhum,
+ * e o seletor "Saída de áudio" do modal não fazia efeito sobre a voz de
+ * ninguém. Pior, era o único caminho que alimentava o `handleSinkError` do
+ * `Room` — uma rejeição vinda de um elemento sem som podia apagar uma
+ * preferência que funcionaria perfeitamente no `<audio>`. O roteamento de saída
+ * saiu junto com o som, e mora em `lib/audibleMedia.js`.
+ *
+ * O indicador de conexão (`connection`) é irmão do `.video-label`, e não parte
+ * dele, de propósito: vários roteiros do E2E comparam o `textContent` do
+ * `.video-label`, e escrever "Sem conexão" ali quebraria checagens que não têm
+ * nada a ver com o assunto.
  */
 export default function VideoTile({
   stream,
@@ -24,8 +37,7 @@ export default function VideoTile({
   cameraOff = false,
   micOff = false,
   badge = null,
-  sinkId = '',
-  onSinkError,
+  connection = null,
 }) {
   const videoRef = useRef(null);
   const sinkAppliedRef = useRef(false);
@@ -102,7 +114,7 @@ export default function VideoTile({
     <div
       className={
         `video-tile${speaking ? ' speaking' : ''}${contain ? ' contain' : ''}` +
-        `${compact ? ' compact' : ''}`
+        `${compact ? ' compact' : ''}${connection ? ` conn-${connection.level}` : ''}`
       }
       style={{ '--speak-level': level.toFixed(2) }}
     >
@@ -132,6 +144,17 @@ export default function VideoTile({
         {label}
       </span>
       {badge && <span className="tile-badge">{badge}</span>}
+      {/* Ausente no caminho feliz: `describeConnection('connected')` devolve
+          null, e um indicador aceso o tempo todo vira ruído que ninguém lê. */}
+      {connection && (
+        <span
+          className={`tile-connection ${connection.level}`}
+          role="status"
+          aria-live={connection.live}
+        >
+          {connection.label}
+        </span>
+      )}
     </div>
   );
 }

@@ -13,7 +13,7 @@ import { computeGridLayout, GRID_GAP } from '../lib/gridLayout.js';
  * medida. O `setState` também só dispara quando as dimensões inteiras mudam —
  * comparar float faria o subpixel de scrollbar/zoom oscilar para sempre.
  */
-export default function VideoGrid({ tiles, audioLevels, sinkId = '', onSinkError }) {
+export default function VideoGrid({ tiles, audioLevels }) {
   const stageRef = useRef(null);
   const [box, setBox] = useState({ width: 0, height: 0 });
 
@@ -68,8 +68,7 @@ export default function VideoGrid({ tiles, audioLevels, sinkId = '', onSinkError
               micOff={tile.micOff}
               speaking={!!levels?.speaking}
               level={levels?.level || 0}
-              sinkId={sinkId}
-              onSinkError={onSinkError}
+              connection={tile.connection}
             />
           );
         })}

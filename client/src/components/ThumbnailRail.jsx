@@ -72,6 +72,7 @@ export default function ThumbnailRail({
             micOff={item.micOff}
             speaking={!!levels?.speaking}
             level={levels?.level || 0}
+            connection={item.connection}
             compact
           />
         );

@@ -193,6 +193,22 @@ code {
   flex: 0 0 auto;
 }
 
+/* O aviso de som bloqueado é um `<button>` (o clique é a única forma de
+   destravar o áudio, e isso precisa existir para teclado e leitor de tela), mas
+   se parece com o `<p class="warning">` que fica logo acima: o botão herda
+   fonte e alinhamento em vez do padrão do agente de usuário. */
+button.warning.audio-blocked {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+button.warning.audio-blocked:hover {
+  background: rgba(202, 165, 61, 0.25);
+}
+
 /* Palco: a faixa elástica entre o banner e o rodapé. `min-height: 0` aqui e no
    filho é o que impede o conteúdo de empurrar a coluna — basta um nível sem ele
    para o scroll de página voltar, agora invisível atrás do `overflow: hidden`. */
@@ -451,6 +467,39 @@ button.thumb-item.spotlighted .video-tile {
   line-height: 1;
 }
 
+/* Estado da conexão daquele peer. Irmão do `.video-label`, nunca dentro dele:
+   vários roteiros do e2e comparam o `textContent` do rótulo, e o nome do
+   participante não é lugar para "Sem conexão". Fica no canto oposto ao badge de
+   tela, que já ocupa o topo esquerdo. */
+.tile-connection {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.6rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  padding: 0.1rem 0.45rem;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid currentColor;
+  color: var(--warning);
+}
+
+.tile-connection.bad {
+  color: var(--danger);
+}
+
+/* A borda do tile inteiro acompanha: num palco com muita gente, um chip de
+   0.7rem é fácil de não ver, e `failed` precisa ser legível sem procurar. */
+.video-tile.conn-warn {
+  outline: 2px solid rgba(202, 165, 61, 0.5);
+  outline-offset: -2px;
+}
+
+.video-tile.conn-bad {
+  outline: 2px solid var(--danger);
+  outline-offset: -2px;
+}
+
 .tile-badge {
   position: absolute;
   top: 0.5rem;
@@ -493,6 +542,17 @@ button.thumb-item.spotlighted .video-tile {
   left: 0.3rem;
   font-size: 0.6rem;
   padding: 0.05rem 0.3rem;
+}
+
+.video-tile.compact .tile-connection {
+  top: 0.25rem;
+  right: 0.3rem;
+  font-size: 0.6rem;
+  padding: 0.05rem 0.3rem;
+  max-width: calc(100% - 0.6rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .video-tile.compact .avatar-initial {

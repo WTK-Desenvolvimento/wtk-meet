@@ -35,6 +35,7 @@ import {
 } from '../lib/noiseSuppression.js';
 import { createMicPipeline, detectNoiseMode } from '../lib/micPipeline.js';
 import { resolveSpotlightScreen } from '../lib/spotlightLayout.js';
+import { applyPeerConnectionState, describeConnection } from '../lib/peerConnectionStatus.js';
 import { buildRoomUrl, generatePassphrase } from '../lib/roomSlug.js';
 import { roomPathFromLocation } from '../lib/roomRouting.js';
 // import { deriveRoomKey, isInsertableStreamsSupported } from '../lib/e2ee.js';
@@ -117,7 +118,11 @@ export default function Room() {
   const [phase, setPhase] = useState(PHASE.CONNECTING);
   const [denyReason, setDenyReason] = useState(null);
   const [pendingRequests, setPendingRequests] = useState([]);
-  // peerId -> { displayName, stream, screenStream, cameraOff, micOff }
+  // peerId -> { displayName, stream, screenStream, cameraOff, micOff, connectionState }
+  //
+  // `connectionState` é o `RTCPeerConnection.connectionState` daquele peer, tal
+  // como o mesh o reporta. Aqui ele só é **observado**: reagir a `failed`
+  // (reiniciar o ICE, renegociar) é do `lib/webrtcMesh.js`, não desta camada.
   const [participants, setParticipants] = useState(new Map());
   const [muted, setMuted] = useState(false);
   // O padrão de fábrica é entrar **desligado**: sem preferência gravada,
@@ -129,6 +134,17 @@ export default function Room() {
   );
   const [sharingScreen, setSharingScreen] = useState(false);
   const [mediaError, setMediaError] = useState(null);
+  // O navegador barrou a reprodução de algum elemento de áudio (voz ou música).
+  // Um só estado para os dois: do ponto de vista de quem está na sala o problema
+  // é um só — não sai som —, e dois avisos concorreriam pelo mesmo clique.
+  const [audioBlocked, setAudioBlocked] = useState(false);
+  // Incrementado pelo clique no aviso. Entra nas deps do efeito de `play()` de
+  // todo elemento de áudio montado, e é isso que faz um clique destravar a sala
+  // inteira. A alternativa — um registro imperativo de elementos num módulo
+  // singleton — exigiria desregistro correto em todo desmonte, e um vazamento
+  // ali seria um elemento morto recebendo `play()` para sempre. React já sabe
+  // quais elementos estão montados; o nonce só pergunta a ele.
+  const [audioUnlockNonce, setAudioUnlockNonce] = useState(0);
   // Qual tela **esta aba** vê em destaque. Preferência puramente local: não vai
   // para o servidor nem para o data channel, e escolher aqui não muda a tela de
   // mais ninguém.
@@ -544,6 +560,14 @@ export default function Room() {
             next.set(peerId, { ...next.get(peerId), screenStream });
             return next;
           });
+        },
+        // O estado da `RTCPeerConnection` de cada peer. O mesh já disparava
+        // isto a cada transição e ninguém escutava — a ponta estava solta, e é
+        // por isso que um peer em `failed` tinha um tile idêntico ao de um peer
+        // perfeito. Aqui o estado só é **observado**: reagir a `failed` é do
+        // `lib/webrtcMesh.js`.
+        onPeerStateChange: (peerId, connectionState) => {
+          setParticipants((prev) => applyPeerConnectionState(prev, peerId, connectionState));
         },
         onRemotePeerState: (peerId, state) => {
           setParticipants((prev) => {
@@ -1011,12 +1035,64 @@ export default function Room() {
   const handleSinkError = useCallback(
     (err) => {
       console.warn('[Room] setSinkId falhou:', err);
+      // O sink agora é aplicado em N elementos (um `<audio>` por peer, mais os
+      // da música), então um deviceId morto rejeita N promises e este handler é
+      // chamado N vezes. A idempotência sai daqui: a primeira chamada zera a
+      // preferência, e da segunda em diante o `return` acima corta — um toast e
+      // um `setMediaError` só. Nada de debounce por timer: um flag global "já
+      // avisei" que nunca é resetado deixaria a próxima escolha inválida
+      // silenciosa.
       if (!preferencesRef.current.audioOutputId) return;
       savePreferences({ audioOutputId: '' });
       setMediaError('A saída de áudio escolhida não pôde ser usada. Voltamos para o padrão.');
     },
     [savePreferences],
   );
+
+  /**
+   * O clique no aviso de "o navegador bloqueou o som".
+   *
+   * Um clique, três destravamentos, porque são três portões distintos e o
+   * usuário não tem por que conhecer nenhum deles: o `AudioContext` (supressão
+   * de ruído e medidor de fala), os `<audio>` de voz e de música (via
+   * `audioUnlockNonce`, que entra nas deps do efeito de `play()` de cada
+   * elemento montado) e o player de música, que tem estado próprio em
+   * `lib/useMusicRoom.js` e não é este.
+   *
+   * O aviso é apagado **antes** da re-tentativa, de propósito: se ela falhar de
+   * novo, o `onBlocked` de qualquer elemento o reacende sozinho. É o que impede
+   * o aviso de virar falso positivo permanente — `play()` também rejeita com
+   * `AbortError` quando o elemento é pausado no meio da chamada, e um aviso que
+   * nunca some treina o usuário a ignorá-lo.
+   */
+  const unlockAudio = useCallback(() => {
+    setAudioBlocked(false);
+    setAudioUnlockNonce((nonce) => nonce + 1);
+    // Estamos dentro de um gesto: é exatamente aqui que retomar o contexto é
+    // permitido.
+    getAudioContext();
+    // `music.unlockAudio` é assíncrono e faz `await player.play()`, que rejeita
+    // quando o navegador continua barrando. Sem este `catch` a rejeição viraria
+    // `unhandledrejection` — erro de console, que a checagem G do E2E trata como
+    // falha. O caso já está coberto: o `onBlocked` do elemento reacende o aviso.
+    Promise.resolve(music.unlockAudio?.()).catch(() => {
+      setAudioBlocked(true);
+    });
+  }, [music]);
+
+  /** Qualquer elemento de áudio que o navegador tenha barrado acende o aviso. */
+  const handleAudioBlocked = useCallback(() => setAudioBlocked(true), []);
+
+  /**
+   * A música barrada acende **os dois** avisos: o banner novo, sempre visível na
+   * sala, e o botão do painel de música, que já existia. Eles leem estados
+   * diferentes (`audioBlocked` daqui e `music.audioBlocked`), e o do painel só
+   * existe com o painel aberto — quem nunca o abre não teria caminho nenhum.
+   */
+  const handleMusicBlocked = useCallback(() => {
+    music.reportBlocked();
+    setAudioBlocked(true);
+  }, [music]);
 
   /**
    * Conectar/desconectar hardware fora do modal. Só reconcilia a preferência:
@@ -1151,6 +1227,9 @@ export default function Room() {
         cameraOff: !!info.cameraOff,
         micOff: !!info.micOff,
         sharing: !!info.screenStream,
+        // Só os remotos. Não existe `RTCPeerConnection` para si mesmo, e um
+        // indicador no próprio tile seria uma afirmação sem fonte.
+        connection: describeConnection(info.connectionState),
       });
     }
     return list;
@@ -1193,6 +1272,9 @@ export default function Room() {
         owner: name,
         contain: true,
         badge: 'Tela',
+        // Mesma conexão do dono: uma tela congelada porque a conexão morreu
+        // precisa dizer isso, em vez de parecer uma apresentação parada.
+        connection: describeConnection(info.connectionState),
       });
     }
     return list;
@@ -1247,7 +1329,13 @@ export default function Room() {
           peers, e não o `<video>` do tile. Assim entrar e sair do modo destaque
           — que move o tile de container e remonta o elemento — não corta o
           áudio de ninguém. Ver `components/PeerAudio.jsx`. */}
-      <PeerAudio participants={participants} />
+      <PeerAudio
+        participants={participants}
+        sinkId={preferences.audioOutputId}
+        onSinkError={handleSinkError}
+        onBlocked={handleAudioBlocked}
+        unlockNonce={audioUnlockNonce}
+      />
       <Toasts toasts={toasts} />
       <MusicVoteCard
         vote={music.vote}
@@ -1261,7 +1349,10 @@ export default function Room() {
       <RemoteMusicAudio
         streams={music.musicStreams}
         volume={music.volume}
-        onBlocked={music.reportBlocked}
+        onBlocked={handleMusicBlocked}
+        sinkId={preferences.audioOutputId}
+        onSinkError={handleSinkError}
+        unlockNonce={audioUnlockNonce}
       />
       <div className="music-youtube-host" ref={music.youtubeHostRef} aria-hidden="true" />
       {/* Montado condicionalmente de propósito: é o desmonte que para o stream
@@ -1379,6 +1470,19 @@ export default function Room() {
 
         {mediaError && <p className="warning">{mediaError}</p>}
 
+        {/* Fora de qualquer painel, e `<button>` de verdade — não um `<div
+            onClick>`. O único caminho de destravamento que existia era o botão
+            dentro do painel de música, que só existe com o painel aberto: quem
+            não o abre ficava em silêncio sem nenhuma saída. Também não é um
+            toast: toasts somem sozinhos, e silêncio depois de um toast expirado
+            é o mesmo defeito numa forma nova. */}
+        {audioBlocked && (
+          <button type="button" className="warning audio-blocked" onClick={unlockAudio}>
+            O navegador bloqueou o som desta sala. Clique aqui para ouvir os
+            participantes e a música.
+          </button>
+        )}
+
         <div className="stage">
           {spotlightScreen ? (
             <SpotlightStage
@@ -1388,12 +1492,7 @@ export default function Room() {
               onSelectScreen={setPinnedScreenId}
             />
           ) : (
-            <VideoGrid
-              tiles={people}
-              audioLevels={audioLevels}
-              sinkId={preferences.audioOutputId}
-              onSinkError={handleSinkError}
-            />
+            <VideoGrid tiles={people} audioLevels={audioLevels} />
           )}
 
           {chatOpen && (
