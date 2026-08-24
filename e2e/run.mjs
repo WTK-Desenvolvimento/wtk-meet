@@ -984,15 +984,34 @@ try {
   await alice.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
   await sleep(500);
 
-  const sinkState = await alice.page.evaluate(() => ({
-    calls: window.__wtkSinkIds.filter((c) => c.sinkId === 'spk-b').length,
-    tiles: document.querySelectorAll('.video-tile video').length,
-    saved: JSON.parse(localStorage.getItem('wtk-meet:devices')).audioOutputId,
-  }));
+  // Reescrita na WTK-MEET-16. Antes esta checagem contava `.video-tile video` e
+  // exigia `calls >= tiles` — e passava verde afirmando algo falso: o
+  // `setSinkId` era aplicado no `<video>` do tile, que é `muted` fixo, então a
+  // chamada tinha sucesso e não produzia som nenhum. O seletor "Saída de áudio"
+  // não tinha efeito sobre a voz de ninguém, e a suíte dizia que tinha.
+  //
+  // Agora afirma o que passou a ser verdade: o sink é aplicado em cada `<audio>`
+  // de peer, e em **nenhum** `<video>`. A segunda metade é o que impede a
+  // regressão de voltar; afrouxar para `calls > 0` passaria com a música sozinha
+  // e o defeito inteiro de volta.
+  const sinkState = await alice.page.evaluate(() => {
+    const chosen = window.__wtkSinkIds.filter((c) => c.sinkId === 'spk-b');
+    return {
+      audio: chosen.filter((c) => c.tag === 'AUDIO').length,
+      video: window.__wtkSinkIds.filter((c) => c.tag === 'VIDEO').length,
+      peers: document.querySelectorAll('.peer-audio-sinks audio').length,
+      tiles: document.querySelectorAll('.video-tile video').length,
+      saved: JSON.parse(localStorage.getItem('wtk-meet:devices')).audioOutputId,
+    };
+  });
   check(
-    'S9. A saída escolhida é aplicada com setSinkId em todos os elementos de mídia dos tiles',
-    sinkState.calls >= sinkState.tiles && sinkState.tiles > 0 && sinkState.saved === 'spk-b',
-    `setSinkId('spk-b') em ${sinkState.calls} elementos, ${sinkState.tiles} tiles, salvo=${sinkState.saved}`,
+    'S9. A saída escolhida é aplicada com setSinkId nos <audio> que produzem som, e em nenhum <video>',
+    sinkState.peers > 0 &&
+      sinkState.audio >= sinkState.peers &&
+      sinkState.video === 0 &&
+      sinkState.saved === 'spk-b',
+    `setSinkId('spk-b') em ${sinkState.audio} <audio> para ${sinkState.peers} peers, ` +
+    `${sinkState.video} chamadas em <video> (esperado 0), ${sinkState.tiles} tiles, salvo=${sinkState.saved}`,
   );
 
   // ------------------------------------- S. trocar de mic estando silenciado
@@ -1951,6 +1970,262 @@ try {
     }
   } finally {
     await noiseBrowser.close();
+  }
+
+  // ------------------- U. áudio dos peers: saída, autoplay e estado da conexão
+  //
+  // Sala e contextos próprios, pelas mesmas razões do bloco T: este roteiro
+  // **bloqueia o autoplay** e **força transições de connectionState**, e as duas
+  // coisas contaminariam os participantes principais para todas as checagens
+  // seguintes. A sala principal continua intacta.
+  //
+  // O que se afirma aqui é a última etapa da recepção de áudio — a que
+  // transforma o que chega em som. Ela é comum a todos os pares, e é por isso
+  // que quebrá-la produzia o sintoma "ele nos ouve e não ouve ninguém".
+  let gil = null;
+  let helena = null;
+  try {
+    const salaAudio = `${CLIENT_ORIGIN}/e2e-audio-peers#chave-do-audio`;
+    const entrarU = (participant, approver) =>
+      waitFor(
+        async () => {
+          if (approver) await approveAll(approver.page);
+          return (await participant.page.locator('.room.in-call').count()) > 0;
+        },
+        { timeout: 40000, label: `${participant.name} entrar na sala de áudio` },
+      );
+
+    // A Gil escolhe a saída **antes** de a Helena existir: é o caso do peer que
+    // entra depois da escolha e precisa nascer com o sink já aplicado, sem
+    // nenhuma interação nova.
+    gil = await openParticipant(browser, { roomUrl: salaAudio, name: 'Gil' });
+    await entrarU(gil, null);
+    await openSettings(gil.page);
+    await setSelectValue(gil.page.locator('.settings-modal select').nth(2), 'spk-b');
+    await gil.page.getByRole('button', { name: 'Salvar' }).click();
+    await gil.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
+    await gil.page.evaluate(() => { window.__wtkSinkIds.length = 0; });
+
+    helena = await openParticipant(browser, { roomUrl: salaAudio, name: 'Helena' });
+    await entrarU(helena, gil);
+    await waitFor(async () => (await gil.page.locator('.peer-audio-sinks audio').count()) > 0, {
+      label: 'o <audio> do peer aparecer para a Gil',
+    });
+    await sleep(500);
+
+    const nascido = await gil.page.evaluate(() => ({
+      audio: window.__wtkSinkIds.filter((c) => c.tag === 'AUDIO' && c.sinkId === 'spk-b').length,
+      video: window.__wtkSinkIds.filter((c) => c.tag === 'VIDEO').length,
+      elementos: document.querySelectorAll('.peer-audio-sinks audio').length,
+      mudos: [...document.querySelectorAll('.peer-audio-sinks audio')].filter((a) => a.muted).length,
+    }));
+    check(
+      'U1. Um peer que entra depois da escolha nasce com a saída já aplicada, e em nenhum <video>',
+      nascido.audio >= nascido.elementos && nascido.elementos > 0 && nascido.video === 0 &&
+        nascido.mudos === 0,
+      `${nascido.audio} chamadas em <audio> para ${nascido.elementos} elementos, ` +
+      `${nascido.video} em <video> (esperado 0), ${nascido.mudos} elementos mudos (esperado 0)`,
+    );
+
+    // Voltar para "Padrão do sistema" é trabalho de verdade para quem já recebeu
+    // um sink — e nada para quem nunca recebeu.
+    await gil.page.evaluate(() => { window.__wtkSinkIds.length = 0; });
+    await openSettings(gil.page);
+    await setSelectValue(gil.page.locator('.settings-modal select').nth(2), '');
+    await gil.page.getByRole('button', { name: 'Salvar' }).click();
+    await gil.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
+    await sleep(500);
+    const voltou = await gil.page.evaluate(() => ({
+      padrao: window.__wtkSinkIds.filter((c) => c.sinkId === '').length,
+      outros: window.__wtkSinkIds.filter((c) => c.sinkId !== '').length,
+      salvo: JSON.parse(localStorage.getItem('wtk-meet:devices')).audioOutputId,
+    }));
+    check(
+      'U2. Voltar para o padrão do sistema chama setSinkId(\'\') em quem já tinha sink',
+      voltou.padrao > 0 && voltou.outros === 0 && voltou.salvo === '',
+      `${voltou.padrao} chamadas com '', ${voltou.outros} com outro id, salvo="${voltou.salvo}"`,
+    );
+
+    // ---- estado da conexão no tile
+    const semIndicador = await gil.page.evaluate(() => ({
+      chips: document.querySelectorAll('.tile-connection').length,
+      tiles: document.querySelectorAll('.video-tile').length,
+    }));
+    check(
+      'U3. Com o mesh saudável, nenhum tile exibe indicador de conexão',
+      semIndicador.chips === 0 && semIndicador.tiles >= 2,
+      `${semIndicador.chips} indicadores em ${semIndicador.tiles} tiles`,
+    );
+
+    // Os rótulos antes e depois: a contagem de tiles e o texto de `.video-label`
+    // são premissa de blocos que não são deste roteiro (R11).
+    const antes = await gil.page.evaluate(() => ({
+      tiles: document.querySelectorAll('.video-tile').length,
+      labels: [...document.querySelectorAll('.video-label')].map((n) => n.textContent),
+    }));
+
+    /** Força o estado numa das conexões da página, pelo handler real da app. */
+    const forcar = (page, state) =>
+      page.evaluate((s) => {
+        window.__wtkPeers[0].__wtkForceState(s);
+      }, state);
+
+    for (const [state, rotulo, nivel] of [
+      ['connecting', 'Conectando…', 'warn'],
+      ['disconnected', 'Instável', 'warn'],
+      ['failed', 'Sem conexão', 'bad'],
+    ]) {
+      await forcar(gil.page, state);
+      const visto = await waitFor(
+        async () => {
+          const found = await gil.page.evaluate(() => {
+            const chip = document.querySelector('.tile-connection');
+            return chip
+              ? {
+                  texto: chip.textContent,
+                  nivel: chip.className.replace('tile-connection ', ''),
+                  quantos: document.querySelectorAll('.tile-connection').length,
+                  raiz: document.querySelectorAll('.video-tile.conn-warn, .video-tile.conn-bad').length,
+                }
+              : null;
+          });
+          return found && found.texto === rotulo ? found : false;
+        },
+        { timeout: 8000, label: `o tile mostrar "${rotulo}"` },
+      );
+      check(
+        `U4${state[0]}. ${state} aparece no tile como "${rotulo}", em um tile só`,
+        visto.texto === rotulo && visto.nivel === nivel && visto.quantos === 1 && visto.raiz === 1,
+        `texto="${visto.texto}" nível=${visto.nivel} indicadores=${visto.quantos} tiles marcados=${visto.raiz}`,
+      );
+    }
+
+    // O tile local não pode ter indicador: não existe `RTCPeerConnection`
+    // consigo mesmo, e um chip ali seria uma afirmação sem fonte.
+    const local = await gil.page.evaluate(() => {
+      const tiles = [...document.querySelectorAll('.video-tile')];
+      const meu = tiles.find((t) => /\(você\)/.test(t.querySelector('.video-label')?.textContent || ''));
+      return { achou: !!meu, chip: meu ? meu.querySelectorAll('.tile-connection').length : -1 };
+    });
+    check(
+      'U5. O tile local nunca exibe indicador de conexão',
+      local.achou && local.chip === 0,
+      `tile local encontrado=${local.achou}, indicadores nele=${local.chip}`,
+    );
+
+    // Voltar a `connected` apaga o indicador — sem recarregar a página.
+    await forcar(gil.page, 'connected');
+    const limpou = await waitFor(
+      async () => (await gil.page.locator('.tile-connection').count()) === 0,
+      { timeout: 8000, label: 'o indicador sumir ao voltar para connected' },
+    ).then(() => true).catch(() => false);
+    check(
+      'U6. Voltando para connected, o indicador some sem recarregar a página',
+      limpou,
+    );
+
+    const depois = await gil.page.evaluate(() => ({
+      tiles: document.querySelectorAll('.video-tile').length,
+      labels: [...document.querySelectorAll('.video-label')].map((n) => n.textContent),
+    }));
+    check(
+      'U7. A contagem de .video-tile e o texto de .video-label não mudaram',
+      depois.tiles === antes.tiles &&
+        JSON.stringify(depois.labels) === JSON.stringify(antes.labels),
+      `${antes.tiles}→${depois.tiles} tiles; rótulos ${JSON.stringify(depois.labels)}`,
+    );
+
+    // O indicador precisa existir também no modo destaque — o modo em que a
+    // sala fica quando alguém compartilha tela.
+    await helena.page.getByRole('button', { name: 'Compartilhar tela' }).click();
+    await waitFor(async () => (await gil.page.locator('.spotlight-stage').count()) > 0, {
+      timeout: 20000,
+      label: 'a Gil entrar no modo destaque',
+    });
+    await forcar(gil.page, 'failed');
+    const destaque = await waitFor(
+      async () => {
+        const found = await gil.page.evaluate(() => ({
+          destaque: document.querySelectorAll('.spotlight-main .tile-connection').length,
+          miniaturas: document.querySelectorAll('.thumb-rail .tile-connection').length,
+        }));
+        return found.destaque + found.miniaturas > 0 ? found : false;
+      },
+      { timeout: 8000, label: 'o indicador aparecer no modo destaque' },
+    ).catch(() => ({ destaque: 0, miniaturas: 0 }));
+    check(
+      'U8. O indicador aparece também no modo destaque (destaque e miniaturas)',
+      destaque.destaque > 0 && destaque.miniaturas > 0,
+      `${destaque.destaque} no destaque, ${destaque.miniaturas} nas miniaturas`,
+    );
+
+    // ---- autoplay bloqueado
+    //
+    // Recarregar com o nome já em `sessionStorage` entra na sala **sem gesto
+    // nenhum** — é o caminho documentado em `Room.jsx`, e exatamente o que a
+    // política de autoplay barra no Safari, no Firefox e no iOS.
+    // Via `addInitScript`, e não `evaluate`: o reload re-executa a
+    // INSTRUMENTATION, que redefine `__wtkBlockAutoplay = false`. Um script de
+    // inicialização acrescentado depois roda depois dela, e a flag sobrevive.
+    await gil.context.addInitScript({ content: 'window.__wtkBlockAutoplay = true;' });
+    await gil.page.reload();
+    // Reentrar exige aprovação da Helena, que já está na sala — por isso o
+    // `approveAll` vai **dentro** do laço de espera.
+    await entrarU(gil, helena);
+    const semGesto = await gil.page.evaluate(() => window.__wtkPlayCalls);
+    const banner = gil.page.locator('button.audio-blocked');
+    const apareceu = await waitFor(
+      async () => (await banner.count()) > 0,
+      { timeout: 20000, label: 'o aviso de som bloqueado aparecer' },
+    ).then(() => true).catch(() => false);
+    check(
+      'U9. Autoplay bloqueado, entrando sem gesto, mostra um aviso clicável na sala',
+      apareceu && (await gil.page.locator('.music-panel button.audio-blocked').count()) === 0,
+      `play() tentado ${semGesto} vez(es) sem gesto; o aviso está fora de qualquer painel`,
+    );
+
+    // Clicar sem destravar de fato: a re-tentativa falha de novo e o aviso volta
+    // sozinho. Um aviso que sumisse aqui seria o silêncio de volta, sem saída.
+    if (apareceu) {
+      await banner.click();
+      const voltouAviso = await waitFor(
+        async () => (await banner.count()) > 0,
+        { timeout: 8000, label: 'o aviso reaparecer depois da re-tentativa falhar' },
+      ).then(() => true).catch(() => false);
+      check(
+        'U10. Se a re-tentativa falha de novo, o aviso volta a aparecer',
+        voltouAviso,
+      );
+
+      // Agora destravando de verdade: um clique, e voz e música voltam a tocar.
+      const antesDoClique = await gil.page.evaluate(() => {
+        window.__wtkBlockAutoplay = false;
+        return window.__wtkPlayCalls;
+      });
+      await banner.click();
+      const sumiu = await waitFor(
+        async () => (await banner.count()) === 0,
+        { timeout: 8000, label: 'o aviso sumir depois do destravamento' },
+      ).then(() => true).catch(() => false);
+      const depoisDoClique = await gil.page.evaluate(() => window.__wtkPlayCalls);
+      check(
+        'U11. Um clique re-tenta a reprodução de todos os elementos e o aviso some',
+        sumiu && depoisDoClique > antesDoClique,
+        `play() chamado ${depoisDoClique - antesDoClique} vez(es) no clique; aviso sumiu=${sumiu}`,
+      );
+    }
+
+    const errosU = gil.consoleErrors.filter(
+      (e) => !/favicon|ERR_CONNECTION_REFUSED/i.test(e),
+    );
+    check(
+      'U12. Nenhuma rejeição de play()/setSinkId escapou como erro de console',
+      errosU.length === 0,
+      errosU.slice(0, 3).join(' | '),
+    );
+  } finally {
+    await gil?.context.close();
+    await helena?.context.close();
   }
 
   // ---------------------------------------------- G. nada de erro no console

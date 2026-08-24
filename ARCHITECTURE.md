@@ -264,6 +264,23 @@ Nenhum evento novo foi preciso: `peer-joined` e `peer-left` já existiam. O
 `peer-left` só carrega o id, e o nome é resolvido no mapa local de participantes
 antes da remoção.
 
+**Presença não é conexão.** O tile de um participante vem da lista do servidor de
+sinalização, e essa lista é idêntica com a conexão perfeita, em `failed` e nunca
+estabelecida — foi por isso que, durante muito tempo, todo problema de mídia neste
+app teve o mesmo sintoma: "a pessoa aparece, muda e parada". Cada tile remoto passou
+a expressar o `RTCPeerConnection.connectionState` daquele peer, traduzido por
+`lib/peerConnectionStatus.js`: `failed` → "Sem conexão", `disconnected` →
+"Instável", `new`/`connecting` → "Conectando…", `closed` → "Desconectado". O caminho
+feliz é **silencioso** — `connected` não produz indicador nenhum —, porque um chip
+aceso o tempo todo vira ruído que ninguém lê, e aí o problema volta em outra forma.
+O tile local nunca tem indicador: não existe `RTCPeerConnection` consigo mesmo.
+
+A fronteira importa: aqui o estado é apenas **observado**. Reagir a `failed` —
+reiniciar o ICE, renegociar, reconectar — é do `lib/webrtcMesh.js` (§6.1), e nada
+dessa reação mora na camada de UI. O indicador é irmão do `.video-label`, nunca parte
+dele: o nome do participante é comparado por vários roteiros do E2E, e não é lugar
+para "Sem conexão".
+
 ### 6.6 Ciclo de vida dos recursos
 
 Ao sair da sala, tudo é liberado: tracks de câmera, microfone e tela são parados
@@ -548,10 +565,37 @@ Quatro decisões carregam o resto:
   câmera".
 
 A saída de áudio é aplicada por elemento de mídia, com `HTMLMediaElement.setSinkId`
-em cada tile. Onde a API não existe (Firefox por padrão), o seletor aparece
-**desabilitado com explicação** em vez de escondido — esconder faz quem viu o recurso
-em outro navegador procurar o que não está lá. Toda chamada é embrulhada em `catch`:
-uma rejeição não tratada dentro de um efeito viraria `unhandledrejection`.
+— não existe um "device de saída da página". Ela é aplicada **nos elementos que
+produzem som**: os `<audio>` de `PeerAudio.jsx` (voz dos participantes) e os de
+`RemoteMusicAudio.jsx` (música), ambos pelo hook `lib/audibleMedia.js`. Nunca nos
+`<video>` dos tiles, que são `muted` por construção (§6.8).
+
+Essa frase já esteve errada aqui, e o erro estava no código junto: quando o som dos
+peers saiu do `<video>` do tile e passou para o componente dedicado, o `setSinkId`
+ficou para trás. A chamada continuava tendo sucesso sobre um elemento mudo, e o
+seletor não tinha efeito nenhum sobre a voz de ninguém — quem tivesse como padrão do
+sistema uma saída HDMI ou um fone pareado e ocioso não ouvia ninguém, com o app
+afirmando que estava tudo certo. **Elemento que produz som é elemento que roteia
+saída**; manter as duas coisas juntas é o que o hook existe para garantir.
+
+Onde a API não existe (Firefox por padrão), o seletor aparece **desabilitado com
+explicação** em vez de escondido — esconder faz quem viu o recurso em outro navegador
+procurar o que não está lá —, e a guarda `typeof el.setSinkId === 'function'` impede
+que a ausência quebre a montagem do elemento de áudio (o que seria silêncio total, o
+defeito amplificado). Toda chamada é embrulhada em `catch`: uma rejeição não tratada
+dentro de um efeito viraria `unhandledrejection`. Como o sink agora é aplicado em N
+elementos, um `deviceId` morto rejeita N vezes; a idempotência sai do próprio
+`handleSinkError`, cuja primeira chamada zera a preferência e cujas seguintes caem no
+`return` — um aviso só, sem debounce por timer.
+
+**Autoplay.** Um elemento com fonte não toca sozinho: a política de autoplay barra
+mídia sem gesto do usuário, e dá para entrar na sala sem gesto nenhum (recarregar com
+o nome em `sessionStorage`). O mesmo hook chama `play()` e trata a rejeição; qualquer
+elemento barrado acende um aviso clicável na sala — fora de qualquer painel, e não um
+toast, porque toast expirado devolve o silêncio. O clique limpa o aviso, retoma o
+`AudioContext`, destrava o player de música e incrementa um *nonce* que entra nas deps
+do efeito de `play()` de todo elemento montado: um clique, a sala inteira. Se a
+re-tentativa falhar, o aviso se reacende sozinho.
 
 Quando um device em uso é arrancado, o navegador encerra o track e **não** migra
 sozinho: o `ended` do track local dispara a recuperação (volta ao padrão do sistema,

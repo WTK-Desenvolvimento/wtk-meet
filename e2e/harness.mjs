@@ -597,6 +597,17 @@ export const INSTRUMENTATION = `
     // Passivo: \`addEventListener\` não colide com o \`onnegotiationneeded\` que a
     // app atribui, e não muda o comportamento de nenhum dos dois.
     pc.addEventListener('negotiationneeded', () => { window.__wtkCounters.negotiationNeeded++; });
+    // Força uma transição de \`connectionState\` de forma determinística. Não há
+    // outro jeito de exercitar \`failed\` sem derrubar o TURN (que levaria a
+    // conexão inteira junto, e o que está sob teste é a **leitura** do estado,
+    // não a queda). \`configurable\` porque a propriedade nativa é um getter e o
+    // teste pode forçar mais de uma vez.
+    pc.__wtkForceState = (state) => {
+      Object.defineProperty(pc, 'connectionState', { value: state, configurable: true });
+      // A app usa \`pc.onconnectionstatechange =\`, então despachar o evento roda
+      // o handler de verdade — nada aqui reimplementa o mesh.
+      pc.dispatchEvent(new Event('connectionstatechange'));
+    };
     return pc;
   };
   window.RTCPeerConnection.prototype = OrigPC.prototype;
@@ -713,6 +724,23 @@ export const INSTRUMENTATION = `
     HTMLMediaElement.prototype.setSinkId = function (sinkId) {
       window.__wtkSinkIds.push({ tag: this.tagName, sinkId });
       return Promise.resolve();
+    };
+
+    // Autoplay bloqueado sob demanda. O Chromium do teste roda com a permissão
+    // de microfone concedida, o que **dispensa** a política de autoplay — então
+    // o caso que morde no Safari, no Firefox e no iOS não aconteceria nunca
+    // aqui. Ligar a flag reproduz a rejeição que o usuário real recebe.
+    window.__wtkBlockAutoplay = false;
+    window.__wtkPlayCalls = 0;
+    const origPlay = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function (...args) {
+      window.__wtkPlayCalls++;
+      if (window.__wtkBlockAutoplay) {
+        const err = new Error('play() bloqueado pelo teste');
+        err.name = 'NotAllowedError';
+        return Promise.reject(err);
+      }
+      return origPlay.apply(this, args);
     };
   }
 

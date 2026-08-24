@@ -992,7 +992,13 @@ export default function Room() {
     // Estamos dentro de um gesto: é exatamente aqui que retomar o contexto é
     // permitido.
     getAudioContext();
-    music.unlockAudio?.();
+    // `music.unlockAudio` é assíncrono e faz `await player.play()`, que rejeita
+    // quando o navegador continua barrando. Sem este `catch` a rejeição viraria
+    // `unhandledrejection` — erro de console, que a checagem G do E2E trata como
+    // falha. O caso já está coberto: o `onBlocked` do elemento reacende o aviso.
+    Promise.resolve(music.unlockAudio?.()).catch(() => {
+      setAudioBlocked(true);
+    });
   }, [music]);
 
   /** Qualquer elemento de áudio que o navegador tenha barrado acende o aviso. */
