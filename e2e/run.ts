@@ -13,16 +13,19 @@
  *   N. player de música: votação, fila convergente e áudio no quarto canal
  *   F. saída da sala sem vazar tracks/AudioContext/rAF
  *
- * Rodar: node e2e/run.mjs   (o próprio script builda o client)
+ * Rodar: node e2e/run.ts   (o próprio script builda o client e o servidor)
  */
 import os from 'node:os';
 import path from 'node:path';
+
+import type { Page } from 'playwright';
 
 import {
   CLIENT_ORIGIN,
   INSTRUMENTATION,
   approveAll,
   buildClient,
+  buildServer,
   inboundAudio,
   launchBrowser,
   noPageScroll,
@@ -41,24 +44,49 @@ import {
   startTurn,
   writeAudioFixture,
   writeNoiseFixture,
-} from './harness.mjs';
+} from './harness.ts';
 
-const results = [];
+/** Uma linha do relatório final: o nome da checagem e se ela passou. */
+interface CheckResult {
+  name: string;
+  passed: boolean;
+  detail: string;
+}
+
+/** Uma aba aberta pelo harness — quem o roteiro chama de Alice, Bob, Carol… */
+type Participante = Awaited<ReturnType<typeof openParticipant>>;
+
+/** Um retrato dos senders: uma lista de tracks por conexão do mesh. */
+type SenderTracks = Awaited<ReturnType<typeof senderTracks>>;
+
+const results: CheckResult[] = [];
 let failures = 0;
 
-function check(name, passed, detail = '') {
+function check(name: string, passed: boolean, detail = '') {
   results.push({ name, passed, detail });
   const mark = passed ? '✅' : '❌';
   console.log(`${mark} ${name}${detail ? ` — ${detail}` : ''}`);
   if (!passed) failures += 1;
 }
 
-async function waitFor(fn, { timeout = 20000, interval = 250, label = 'condição' } = {}) {
+/** O que sobra de `T` depois de tirar tudo que `waitFor` trata como "ainda não". */
+type Truthy<T> = Exclude<T, false | null | undefined | 0 | ''>;
+
+async function waitFor<T>(
+  fn: () => T | Promise<T>,
+  { timeout = 20000, interval = 250, label = 'condição' }: {
+    timeout?: number;
+    interval?: number;
+    label?: string;
+  } = {},
+): Promise<Truthy<T>> {
   const deadline = Date.now() + timeout;
-  let last;
+  let last: T | undefined;
   while (Date.now() < deadline) {
     last = await fn();
-    if (last) return last;
+    // O `as`: o `if` acima é justamente o teste que `Truthy<T>` descreve, e o
+    // controle de fluxo do TS não estreita um genérico por truthiness.
+    if (last) return last as Truthy<T>;
     await sleep(interval);
   }
   throw new Error(`timeout esperando ${label} (último valor: ${JSON.stringify(last)})`);
@@ -78,6 +106,9 @@ const passphrase = 'e2e-passphrase-nao-vai-ao-servidor';
 const roomUrl = `${CLIENT_ORIGIN}/${roomId}#${passphrase}`;
 
 await buildClient();
+// O server passou a ter passo de compilação: o E2E sobe `dist/index.js`, que é
+// exatamente o artefato que o container roda.
+await buildServer();
 
 const turn = startTurn();
 const client = startClientServer();
@@ -85,12 +116,16 @@ const signaling = startSignaling();
 await signaling.ready;
 
 /** Tudo que trafegou entre o browser e o servidor de sinalização. */
-const wire = (page) => page.evaluate(() => window.__wtkWire);
+const wire = (page: Page) => page.evaluate(() => window.__wtkWire);
 
 const browser = await launchBrowser();
-let alice;
-let bob;
-let carol;
+// `!` de atribuição definitiva: os três são atribuídos no início do `try` e
+// lidos dentro de closures, onde o controle de fluxo do TS não alcança. O bloco
+// de diagnóstico do `catch` continua guardando com `if (!p) continue`, porque
+// uma falha antes da atribuição é justamente o caso que ele trata.
+let alice!: Participante;
+let bob!: Participante;
+let carol!: Participante;
 
 try {
   // --------------------------------------------- P. tela de pré-entrada
@@ -128,7 +163,7 @@ try {
     // navegador não foi chamado nenhuma vez. Não é "chamado e negado" — é não
     // chamado. É a diferença entre o LED piscar e não acender.
     const inicial = await lobby.evaluate(() => ({
-      marcado: document.querySelector('.prejoin-toggle input')?.checked,
+      marcado: document.querySelector<HTMLInputElement>('.prejoin-toggle input')?.checked,
       gum: window.__wtkCounters.getUserMedia,
       prefs: localStorage.getItem('wtk-meet:devices'),
     }));
@@ -198,14 +233,18 @@ try {
 
     await openSettings(lobby, { source: '.prejoin' });
     const comModal = await waitFor(
-      async () => {
+      // O retorno anotado: sem ele o `false` alarga para `boolean`, e o
+      // `comModal !== false` do `check` deixaria de estreitar para a lista.
+      async (): Promise<WtkTrackState[] | false> => {
         const videos = await lobby.evaluate(() =>
           window.__wtkTrackStates().filter((t) => t.kind === 'video'),
         );
         return videos.some((t) => t.readyState === 'ended') ? videos : false;
       },
       { timeout: 15000, label: 'preview do lobby parar ao abrir Configurações' },
-    ).catch(() => false);
+      // `as const`: sem ele o `false` do fallback alarga para `boolean` e o
+      // `comModal !== false` abaixo perde o estreitamento.
+    ).catch(() => false as const);
     check(
       'P6. Abrir Configurações para o preview do lobby — nunca duas capturas do mesmo device',
       comModal !== false && comModal.filter((t) => t.readyState === 'live').length <= 1,
@@ -219,7 +258,7 @@ try {
 
   // ------------------------------------------------------------------ A. mesh
   /** Espera o participante entrar na chamada, aprovando enquanto isso. */
-  const waitInCall = (participant, approver) =>
+  const waitInCall = (participant: Participante, approver: Participante | null) =>
     waitFor(
       async () => {
         if (approver) await approveAll(approver.page);
@@ -235,20 +274,25 @@ try {
   // e empurrava a barra de controles para fora da tela. É o bug de origem desta
   // suíte de checagens de layout.
   const soloLayout = await roomLayout(alice.page);
+  // Convenção deste arquivo para a geometria que o `roomLayout`/`spotlightLayout`
+  // devolve: os campos são `T | null` porque o elemento pode não existir, e aqui
+  // ele existe — a checagem anterior já esperou por ele. O `!` diz isso sem
+  // mudar uma vírgula do que roda: um `null` que escapasse daria `NaN` na
+  // comparação e reprovaria a checagem, exatamente como reprovava em JavaScript.
   check(
     'L1. Com 1 participante a página não rola e o tile não excede a área da grade',
     noPageScroll(soloLayout) &&
     soloLayout.cols === 1 &&
-    soloLayout.tileWidth > 0 &&
+    soloLayout.tileWidth! > 0 &&
     soloLayout.tileFitsStage === true,
     `scrollHeight=${soloLayout.scrollHeight} innerHeight=${soloLayout.innerHeight} ` +
-    `cols=${soloLayout.cols} tile=${Math.round(soloLayout.tileWidth)}px ` +
+    `cols=${soloLayout.cols} tile=${Math.round(soloLayout.tileWidth!)}px ` +
     `cabe no palco=${soloLayout.tileFitsStage}`,
   );
   check(
     'L2. Os controles ficam dentro do viewport, sem depender de scroll',
     soloLayout.controlsBottom !== null && soloLayout.controlsBottom <= soloLayout.innerHeight + 1,
-    `controls.bottom=${Math.round(soloLayout.controlsBottom)} innerHeight=${soloLayout.innerHeight}`,
+    `controls.bottom=${Math.round(soloLayout.controlsBottom!)} innerHeight=${soloLayout.innerHeight}`,
   );
 
   bob = await openParticipant(browser, { roomUrl, name: 'Bob' });
@@ -259,11 +303,12 @@ try {
   // área visível pelo tile gigante — na prática, ninguém entrava.
   await alice.page.locator('.join-request-modal').waitFor({ timeout: 40000 });
   const modal = await alice.page.evaluate(() => {
-    const dialog = document.querySelector('.join-request-modal');
+    // O `!`: a checagem anterior esperou o modal aparecer no DOM.
+    const dialog = document.querySelector('.join-request-modal')!;
     const approve = [...dialog.querySelectorAll('button')].find((b) => b.textContent === 'Aprovar');
     const rect = dialog.getBoundingClientRect();
-    const backdrop = document.querySelector('.modal-backdrop');
-    const zOf = (el) => (el ? Number(getComputedStyle(el).zIndex) || 0 : 0);
+    const backdrop = document.querySelector('.modal-backdrop')!;
+    const zOf = (el: Element | null) => (el ? Number(getComputedStyle(el).zIndex) || 0 : 0);
     // Os toasts só existem no DOM quando há algum na fila, e neste instante não
     // há. Uma sonda com a mesma classe lê o z-index da regra CSS de verdade —
     // comparar contra um elemento ausente daria um "passou" vazio.
@@ -339,7 +384,7 @@ try {
   await alice.page.evaluate(() => {
     window.__wtkToastLog = [];
     const record = () => {
-      for (const el of document.querySelectorAll('.toast')) {
+      for (const el of document.querySelectorAll<HTMLElement>('.toast')) {
         const entry = { cls: el.className, text: el.innerText };
         if (!window.__wtkToastLog.some((e) => e.text === entry.text && e.cls === entry.cls)) {
           window.__wtkToastLog.push(entry);
@@ -361,7 +406,7 @@ try {
     window.__wtkCarolSemPlaceholder = 0;
     window.__wtkCarolVisto = 0;
     const inspecionar = () => {
-      for (const tile of document.querySelectorAll('.video-tile')) {
+      for (const tile of document.querySelectorAll<HTMLElement>('.video-tile')) {
         if (!/Carol/.test(tile.innerText || '')) continue;
         window.__wtkCarolVisto++;
         if (!tile.querySelector('.video-placeholder')) window.__wtkCarolSemPlaceholder++;
@@ -479,7 +524,7 @@ try {
   );
   check(
     'L4. O tile é 16:9 e o vídeo usa letterbox (object-fit: contain), sem corte nem deformação',
-    Math.abs(trioLayout.tileRatio - 16 / 9) < 0.02 && trioLayout.videoFit === 'contain',
+    Math.abs(trioLayout.tileRatio! - 16 / 9) < 0.02 && trioLayout.videoFit === 'contain',
     `proporção=${trioLayout.tileRatio?.toFixed(3)} (alvo ${(16 / 9).toFixed(3)}) ` +
     `object-fit=${trioLayout.videoFit}`,
   );
@@ -567,14 +612,15 @@ try {
   // nunca acima do teto).
   const hysteresis = await alice.page.evaluate(
     () =>
-      new Promise((resolve, reject) => {
-        const tile = document.querySelector('.video-tile');
+      new Promise<{ maxReleaseMs: number; minReleaseMs: number; cameBackOn: boolean }>((resolve, reject) => {
+        // Os `!`: a sala já está em chamada, com tile e barra de controles no DOM.
+        const tile = document.querySelector('.video-tile')!;
         const micButton = () =>
-          [...document.querySelectorAll('.controls button')].find(
+          [...document.querySelectorAll<HTMLButtonElement>('.controls button')].find(
             (b) => b.textContent === 'Silenciar' || b.textContent === 'Ativar mic',
-          );
-        const waitFlag = (want) =>
-          new Promise((res) => {
+          )!;
+        const waitFlag = (want: boolean) =>
+          new Promise<number>((res) => {
             if (tile.classList.contains('speaking') === want) return res(performance.now());
             const observer = new MutationObserver(() => {
               if (tile.classList.contains('speaking') === want) {
@@ -587,7 +633,7 @@ try {
 
         setTimeout(() => reject(new Error('timeout medindo o ciclo do indicador')), 30000);
         (async () => {
-          const releases = [];
+          const releases: number[] = [];
           let cameBackOn = false;
 
           // Vários ciclos: o clique em "Silenciar" cai em pontos aleatórios do
@@ -688,7 +734,7 @@ try {
     spotAlice.thumbCount === 5 &&
     spotAlice.selectableCount === 2 &&
     spotAlice.pressedCount === 1 &&
-    spotAlice.spotlightWidth >= spotAlice.thumbWidth * 3,
+    spotAlice.spotlightWidth! >= spotAlice.thumbWidth! * 3,
     `destaque=${Math.round(spotAlice.spotlightWidth || 0)}px ` +
     `miniatura=${Math.round(spotAlice.thumbWidth || 0)}px ` +
     `miniaturas=${spotAlice.thumbCount} selecionáveis=${spotAlice.selectableCount} ` +
@@ -699,8 +745,8 @@ try {
   check(
     'C6. O modo destaque não gera scroll de página nem empurra os controles',
     noPageScroll(spotLayout) &&
-    spotLayout.tileFitsStage &&
-    spotLayout.controlsBottom <= spotLayout.innerHeight + 1,
+    spotLayout.tileFitsStage === true &&
+    spotLayout.controlsBottom! <= spotLayout.innerHeight + 1,
     `scrollHeight=${spotLayout.scrollHeight}/${spotLayout.innerHeight} ` +
     `destaque cabe no palco=${spotLayout.tileFitsStage}`,
   );
@@ -736,7 +782,7 @@ try {
   // ordem de tabulação, e não um `div` com `onClick` — mais a ativação pelo
   // mesmo caminho que Enter dispara.
   const railA11y = await alice.page.evaluate(() => {
-    const selectable = [...document.querySelectorAll('.thumb-select')];
+    const selectable = [...document.querySelectorAll<HTMLButtonElement>('.thumb-select')];
     const cameras = [...document.querySelectorAll('.thumb-item:not(.thumb-select)')];
     const target = selectable.find((el) => el.getAttribute('aria-pressed') === 'false');
     target?.focus();
@@ -756,7 +802,12 @@ try {
   });
   const labelBeforeKeyboard = (await spotlightLayout(alice.page)).spotlightLabel;
   // `click()` no elemento focado é exatamente o que a ativação por Enter faz.
-  await alice.page.evaluate(() => document.activeElement?.click());
+  await alice.page.evaluate(() => {
+    // `instanceof` em vez de cast: `activeElement` é `Element`, e só o
+    // `HTMLElement` tem `click()`.
+    const focado = document.activeElement;
+    if (focado instanceof HTMLElement) focado.click();
+  });
   const keyboardSwitched = await waitFor(
     async () => (await spotlightLayout(alice.page)).spotlightLabel !== labelBeforeKeyboard,
     { timeout: 5000, label: 'o destaque trocar pela ativação do botão focado' },
@@ -810,12 +861,13 @@ try {
     withPanel.selectableCount === 2 && // a mesma lista, no painel
     afterEscape.panelOpen === false &&
     noPageScroll(narrowLayout) &&
-    narrowLayout.controlsBottom <= narrowLayout.innerHeight + 1,
+    narrowLayout.controlsBottom! <= narrowLayout.innerHeight + 1,
     `estreito=${narrowStage.narrow} coluna=${narrowStage.railWidth} ` +
     `botão=${narrowStage.toggleCount} painel abriu=${withPanel.panelOpen} ` +
     `itens no painel=${withPanel.selectableCount} Esc fechou=${!afterEscape.panelOpen}`,
   );
-  await alice.page.setViewportSize(wideViewport);
+  // `!`: o viewport foi lido de uma página que já está aberta.
+  await alice.page.setViewportSize(wideViewport!);
   await sleep(400);
 
   // Uma das telas acaba: o destaque migra para a que restou, sem tela em branco
@@ -877,9 +929,9 @@ try {
   check(
     'L5. Abrir o chat encolhe a grade e não gera scroll de página',
     noPageScroll(withChat) &&
-    withChat.tileWidth < beforeChat.tileWidth &&
-    withChat.controlsBottom <= withChat.innerHeight + 1,
-    `tile ${Math.round(beforeChat.tileWidth)}px → ${Math.round(withChat.tileWidth)}px, ` +
+    withChat.tileWidth! < beforeChat.tileWidth! &&
+    withChat.controlsBottom! <= withChat.innerHeight + 1,
+    `tile ${Math.round(beforeChat.tileWidth!)}px → ${Math.round(withChat.tileWidth!)}px, ` +
     `scrollHeight=${withChat.scrollHeight}/${withChat.innerHeight}`,
   );
 
@@ -1065,9 +1117,9 @@ try {
   // Os dispositivos são simulados pelo harness: a flag de câmera falsa do
   // Chromium expõe exatamente um device de cada tipo, e não existe flag para um
   // segundo — sem a simulação, "trocar de câmera" é inexecutável no navegador.
-  const readPrefs = (page) =>
+  const readPrefs = (page: Page) =>
     page.evaluate(() => JSON.parse(localStorage.getItem('wtk-meet:devices') || 'null'));
-  const kindIds = (snapshot, kind) =>
+  const kindIds = (snapshot: SenderTracks, kind: string) =>
     new Set(snapshot.flat().filter((t) => t.kind === kind).map((t) => t.id));
 
   const sdpBeforeSwap = await alice.page.evaluate(() => ({
@@ -1079,25 +1131,28 @@ try {
   await openSettings(alice.page);
 
   const modalState = await alice.page.evaluate(() => {
-    const dialog = document.querySelector('.settings-modal');
+    // Os `!`: `openSettings` acabou de esperar o modal e seus três selects.
+    const dialog = document.querySelector('.settings-modal')!;
     const [video, audio, output] = dialog.querySelectorAll('select');
-    const read = (el) => [...el.options].map((o) => ({ value: o.value, label: o.textContent }));
+    const read = (el: HTMLSelectElement) =>
+      [...el.options].map((o) => ({ value: o.value, label: o.textContent }));
     return {
       role: dialog.getAttribute('role'),
       ariaModal: dialog.getAttribute('aria-modal'),
       hasLabel: !!document.getElementById(dialog.getAttribute('aria-labelledby') || ''),
       focusOnFirstField: document.activeElement === video,
-      video: read(video),
-      audio: read(audio),
-      output: read(output),
+      video: read(video!),
+      audio: read(audio!),
+      output: read(output!),
       // O empilhamento importa: configurações abaixo do pedido de entrada, acima
       // dos toasts.
-      backdropZ: Number(getComputedStyle(document.querySelector('.modal-backdrop.settings')).zIndex),
+      backdropZ: Number(getComputedStyle(document.querySelector('.modal-backdrop.settings')!).zIndex),
       audioContexts: window.__wtkAudioContexts.length,
-      previewPlaying: !!document.querySelector('.settings-preview video')?.srcObject,
+      previewPlaying: !!document.querySelector<HTMLVideoElement>('.settings-preview video')?.srcObject,
     };
   });
-  const noDupes = (list) => new Set(list.map((o) => o.value)).size === list.length;
+  const noDupes = (list: { value: string }[]) =>
+    new Set(list.map((o) => o.value)).size === list.length;
   check(
     'S1. O modal lista os três kinds com rótulos reais, sem duplicatas e com "Padrão do sistema" na frente',
     modalState.video.length === 3 &&
@@ -1148,7 +1203,7 @@ try {
   const videoAfter = kindIds(tracksAfterSwap, 'video');
   const audioBefore = kindIds(tracksBeforeSwap, 'audio');
   const audioAfter = kindIds(tracksAfterSwap, 'audio');
-  const disjoint = (a, b) => [...a].every((id) => !b.has(id));
+  const disjoint = (a: Set<string>, b: Set<string>) => [...a].every((id) => !b.has(id));
   check(
     'S3. Salvar troca o track em TODOS os senders do mesh (câmera e microfone)',
     tracksAfterSwap.length === 2 &&
@@ -1259,7 +1314,7 @@ try {
       video: window.__wtkSinkIds.filter((c) => c.tag === 'VIDEO').length,
       peers: document.querySelectorAll('.peer-audio-sinks audio').length,
       tiles: document.querySelectorAll('.video-tile video').length,
-      saved: JSON.parse(localStorage.getItem('wtk-meet:devices')).audioOutputId,
+      saved: JSON.parse(localStorage.getItem('wtk-meet:devices') || 'null').audioOutputId,
     };
   });
   check(
@@ -1316,7 +1371,7 @@ try {
     videoRequests: window.__wtkCounters.gumRequests.filter((r) => r.video !== null).length,
     liveVideo: window.__wtkTrackStates().filter((t) => t.kind === 'video' && t.readyState === 'live')
       .length,
-    saved: JSON.parse(localStorage.getItem('wtk-meet:devices')).videoInputId,
+    saved: JSON.parse(localStorage.getItem('wtk-meet:devices') || 'null').videoInputId,
   }));
   check(
     'S11. Com a câmera desligada, trocar de câmera só grava a preferência — o LED não acende',
@@ -1331,7 +1386,7 @@ try {
   const relit = await alice.page.evaluate(() => window.__wtkCounters.gumRequests.at(-1));
   check(
     'S12. Religar a câmera usa a preferência escolhida enquanto ela estava desligada',
-    relit.video === 'cam-a',
+    relit!.video === 'cam-a',
     `último pedido=${JSON.stringify(relit)}`,
   );
 
@@ -1344,7 +1399,7 @@ try {
   await homePage.locator('main.home').waitFor({ timeout: 10000 });
   await openSettings(homePage, { source: 'main.home' });
   const restored = await homePage.evaluate(() => {
-    const [video, audio, output] = document.querySelectorAll('.settings-modal select');
+    const [video, audio, output] = document.querySelectorAll<HTMLSelectElement>('.settings-modal select');
     return {
       stored: JSON.parse(localStorage.getItem('wtk-meet:devices') || 'null'),
       video: video.value,
@@ -1381,7 +1436,7 @@ try {
   const appeared = await waitFor(
     async () =>
       alice.page.evaluate(() =>
-        [...document.querySelectorAll('.settings-modal select')[0].options].some(
+        [...document.querySelectorAll<HTMLSelectElement>('.settings-modal select')[0].options].some(
           (o) => o.value === 'cam-c',
         ),
       ),
@@ -1398,16 +1453,16 @@ try {
   const recovered = await waitFor(
     async () => {
       const state = await alice.page.evaluate(() => ({
-        saved: JSON.parse(localStorage.getItem('wtk-meet:devices')).audioInputId,
+        saved: JSON.parse(localStorage.getItem('wtk-meet:devices') || 'null').audioInputId,
         warning: document.querySelector('.warning')?.textContent || '',
         audioLive: window
           .__wtkTrackStates()
           .filter((t) => t.kind === 'audio' && t.readyState === 'live').length,
       }));
-      return state.saved === '' && /desconectad/i.test(state.warning) ? state : false;
+      return state.saved === '' && /desconectad/i.test(state.warning) ? state : (false as const);
     },
     { timeout: 12000, label: 'recuperação do microfone removido' },
-  ).catch(() => false);
+  ).catch(() => false as const);
   check(
     'S14. Remover o dispositivo em uso cai para o padrão do sistema e avisa na tela',
     recovered !== false && recovered.audioLive > 0,
@@ -1469,7 +1524,7 @@ try {
   const musicFixture = writeAudioFixture('e2e-music-a.wav', { seconds: 40, freq: 440 });
   const musicFixtureB = writeAudioFixture('e2e-music-b.wav', { seconds: 40, freq: 660 });
 
-  async function openMusicPanel(participant) {
+  async function openMusicPanel(participant: Participante) {
     await waitFor(
       async () => {
         if ((await participant.page.locator('.music-panel').count()) === 1) return true;
@@ -1494,9 +1549,9 @@ try {
     'N4. Abrir a música fecha o chat e a página continua sem rolar',
     chatStillOpen === 0 &&
     noPageScroll(withMusic) &&
-    withMusic.controlsBottom <= withMusic.innerHeight + 1,
+    withMusic.controlsBottom! <= withMusic.innerHeight + 1,
     `chat aberto=${chatStillOpen} scrollHeight=${withMusic.scrollHeight}/${withMusic.innerHeight} ` +
-    `controls.bottom=${Math.round(withMusic.controlsBottom)}`,
+    `controls.bottom=${Math.round(withMusic.controlsBottom!)}`,
   );
 
   // Alice e Bob adicionam uma faixa cada, quase ao mesmo tempo. Os três têm que
@@ -1506,7 +1561,7 @@ try {
   await alice.page.locator('.music-composer').getByRole('button', { name: 'Adicionar' }).click();
   await bob.page.locator('.music-composer').getByRole('button', { name: 'Adicionar' }).click();
 
-  const queueOf = async (participant) =>
+  const queueOf = async (participant: Participante) =>
     participant.page.locator('.music-queue-item .music-queue-title').allTextContents();
   const queues = await waitFor(
     async () => {
@@ -1599,7 +1654,7 @@ try {
   );
   check(
     'N8. Qualquer participante pula a faixa, e a próxima assume nos três',
-    currentAfter && currentAfter !== currentBefore,
+    !!currentAfter && currentAfter !== currentBefore,
     `"${currentBefore}" → "${currentAfter}"`,
   );
 
@@ -1678,13 +1733,13 @@ try {
   // pegaria os dois.
   await alice.page
     .getByRole('checkbox', { name: /avisos sonoros/i })
-    .evaluate((box) => {
+    .evaluate((box: HTMLElement) => {
       box.click();
     });
   await alice.page.getByRole('button', { name: 'Salvar' }).click();
   await alice.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
   const soundsOff = await alice.page.evaluate(
-    () => JSON.parse(localStorage.getItem('wtk-meet:devices')).soundsEnabled,
+    () => JSON.parse(localStorage.getItem('wtk-meet:devices') || 'null').soundsEnabled,
   );
   check(
     'F4b. O toggle de avisos vive no modal e a escolha é persistida',
@@ -1782,10 +1837,10 @@ try {
         liveTracks: window.__wtkTrackStates().filter((t) => t.readyState === 'live').length,
         askedFor: window.__wtkCounters.gumRequests[0] || null,
       }));
-      return state.prefs && state.prefs.videoInputId !== 'cam-de-outra-maquina' ? state : false;
+      return state.prefs && state.prefs.videoInputId !== 'cam-de-outra-maquina' ? state : (false as const);
     },
     { timeout: 20000, label: 'preferência obsoleta de Dave se corrigir' },
-  ).catch(() => false);
+  ).catch(() => false as const);
   check(
     'S16. Preferência salva para um device inexistente cai no padrão sem erro visível, e se corrige',
     stale !== false &&
@@ -1843,9 +1898,9 @@ try {
   const mobile = await roomLayout(alice.page);
   check(
     'L6. Em viewport móvel a página continua sem rolar e os controles seguem visíveis',
-    noPageScroll(mobile) && mobile.controlsBottom <= mobile.innerHeight + 1,
+    noPageScroll(mobile) && mobile.controlsBottom! <= mobile.innerHeight + 1,
     `scrollHeight=${mobile.scrollHeight}/${mobile.innerHeight} ` +
-    `controls.bottom=${Math.round(mobile.controlsBottom)}`,
+    `controls.bottom=${Math.round(mobile.controlsBottom!)}`,
   );
 
   await alice.page.getByRole('button', { name: /^Chat/ }).click();
@@ -1866,11 +1921,11 @@ try {
     'L7. Em ≤720px o chat empilha abaixo da grade, a grade se reduz e a página continua sem rolar',
     noPageScroll(mobileChat) &&
     stacked &&
-    mobileChat.stageHeight < mobile.stageHeight &&
+    mobileChat.stageHeight! < mobile.stageHeight! &&
     mobileChat.tileFitsStage === true &&
-    mobileChat.controlsBottom <= mobileChat.innerHeight + 1,
-    `empilhado=${stacked} área da grade ${Math.round(mobile.stageHeight)}px → ` +
-    `${Math.round(mobileChat.stageHeight)}px, tile cabe=${mobileChat.tileFitsStage}, ` +
+    mobileChat.controlsBottom! <= mobileChat.innerHeight + 1,
+    `empilhado=${stacked} área da grade ${Math.round(mobile.stageHeight!)}px → ` +
+    `${Math.round(mobileChat.stageHeight!)}px, tile cabe=${mobileChat.tileFitsStage}, ` +
     `scrollHeight=${mobileChat.scrollHeight}/${mobileChat.innerHeight}`,
   );
 
@@ -1881,7 +1936,7 @@ try {
   // si vive em `client/test/roomSlug.test.mjs` e `roomRouting.test.mjs`.
   const joinFrames = (await wire(alice.page))
     .map((f) => /^\d+\["join-request",(.*)\]$/.exec(f.data)?.[1])
-    .filter(Boolean)
+    .filter((json): json is string => Boolean(json))
     .map((json) => JSON.parse(json))
     // O servidor também **emite** `join-request` para quem aprova; só o payload
     // com `roomId` é o que este cliente pediu.
@@ -2010,14 +2065,16 @@ try {
   //   o mesmo o tempo todo.
   const noiseFile = writeNoiseFixture(path.join(os.tmpdir(), 'wtk-meet-ruido.wav'));
   const noiseBrowser = await launchBrowser({ audioFile: noiseFile });
-  let dora = null;
-  let elias = null;
-  let flavia = null;
+  // `!` de atribuição definitiva, como no bloco principal: as três são
+  // atribuídas no topo do `try` e lidas de dentro de closures.
+  let dora!: Participante;
+  let elias!: Participante;
+  let flavia!: Participante;
   try {
     const salaRuido = `${CLIENT_ORIGIN}/e2e-ruido#chave-do-ruido`;
-    const abrirComRuido = (name) =>
+    const abrirComRuido = (name: string) =>
       openParticipant(noiseBrowser, { roomUrl: salaRuido, name, forceWorkletNoiseSuppression: true });
-    const entrar = (participant, approver) =>
+    const entrar = (participant: Participante, approver: Participante | null) =>
       waitFor(
         async () => {
           if (approver) await approveAll(approver.page);
@@ -2104,7 +2161,7 @@ try {
 
     // ---- desliga pelo modal
     await openSettings(dora.page);
-    await dora.page.getByRole('checkbox', { name: /supressão de ruído/i }).evaluate((box) => {
+    await dora.page.getByRole('checkbox', { name: /supressão de ruído/i }).evaluate((box: HTMLElement) => {
       box.click();
     });
     await dora.page.getByRole('button', { name: 'Salvar' }).click();
@@ -2149,7 +2206,7 @@ try {
     );
 
     const prefsDesligada = await dora.page.evaluate(() =>
-      JSON.parse(localStorage.getItem('wtk-meet:audio')).noiseSuppression,
+      JSON.parse(localStorage.getItem('wtk-meet:audio') || 'null').noiseSuppression,
     );
     check(
       'T6. Desligar persiste a escolha na chave própria',
@@ -2182,7 +2239,7 @@ try {
 
     // ---- religa: o ciclo completo é o que o DoD pede
     await openSettings(dora.page);
-    await dora.page.getByRole('checkbox', { name: /supressão de ruído/i }).evaluate((box) => {
+    await dora.page.getByRole('checkbox', { name: /supressão de ruído/i }).evaluate((box: HTMLElement) => {
       box.click();
     });
     await dora.page.getByRole('button', { name: 'Salvar' }).click();
@@ -2202,7 +2259,7 @@ try {
     // Mudo + supressão: alternar não pode desmutar ninguém.
     await dora.page.getByRole('button', { name: 'Silenciar', exact: true }).click();
     await openSettings(dora.page);
-    await dora.page.getByRole('checkbox', { name: /supressão de ruído/i }).evaluate((box) => {
+    await dora.page.getByRole('checkbox', { name: /supressão de ruído/i }).evaluate((box: HTMLElement) => {
       box.click();
     });
     await dora.page.getByRole('button', { name: 'Salvar' }).click();
@@ -2252,11 +2309,12 @@ try {
   // O que se afirma aqui é a última etapa da recepção de áudio — a que
   // transforma o que chega em som. Ela é comum a todos os pares, e é por isso
   // que quebrá-la produzia o sintoma "ele nos ouve e não ouve ninguém".
-  let gil = null;
-  let helena = null;
+  // `!` de atribuição definitiva, como nos blocos anteriores.
+  let gil!: Participante;
+  let helena!: Participante;
   try {
     const salaAudio = `${CLIENT_ORIGIN}/e2e-audio-peers#chave-do-audio`;
-    const entrarU = (participant, approver) =>
+    const entrarU = (participant: Participante, approver: Participante | null) =>
       waitFor(
         async () => {
           if (approver) await approveAll(approver.page);
@@ -2287,7 +2345,7 @@ try {
       audio: window.__wtkSinkIds.filter((c) => c.tag === 'AUDIO' && c.sinkId === 'spk-b').length,
       video: window.__wtkSinkIds.filter((c) => c.tag === 'VIDEO').length,
       elementos: document.querySelectorAll('.peer-audio-sinks audio').length,
-      mudos: [...document.querySelectorAll('.peer-audio-sinks audio')].filter((a) => a.muted).length,
+      mudos: [...document.querySelectorAll<HTMLAudioElement>('.peer-audio-sinks audio')].filter((a) => a.muted).length,
     }));
     check(
       'U1. Um peer que entra depois da escolha nasce com a saída já aplicada, e em nenhum <video>',
@@ -2308,7 +2366,7 @@ try {
     const voltou = await gil.page.evaluate(() => ({
       padrao: window.__wtkSinkIds.filter((c) => c.sinkId === '').length,
       outros: window.__wtkSinkIds.filter((c) => c.sinkId !== '').length,
-      salvo: JSON.parse(localStorage.getItem('wtk-meet:devices')).audioOutputId,
+      salvo: JSON.parse(localStorage.getItem('wtk-meet:devices') || 'null').audioOutputId,
     }));
     check(
       'U2. Voltar para o padrão do sistema chama setSinkId(\'\') em quem já tinha sink',
@@ -2335,16 +2393,18 @@ try {
     }));
 
     /** Força o estado numa das conexões da página, pelo handler real da app. */
-    const forcar = (page, state) =>
+    const forcar = (page: Page, state: RTCPeerConnectionState) =>
       page.evaluate((s) => {
         window.__wtkPeers[0].__wtkForceState(s);
       }, state);
 
+    // `as const`: sem ele a tabela alarga para `string[]` e o primeiro campo
+    // deixa de ser um `RTCPeerConnectionState`, que é o que `forcar` recebe.
     for (const [state, rotulo, nivel] of [
       ['connecting', 'Conectando…', 'warn'],
       ['disconnected', 'Instável', 'warn'],
       ['failed', 'Sem conexão', 'bad'],
-    ]) {
+    ] as const) {
       await forcar(gil.page, state);
       const visto = await waitFor(
         async () => {

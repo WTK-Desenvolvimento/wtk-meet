@@ -14,7 +14,32 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { chromium } from 'playwright';
+import { chromium, type Browser, type ConsoleMessage, type Locator, type Page, type Route } from 'playwright';
+
+/** Acumulado de `getStats` num instante. Duas amostras dão o RMS da janela. */
+export interface AudioSnapshot {
+  energy: number;
+  duration: number;
+  bytes: number;
+}
+
+/** Como o `/turn-credentials` responde **para um participante**. */
+export interface TurnScenario {
+  status?: number;
+  ttl?: number;
+  /** A primeira resposta traz senha que o TURN recusa; a renovação traz a boa. */
+  expiredFirstCredential?: boolean;
+}
+
+export interface OpenParticipantOptions {
+  roomUrl: string;
+  name: string;
+  preferences?: Record<string, unknown>;
+  audioPreferences?: Record<string, unknown>;
+  cameraOn?: boolean;
+  forceWorkletNoiseSuppression?: boolean;
+  turn?: TurnScenario;
+}
 
 const require = createRequire(import.meta.url);
 const Turn = require('node-turn');
@@ -42,7 +67,7 @@ export const ICE_SERVERS = [
   },
 ];
 
-const MIME = {
+const MIME: Record<string, string | undefined> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -59,7 +84,10 @@ const MIME = {
  * `musicEngine` passa e a faixa entra em modo `stream` (retransmitida por quem
  * adicionou), que é justamente o caminho que o teste precisa exercitar.
  */
-export function writeAudioFixture(name, { seconds = 30, freq = 440, rate = 8000 } = {}) {
+export function writeAudioFixture(
+  name: string,
+  { seconds = 30, freq = 440, rate = 8000 }: { seconds?: number; freq?: number; rate?: number } = {},
+): string {
   const samples = seconds * rate;
   const buffer = Buffer.alloc(44 + samples * 2);
   buffer.write('RIFF', 0);
@@ -92,7 +120,10 @@ export function writeAudioFixture(name, { seconds = 30, freq = 440, rate = 8000 
  * Ruído determinístico (gerador com semente): duas execuções comparam o mesmo
  * sinal, e um resultado que oscila passa a significar problema de verdade.
  */
-export function writeNoiseFixture(filePath, { seconds = 20, rate = 48000, amplitude = 0.15 } = {}) {
+export function writeNoiseFixture(
+  filePath: string,
+  { seconds = 20, rate = 48000, amplitude = 0.15 }: { seconds?: number; rate?: number; amplitude?: number } = {},
+): string {
   const samples = seconds * rate;
   const buffer = Buffer.alloc(44 + samples * 2);
   buffer.write('RIFF', 0);
@@ -127,7 +158,7 @@ export function writeNoiseFixture(filePath, { seconds = 20, rate = 48000, amplit
  * não entrega o áudio de uma track a um segundo contexto, ver o fim do
  * `claude-progress.md`).
  */
-export async function inboundAudio(page) {
+export async function inboundAudio(page: Page): Promise<AudioSnapshot> {
   return page.evaluate(async () => {
     let energy = 0;
     let duration = 0;
@@ -135,11 +166,11 @@ export async function inboundAudio(page) {
     for (const pc of window.__wtkPeers || []) {
       if (pc.connectionState === 'closed') continue;
       const report = await pc.getStats();
-      report.forEach((stat) => {
+      report.forEach((stat: Record<string, number | string>) => {
         if (stat.type !== 'inbound-rtp' || stat.kind !== 'audio') return;
-        energy += stat.totalAudioEnergy || 0;
-        duration += stat.totalSamplesDuration || 0;
-        bytes += stat.bytesReceived || 0;
+        energy += Number(stat.totalAudioEnergy) || 0;
+        duration += Number(stat.totalSamplesDuration) || 0;
+        bytes += Number(stat.bytesReceived) || 0;
       });
     }
     return { energy, duration, bytes };
@@ -151,7 +182,7 @@ export async function inboundAudio(page) {
  * explícita de propósito: comparar acumulados de janelas diferentes mediria
  * duração, não nível.
  */
-export function rmsBetween(before, after) {
+export function rmsBetween(before: AudioSnapshot, after: AudioSnapshot): number | null {
   const energy = after.energy - before.energy;
   const duration = after.duration - before.duration;
   if (!(duration > 0) || !(energy >= 0)) return null;
@@ -175,8 +206,8 @@ export function startTurn() {
  * `SIGNALING_URL` é resolvido em tempo de build (`import.meta.env`), então não
  * dá para trocá-lo em runtime.
  */
-export function buildClient() {
-  return new Promise((resolve, reject) => {
+export function buildClient(): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
     const child = spawn('npm', ['run', 'build'], {
       cwd: path.join(ROOT, 'client'),
       env: { ...process.env, VITE_SIGNALING_URL: `http://localhost:${SIGNALING_PORT}` },
@@ -186,8 +217,25 @@ export function buildClient() {
   });
 }
 
+/**
+ * Compila o server. Espelha o `buildClient`, e existe porque o server passou a
+ * ter passo de compilação: o E2E sobe `dist/index.js`, que é exatamente o
+ * artefato que o container roda.
+ */
+export function buildServer(): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn('npm', ['run', 'build'], {
+      cwd: path.join(ROOT, 'server'),
+      stdio: ['ignore', 'ignore', 'inherit'],
+    });
+    child.on('exit', (code) =>
+      code === 0 ? resolve() : reject(new Error(`build do server falhou (${code})`)),
+    );
+  });
+}
+
 export function startSignaling() {
-  const child = spawn(process.execPath, ['src/index.js'], {
+  const child = spawn(process.execPath, ['dist/index.js'], {
     cwd: path.join(ROOT, 'server'),
     env: {
       ...process.env,
@@ -210,19 +258,19 @@ export function startSignaling() {
 /** SPA estático: qualquer rota desconhecida cai no index.html. */
 export function startClientServer() {
   const server = http.createServer((req, res) => {
-    const url = new URL(req.url, CLIENT_ORIGIN);
+    const url = new URL(req.url ?? '/', CLIENT_ORIGIN);
     let filePath = path.join(DIST, url.pathname);
     if (!filePath.startsWith(DIST) || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
       filePath = path.join(DIST, 'index.html');
     }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream' });
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath)] ?? 'application/octet-stream' });
     fs.createReadStream(filePath).pipe(res);
   });
   server.listen(CLIENT_PORT);
   return { stop: () => server.close() };
 }
 
-async function waitForHttp(url, timeoutMs = 15000) {
+async function waitForHttp(url: string, timeoutMs = 15000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -236,9 +284,10 @@ async function waitForHttp(url, timeoutMs = 15000) {
   throw new Error(`timeout esperando ${url}`);
 }
 
-export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+export const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
-export async function launchBrowser({ audioFile = null } = {}) {
+export async function launchBrowser({ audioFile = null }: { audioFile?: string | null } = {}) {
   return chromium.launch({
     headless: true,
     // O binário completo (headless "novo"), não o chrome-headless-shell: o
@@ -267,7 +316,7 @@ export async function launchBrowser({ audioFile = null } = {}) {
  * anônima separada), ICE apontando para o TURN local, e nome já preenchido.
  */
 export async function openParticipant(
-  browser,
+  browser: Browser,
   {
     roomUrl,
     name,
@@ -299,7 +348,7 @@ export async function openParticipant(
     // recusa, e a renovação traz a boa. Uma aba que não renova fica presa na
     // senha recusada — que é, ponto a ponto, o defeito investigado.
     turn = {},
-  },
+  }: OpenParticipantOptions,
 ) {
   const { status: turnStatus = 200, ttl: turnTtl = 3600, expiredFirstCredential = false } = turn;
   const context = await browser.newContext({
@@ -337,8 +386,8 @@ export async function openParticipant(
   // Um item por requisição a /turn-credentials, com o instante. É o que permite
   // afirmar que a credencial foi renovada **antes** de uma conexão nova nascer,
   // e não só que ela foi renovada em algum momento.
-  const turnRequests = [];
-  await context.route('**/turn-credentials', (route) => {
+  const turnRequests: number[] = [];
+  await context.route('**/turn-credentials', (route: Route) => {
     turnRequests.push(Date.now());
     if (turnStatus !== 200) {
       return route.fulfill({
@@ -366,11 +415,11 @@ export async function openParticipant(
   await context.addInitScript({ content: INSTRUMENTATION });
 
   const page = await context.newPage();
-  const consoleErrors = [];
-  page.on('console', (msg) => {
+  const consoleErrors: string[] = [];
+  page.on('console', (msg: ConsoleMessage) => {
     if (msg.type() === 'error') consoleErrors.push(msg.text());
   });
-  page.on('pageerror', (err) => consoleErrors.push(String(err)));
+  page.on('pageerror', (err: Error) => consoleErrors.push(String(err)));
 
   await page.goto(roomUrl);
   const nameField = page.getByPlaceholder('Como te chamam');
@@ -385,7 +434,8 @@ export async function openParticipant(
   if ((await cameraToggle.isChecked()) !== cameraOn) {
     await cameraToggle.click();
     await page.waitForFunction(
-      (want) => document.querySelector('.prejoin-toggle input')?.checked === want,
+      (want: boolean) =>
+        document.querySelector<HTMLInputElement>('.prejoin-toggle input')?.checked === want,
       cameraOn,
       { timeout: 5000 },
     );
@@ -405,9 +455,11 @@ export async function openParticipant(
  * tracker do React perceber a mudança) e dispara um evento `input` que borbulha
  * até o listener de raiz do React.
  */
-export async function setInputValue(locator, value) {
-  await locator.evaluate((input, text) => {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+export async function setInputValue(locator: Locator, value: string) {
+  await locator.evaluate((input: HTMLInputElement, text: string) => {
+    // O `!` duplo: o descritor de `value` existe em todo navegador que roda esta
+    // suíte, e sem o setter nativo não há como o React enxergar a mudança.
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
     setter.call(input, text);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }, value);
@@ -421,9 +473,10 @@ export async function setInputValue(locator, value) {
  * caminho que não funciona aqui; escrever pelo setter nativo e despachar
  * `change` é o caminho que o React escuta.
  */
-export async function setSelectValue(locator, value) {
-  await locator.evaluate((select, wanted) => {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+export async function setSelectValue(locator: Locator, value: string) {
+  await locator.evaluate((select: HTMLSelectElement, wanted: string) => {
+    // Mesma observação de `setInputValue`.
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')!.set!;
     setter.call(select, wanted);
     select.dispatchEvent(new Event('change', { bubbles: true }));
   }, value);
@@ -434,13 +487,13 @@ export async function setSelectValue(locator, value) {
  * concedido a permissão e a enumeração precisa ter populado os seletores, senão
  * a escolha cai numa `<option>` que ainda não existe.
  */
-export async function openSettings(page, { source = '.controls' } = {}) {
+export async function openSettings(page: Page, { source = '.controls' }: { source?: string } = {}) {
   await page.locator(source).getByRole('button', { name: 'Configurações' }).click();
   const modal = page.locator('.settings-modal');
   await modal.waitFor({ timeout: 10000 });
   await page.waitForFunction(
     () => {
-      const selects = document.querySelectorAll('.settings-modal select');
+      const selects = document.querySelectorAll<HTMLSelectElement>('.settings-modal select');
       return selects.length === 3 && [...selects].every((s) => s.options.length > 1);
     },
     { timeout: 10000 },
@@ -449,13 +502,14 @@ export async function openSettings(page, { source = '.controls' } = {}) {
 }
 
 /** Snapshot dos tracks de cada sender, por peer — identidade e estado. */
-export async function senderTracks(page) {
+export async function senderTracks(page: Page) {
   return page.evaluate(() =>
     (window.__wtkPeers || [])
       .filter((pc) => pc.connectionState !== 'closed')
       .map((pc) =>
         pc.getSenders()
-          .filter((s) => s.track)
+          // O predicado do `filter` estreita o tipo: quem sobra tem `track`.
+          .filter((s): s is RTCRtpSender & { track: MediaStreamTrack } => !!s.track)
           .map((s) => ({ kind: s.track.kind, id: s.track.id, enabled: s.track.enabled })),
       ),
   );
@@ -469,7 +523,7 @@ export async function senderTracks(page) {
  * de ser renderizado, isto falha por timeout de entrada em vez de silenciosamente
  * clicar em outro botão de mesmo nome que venha a existir.
  */
-export async function approveAll(page) {
+export async function approveAll(page: Page) {
   const buttons = page.locator('.join-request-modal').getByRole('button', { name: 'Aprovar' });
   for (let i = await buttons.count(); i > 0; i = await buttons.count()) {
     await buttons.first().click();
@@ -481,7 +535,7 @@ export async function approveAll(page) {
  * Estado de layout da sala, medido no próprio browser: é o que prova que a
  * página não rola e que os controles continuam alcançáveis.
  */
-export async function roomLayout(page) {
+export async function roomLayout(page: Page) {
   return page.evaluate(() => {
     const doc = document.documentElement;
     const grid = document.querySelector('.video-grid');
@@ -503,7 +557,7 @@ export async function roomLayout(page) {
       stageHeight: stage ? stage.height : null,
       scrollHeight: doc.scrollHeight,
       innerHeight: window.innerHeight,
-      scrollTop: document.scrollingElement.scrollTop,
+      scrollTop: document.scrollingElement?.scrollTop ?? 0,
       controlsBottom: controls ? controls.bottom : null,
       controlsTop: controls ? controls.top : null,
       tiles: document.querySelectorAll('.video-tile').length,
@@ -520,7 +574,7 @@ export async function roomLayout(page) {
 }
 
 /** True quando a página inteira cabe no viewport e não há como rolá-la. */
-export const noPageScroll = (layout) =>
+export const noPageScroll = (layout: { scrollHeight: number; innerHeight: number; scrollTop: number }) =>
   layout.scrollHeight <= layout.innerHeight && layout.scrollTop === 0;
 
 /**
@@ -531,13 +585,13 @@ export const noPageScroll = (layout) =>
  * exatamente uma tela grande, as outras miniaturas são visivelmente menores, e
  * quem rola é a coluna. É a tradução no navegador do que o módulo puro promete.
  */
-export async function spotlightLayout(page) {
+export async function spotlightLayout(page: Page) {
   return page.evaluate(() => {
     const layout = document.querySelector('.spotlight-layout');
     const main = document.querySelector('.spotlight-main .video-tile');
     const rail = document.querySelector('.thumb-rail');
     const thumbs = [...document.querySelectorAll('.thumb-item')];
-    const rect = (el) => (el ? el.getBoundingClientRect() : null);
+    const rect = (el: Element | null) => (el ? el.getBoundingClientRect() : null);
     const mainRect = rect(main);
     const railRect = rect(rail);
 
@@ -566,7 +620,7 @@ export async function spotlightLayout(page) {
 }
 
 /** Estado interno das RTCPeerConnections, lido do próprio processo da página. */
-export async function peerStats(page) {
+export async function peerStats(page: Page) {
   return page.evaluate(async () => {
     const pcs = window.__wtkPeers || [];
     const out = [];

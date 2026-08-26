@@ -5,7 +5,7 @@
   "description": "Teste ponta a ponta com 3 participantes Chromium e TURN local",
   "type": "module",
   "scripts": {
-    "test": "node run.mjs",
+    "test": "node run.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
