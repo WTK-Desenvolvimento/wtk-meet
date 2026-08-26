@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import SettingsModal from '../components/SettingsModal.jsx';
+import SettingsModal from '../components/SettingsModal.js';
 import { readPreferences, writePreferences } from '../lib/devices.js';
 import { readAudioPreferences, writeAudioPreferences } from '../lib/noiseSuppression.js';
 import { detectNoiseMode } from '../lib/micPipeline.js';
@@ -30,7 +30,7 @@ import { isReservedPath, parseInviteLink } from '../lib/roomRouting.js';
  * Falha de rede responde `false`: o aviso é conveniência, e servidor fora do ar
  * não pode impedir alguém de criar sala.
  */
-async function isRoomOccupied(path) {
+async function isRoomOccupied(path: string): Promise<boolean> {
   try {
     const res = await fetch(`${SIGNALING_URL}/rooms/${encodeURIComponent(path)}/occupancy`);
     if (!res.ok) return false;
@@ -83,7 +83,7 @@ export default function Home() {
     return trimmed;
   }
 
-  function enterRoom(path) {
+  function enterRoom(path: string) {
     // A passphrase vive só no fragmento da URL — nunca é enviada ao servidor.
     navigate(`/${path}#${generatePassphrase()}`);
   }

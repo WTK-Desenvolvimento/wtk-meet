@@ -1,7 +1,8 @@
 import { Navigate, Routes, Route } from 'react-router-dom';
-import Home from './pages/Home.jsx';
-import Room from './pages/Room.jsx';
-import LegacyRoomRedirect from './pages/LegacyRoomRedirect.jsx';
+import type { ReactElement } from 'react';
+import Home from './pages/Home.js';
+import Room from './pages/Room.js';
+import LegacyRoomRedirect from './pages/LegacyRoomRedirect.js';
 import { ROUTE_TABLE } from './lib/roomRouting.js';
 
 /**
@@ -18,7 +19,7 @@ import { ROUTE_TABLE } from './lib/roomRouting.js';
  * A precedência é do react-router, não da ordem da lista: estático (`/app`)
  * ganha de dinâmico (`/:roomSlug`), que ganha do splat (`*`).
  */
-const SCREENS = {
+const SCREENS: Record<string, ReactElement> = {
   // A raiz continua sendo a porta de entrada — sala nenhuma mora em `/`.
   home: <Home />,
   // Namespace das telas da aplicação. Sem filha nesta entrega, mas reservado

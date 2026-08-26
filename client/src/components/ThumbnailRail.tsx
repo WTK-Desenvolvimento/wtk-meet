@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type UIEvent } from 'react';
-import VideoTile, { type Tile } from './VideoTile.jsx';
+import VideoTile, { type Tile } from './VideoTile.js';
 import type { LevelSnapshot } from '../lib/audioLevels.js';
 import { orderRailItems } from '../lib/spotlightLayout.js';
 

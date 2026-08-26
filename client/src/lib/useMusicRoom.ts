@@ -887,7 +887,9 @@ export function useMusicRoom({
   // ---------------------------------------------------------------- fila
 
   const addToQueue = useCallback(
-    async (input: string, file: File | null = null) => {
+    // `input` é `null` quando a faixa vem de um arquivo escolhido no disco —
+    // é o `MusicPanel` quem chama assim, e `parseFileSource` é quem decide.
+    async (input: string | null, file: File | null = null) => {
       const me = selfIdRef.current;
       const parsed = file ? parseFileSource(file) : parseSource(input, { allowYouTube: isYouTubeEnabled() });
       if (!parsed.ok) {

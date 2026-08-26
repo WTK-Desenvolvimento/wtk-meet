@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import VideoTile from './VideoTile.jsx';
+import VideoTile from './VideoTile.js';
 import { DEFAULT_PREFERENCES, buildConstraints, type DevicePreferences } from '../lib/devices.js';
 
 const PREVIEW_ERROR =

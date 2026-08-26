@@ -6,18 +6,18 @@ import { AudioLevelMonitor } from '../lib/audioLevels.js';
 import { appendMessage, createChatMessage, sanitizeIncomingMessage } from '../lib/chat.js';
 import { closeAudioContext, getAudioContext, resumeAudioContextOnGesture } from '../lib/audioContext.js';
 import { useMusicRoom } from '../lib/useMusicRoom.js';
-import VideoTile from '../components/VideoTile.jsx';
-import VideoGrid from '../components/VideoGrid.jsx';
-import SpotlightStage from '../components/SpotlightStage.jsx';
+import VideoTile from '../components/VideoTile.js';
+import VideoGrid from '../components/VideoGrid.js';
+import SpotlightStage from '../components/SpotlightStage.js';
 import PeerAudio from '../components/PeerAudio.jsx';
-import ChatPanel from '../components/ChatPanel.jsx';
-import MusicPanel from '../components/MusicPanel.jsx';
-import MusicVoteCard from '../components/MusicVoteCard.jsx';
+import ChatPanel from '../components/ChatPanel.js';
+import MusicPanel from '../components/MusicPanel.js';
+import MusicVoteCard from '../components/MusicVoteCard.js';
 import RemoteMusicAudio from '../components/RemoteMusicAudio.jsx';
-import Toasts from '../components/Toasts.jsx';
-import JoinRequestModal from '../components/JoinRequestModal.jsx';
-import SettingsModal from '../components/SettingsModal.jsx';
-import PreJoin from '../components/PreJoin.jsx';
+import Toasts from '../components/Toasts.js';
+import JoinRequestModal from '../components/JoinRequestModal.js';
+import SettingsModal from '../components/SettingsModal.js';
+import PreJoin from '../components/PreJoin.js';
 import {
   buildConstraints,
   initialMediaPlan,
@@ -40,6 +40,16 @@ import { buildRoomUrl, generatePassphrase } from '../lib/roomSlug.js';
 import { roomPathFromLocation } from '../lib/roomRouting.js';
 // import { deriveRoomKey, isInsertableStreamsSupported } from '../lib/e2ee.js';
 import { fetchIceServers, MAX_PARTICIPANTS } from '../config.js';
+import type { ChatMessage } from '../lib/chat.js';
+import type { AudioPreferences } from '../lib/noiseSuppression.js';
+import type { DevicePreferences } from '../lib/devices.js';
+import type { LevelSnapshot } from '../lib/audioLevels.js';
+import type { Tile } from '../components/VideoTile.js';
+import type { MicPipeline } from '../lib/micPipeline.js';
+import type { SignalingClient } from '../lib/signaling.js';
+import type { JoinRequest } from '../components/JoinRequestModal.js';
+import type { Toast } from '../components/Toasts.js';
+import type { PendingPreferences } from '../components/SettingsModal.js';
 
 const PHASE = {
   CONNECTING: 'connecting',
@@ -63,7 +73,22 @@ const PHASE = {
  * `peer-joined` e o `onRemoteStream`, que também cria quando o peer ainda é
  * desconhecido). Corrigir só um deixa a corrida viva.
  */
-const DEFAULT_PARTICIPANT = {
+/**
+ * Um participante da sala, do ponto de vista desta tela.
+ *
+ * `connectionState` é o `RTCPeerConnection.connectionState` daquele peer, tal
+ * como o mesh o reporta — aqui ele só é **observado**.
+ */
+export interface Participant {
+  displayName: string;
+  stream: MediaStream | null;
+  screenStream: MediaStream | null;
+  cameraOff: boolean;
+  micOff: boolean;
+  connectionState?: string;
+}
+
+const DEFAULT_PARTICIPANT: Participant = {
   displayName: '',
   stream: null,
   screenStream: null,
@@ -116,14 +141,14 @@ export default function Room() {
   const [nameInput, setNameInput] = useState('');
 
   const [phase, setPhase] = useState(PHASE.CONNECTING);
-  const [denyReason, setDenyReason] = useState(null);
-  const [pendingRequests, setPendingRequests] = useState([]);
+  const [denyReason, setDenyReason] = useState<string | null>(null);
+  const [pendingRequests, setPendingRequests] = useState<JoinRequest[]>([]);
   // peerId -> { displayName, stream, screenStream, cameraOff, micOff, connectionState }
   //
   // `connectionState` é o `RTCPeerConnection.connectionState` daquele peer, tal
   // como o mesh o reporta. Aqui ele só é **observado**: reagir a `failed`
   // (reiniciar o ICE, renegociar) é do `lib/webrtcMesh.js`, não desta camada.
-  const [participants, setParticipants] = useState(new Map());
+  const [participants, setParticipants] = useState(new Map<string, Participant>());
   const [muted, setMuted] = useState(false);
   // O padrão de fábrica é entrar **desligado**: sem preferência gravada,
   // `startCameraOff` é `true` e nenhum `getUserMedia` desta aba pede vídeo.
@@ -133,7 +158,7 @@ export default function Room() {
     () => readPreferences(window.localStorage).startCameraOff,
   );
   const [sharingScreen, setSharingScreen] = useState(false);
-  const [mediaError, setMediaError] = useState(null);
+  const [mediaError, setMediaError] = useState<string | null>(null);
   // O navegador barrou a reprodução de algum elemento de áudio (voz ou música).
   // Um só estado para os dois: do ponto de vista de quem está na sala o problema
   // é um só — não sai som —, e dois avisos concorreriam pelo mesmo clique.
@@ -148,18 +173,18 @@ export default function Room() {
   // Qual tela **esta aba** vê em destaque. Preferência puramente local: não vai
   // para o servidor nem para o data channel, e escolher aqui não muda a tela de
   // mais ninguém.
-  const [pinnedScreenId, setPinnedScreenId] = useState(null);
+  const [pinnedScreenId, setPinnedScreenId] = useState<string | null>(null);
 
   // Histórico de chat vive só aqui: nenhum storage, nenhum servidor. Desmontar
   // o componente (sair da sala / recarregar) apaga tudo.
-  const [chatMessages, setChatMessages] = useState([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatOpen, setChatOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [musicOpen, setMusicOpen] = useState(false);
   const [selfId, setSelfId] = useState('');
 
-  const [toasts, setToasts] = useState([]);
-  const [audioLevels, setAudioLevels] = useState({});
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [audioLevels, setAudioLevels] = useState<LevelSnapshot>({});
 
   // Preferência de dispositivos: a única coisa que este app grava em
   // `localStorage` (ver `lib/devices.js` e `ARCHITECTURE.md` §6.10). O toggle de
@@ -171,11 +196,12 @@ export default function Room() {
   // Capacidade do navegador: não muda enquanto a aba viver.
   const noiseMode = useMemo(() => detectNoiseMode(), []);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsContext, setSettingsContext] = useState(null);
+  const [settingsContext, setSettingsContext] = useState<AudioContext | null>(null);
   const soundsEnabled = preferences.soundsEnabled;
 
-  const localStreamRef = useRef(null);   // mic + câmera (o track de vídeo entra e sai)
-  const cameraTrackRef = useRef(null);
+  /** mic + câmera (o track de vídeo entra e sai). */
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const cameraTrackRef = useRef<MediaStreamTrack | null>(null);
   /**
    * O pipeline do microfone, com dono explícito.
    *
@@ -185,14 +211,14 @@ export default function Room() {
    * pipeline (e não ao stream) é o que impede as quatro falhas silenciosas
    * catalogadas em `lib/micPipeline.js`.
    */
-  const micPipelineRef = useRef(null);
-  const screenStreamRef = useRef(null);
-  const signalingRef = useRef(null);
-  const meshRef = useRef(null);
-  const monitorRef = useRef(null);
-  const selfIdRef = useRef(null);
+  const micPipelineRef = useRef<MicPipeline | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const signalingRef = useRef<SignalingClient | null>(null);
+  const meshRef = useRef<WebRTCMesh | null>(null);
+  const monitorRef = useRef<AudioLevelMonitor | null>(null);
+  const selfIdRef = useRef<string | null>(null);
   const cameraBusyRef = useRef(false);
-  const toastTimersRef = useRef(new Set());
+  const toastTimersRef = useRef(new Set<ReturnType<typeof setTimeout>>());
   // Espelhos para uso dentro de handlers registrados uma única vez.
   const participantsRef = useRef(participants);
   const chatOpenRef = useRef(chatOpen);
@@ -216,7 +242,7 @@ export default function Room() {
   noiseModeRef.current = noiseMode;
 
   /** Grava a preferência e devolve o valor efetivo (o storage pode recusar). */
-  const savePreferences = useCallback((patch) => {
+  const savePreferences = useCallback((patch: Partial<DevicePreferences>) => {
     const saved = writePreferences(window.localStorage, patch);
     preferencesRef.current = saved;
     setPreferences(saved);
@@ -236,7 +262,7 @@ export default function Room() {
    * próxima sala mesmo se a pessoa desistir de entrar nesta.
    */
   const chooseStartCamera = useCallback(
-    (on) => {
+    (on: boolean) => {
       savePreferences({ startCameraOff: !on });
       setCameraOff(!on);
     },
@@ -247,7 +273,7 @@ export default function Room() {
    * Sair do lobby. É a mudança de `displayName` que libera o efeito de setup —
    * o lobby não conecta nada, não abre socket e não entrega stream nenhum.
    */
-  const enterRoom = useCallback((name) => {
+  const enterRoom = useCallback((name: string) => {
     // Um aviso de preview que ficou na tela do lobby não tem por que atravessar
     // a entrada: o que valer na sala será dito de novo pelo efeito de setup.
     setMediaError(null);
@@ -255,7 +281,7 @@ export default function Room() {
     setDisplayName(name);
   }, []);
 
-  const saveAudioPreferences = useCallback((patch) => {
+  const saveAudioPreferences = useCallback((patch: Partial<AudioPreferences>) => {
     const saved = writeAudioPreferences(window.localStorage, patch);
     audioPrefsRef.current = saved;
     setAudioPrefs(saved);
@@ -264,7 +290,7 @@ export default function Room() {
 
   /** As constraints de áudio da preferência corrente, para todo `getUserMedia`. */
   const micConstraints = useCallback(
-    (options) =>
+    (options: { video?: boolean; audio?: boolean }) =>
       buildConstraints(preferencesRef.current, {
         ...options,
         audioProcessing: noiseConstraints(audioPrefsRef.current),
@@ -274,7 +300,7 @@ export default function Room() {
 
   // Handler de `ended` dos tracks locais. Vive num ref porque `watchLocalTrack`
   // precisa existir antes das funções que ele aciona (todas se referenciam).
-  const trackEndedRef = useRef(() => {});
+  const trackEndedRef = useRef<(track: MediaStreamTrack) => void>(() => {});
   const watchedTracksRef = useRef(new WeakSet());
 
   /**
@@ -282,7 +308,7 @@ export default function Room() {
    * navegador não migra para outro sozinho. Sem este listener, o microfone
    * simplesmente para de existir para os outros participantes, sem nenhum aviso.
    */
-  const watchLocalTrack = useCallback((track) => {
+  const watchLocalTrack = useCallback((track: MediaStreamTrack | null | undefined) => {
     if (!track || watchedTracksRef.current.has(track)) return;
     watchedTracksRef.current.add(track);
     track.addEventListener('ended', () => trackEndedRef.current(track));
@@ -297,7 +323,7 @@ export default function Room() {
    * justamente porque nela **nenhum** device é encerrado — os dois tracks
    * (cru e processado) continuam vivos, e só muda qual deles vai ao ar.
    */
-  const attachAudioTrack = useCallback(async (track) => {
+  const attachAudioTrack = useCallback(async (track: MediaStreamTrack | null | undefined) => {
     const stream = localStreamRef.current;
     if (!track || !stream) return;
 
@@ -333,7 +359,7 @@ export default function Room() {
    * silêncio para sempre, e a recuperação nunca rodaria.
    */
   const installAudioPipeline = useCallback(
-    async (pipeline) => {
+    async (pipeline: MicPipeline | null) => {
       if (!pipeline) return;
       const previous = micPipelineRef.current;
       micPipelineRef.current = pipeline;
@@ -346,7 +372,7 @@ export default function Room() {
 
   // const e2eeSupported = isInsertableStreamsSupported();
 
-  const pushToast = useCallback((kind, text) => {
+  const pushToast = useCallback((kind: string, text: string) => {
     const id = `${kind}-${text}-${performance.now()}`;
     setToasts((prev) => [...prev, { id, kind, text }]);
     const timer = setTimeout(() => {
@@ -455,7 +481,9 @@ export default function Room() {
       // precisa entrar no `localStreamRef`, senão o mesh nasceria transmitindo
       // o cru e o medidor mediria o áudio que ninguém recebe.
       const rawAudioTrack = localStream?.getAudioTracks()[0] || null;
-      if (rawAudioTrack) {
+      // `rawAudioTrack` só existe se `localStream` existe — o `&&` diz isso ao
+      // compilador sem mudar o que o `if` decide.
+      if (rawAudioTrack && localStream) {
         const pipeline = await createMicPipeline({
           rawTrack: rawAudioTrack,
           enabled: audioPrefsRef.current.noiseSuppression,
@@ -470,7 +498,8 @@ export default function Room() {
         micPipelineRef.current = pipeline;
         if (pipeline.track !== rawAudioTrack) {
           localStream.removeTrack(rawAudioTrack);
-          localStream.addTrack(pipeline.track);
+          // O pipeline só troca o track quando produz um; aqui ele existe.
+          if (pipeline.track) localStream.addTrack(pipeline.track);
         }
         // Só o cru: o track do destino não dispara `ended` e não tem deviceId.
         watchLocalTrack(rawAudioTrack);
@@ -557,7 +586,7 @@ export default function Room() {
           setParticipants((prev) => {
             if (!prev.has(peerId)) return prev;
             const next = new Map(prev);
-            next.set(peerId, { ...next.get(peerId), screenStream });
+            next.set(peerId, { ...DEFAULT_PARTICIPANT, ...next.get(peerId), screenStream });
             return next;
           });
         },
@@ -572,14 +601,17 @@ export default function Room() {
         onRemotePeerState: (peerId, state) => {
           setParticipants((prev) => {
             if (!prev.has(peerId)) return prev;
-            const current = prev.get(peerId);
+            const current = { ...DEFAULT_PARTICIPANT, ...prev.get(peerId) };
             const next = new Map(prev);
             next.set(peerId, {
               ...current,
               cameraOff: state.cameraOff,
               micOff: state.micOff,
               // O nome vindo do peer só complementa: o servidor já mandou o dele.
-              displayName: current.displayName || state.displayName,
+              // TODO(WTK-MEET-21): `state.displayName` chega sem sanitização do
+              // outro browser (ver `RemotePeerState` em `lib/webrtcMesh.ts`); o
+              // `String()` preserva o que o `||` já fazia e não valida nada novo.
+              displayName: current.displayName || String(state.displayName ?? ''),
             });
             return next;
           });
@@ -695,7 +727,7 @@ export default function Room() {
       cleanupExtras.push(stopGestureHook);
     }
 
-    const cleanupExtras = [];
+    const cleanupExtras: (() => void)[] = [];
 
     setup().catch((err) => {
       if (!cancelled) {
@@ -756,12 +788,12 @@ export default function Room() {
     monitor.retainOnly(valid);
   }, [participants]);
 
-  const approve = useCallback((requesterId) => {
+  const approve = useCallback((requesterId: string) => {
     signalingRef.current?.approveJoin(requesterId);
     setPendingRequests((prev) => prev.filter((r) => r.requesterId !== requesterId));
   }, []);
 
-  const deny = useCallback((requesterId) => {
+  const deny = useCallback((requesterId: string) => {
     signalingRef.current?.denyJoin(requesterId);
     setPendingRequests((prev) => prev.filter((r) => r.requesterId !== requesterId));
   }, []);
@@ -846,7 +878,7 @@ export default function Room() {
    * chama cai no caminho de reaquisição.
    */
   const applyNoiseSuppression = useCallback(
-    async (value) => {
+    async (value: boolean) => {
       const pipeline = micPipelineRef.current;
       if (!pipeline || noiseModeRef.current !== MODE.WORKLET) return false;
 
@@ -877,7 +909,7 @@ export default function Room() {
   );
 
   const applyDeviceSelection = useCallback(
-    async ({ noiseSuppression, ...next }) => {
+    async ({ noiseSuppression, ...next }: PendingPreferences) => {
       const previous = preferencesRef.current;
       const previousAudio = audioPrefsRef.current;
       const merged = { ...previous, ...next };
@@ -978,7 +1010,7 @@ export default function Room() {
    * quem repõe é a aplicação — sem áudio, ninguém do outro lado ouve mais nada.
    */
   const handleLocalTrackEnded = useCallback(
-    async (track) => {
+    async (track: MediaStreamTrack) => {
       const stream = localStreamRef.current;
       // Track que já foi substituído (troca normal de device) não é perda.
       //
@@ -1033,7 +1065,7 @@ export default function Room() {
    * inválido deixaria a pessoa sem áudio nenhum.
    */
   const handleSinkError = useCallback(
-    (err) => {
+    (err: unknown) => {
       console.warn('[Room] setSinkId falhou:', err);
       // O sink agora é aplicado em N elementos (um `<audio>` por peer, mais os
       // da música), então um deviceId morto rejeita N promises e este handler é
@@ -1110,7 +1142,7 @@ export default function Room() {
       }
       const lists = listDevices(raw);
       const prefs = preferencesRef.current;
-      const patch = {};
+      const patch: Partial<DevicePreferences> = {};
       if (resolvePreferredDevice(lists.videoInputs, prefs.videoInputId).fellBack) {
         patch.videoInputId = '';
       }
@@ -1163,14 +1195,15 @@ export default function Room() {
       setSharingScreen(true);
       meshRef.current?.setLocalState({ screenOn: true });
     } catch (err) {
-      if (err?.name !== 'NotAllowedError' && err?.name !== 'AbortError') {
+      const nome = err instanceof Error ? err.name : '';
+      if (nome !== 'NotAllowedError' && nome !== 'AbortError') {
         console.error('[Room] startScreenShare failed:', err);
         setMediaError('Não foi possível compartilhar a tela.');
       }
     }
   }, [stopScreenShare]);
 
-  const sendChat = useCallback((text) => {
+  const sendChat = useCallback((text: string) => {
     const message = createChatMessage({ author: displayNameRef.current, text });
     if (!message) return;
     meshRef.current?.sendChatMessage(message);
@@ -1204,8 +1237,8 @@ export default function Room() {
    * chaves são as mesmas de sempre (`local`, `<peerId>`): mudar a chave remonta
    * o `<video>` a cada render.
    */
-  const people = useMemo(() => {
-    const list = [
+  const people = useMemo((): Tile[] => {
+    const list: Tile[] = [
       {
         key: 'local',
         audioId: LOCAL_AUDIO_ID,
@@ -1234,8 +1267,8 @@ export default function Room() {
     }
     return list;
     // localStreamRef é ref: as deps abaixo são exatamente os gatilhos que mudam
-    // o conteúdo dela.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // o conteúdo dela. (A supressão que ficava aqui deixou de ser necessária com
+    // o `eslint-plugin-react-hooks` 5, que já não cobra refs nas deps.)
   }, [participants, displayName, cameraOff, muted, sharingScreen]);
 
   /**
@@ -1279,8 +1312,7 @@ export default function Room() {
     }
     return list;
     // screenStreamRef é ref: `sharingScreen` é exatamente o gatilho que muda o
-    // conteúdo dela.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // conteúdo dela. (Idem à nota acima sobre a supressão removida.)
   }, [participants, displayName, sharingScreen]);
 
   // Derivado no render, nunca "corrigido" por efeito: `pinnedScreenId` pode

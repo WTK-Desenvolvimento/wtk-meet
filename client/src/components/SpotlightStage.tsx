@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import VideoTile, { type Tile } from './VideoTile.jsx';
+import VideoTile, { type Tile } from './VideoTile.js';
 import type { LevelSnapshot } from '../lib/audioLevels.js';
-import ThumbnailRail from './ThumbnailRail.jsx';
+import ThumbnailRail from './ThumbnailRail.js';
 import { computeSpotlightLayout } from '../lib/spotlightLayout.js';
 import { GRID_GAP } from '../lib/gridLayout.js';
 
