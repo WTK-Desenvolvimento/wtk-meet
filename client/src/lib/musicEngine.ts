@@ -33,20 +33,56 @@
  */
 
 /** Uma faixa que não carrega em 20s não vai carregar. */
+import type { Delivery, QueueEntry } from './musicSession.js';
+
 const LOAD_TIMEOUT_MS = 20_000;
 
+/** O que o motor reporta de errado, e sobre qual entrada. */
+export interface MusicEngineError {
+  reason: string;
+  entryId: string;
+}
+
+export interface MusicEngineOptions {
+  getContext?: () => AudioContext | null;
+  onEnded?: (entryId: string) => void;
+  onDurationKnown?: (entryId: string, durationSec: number) => void;
+  onError?: (erro: MusicEngineError) => void;
+  onBlocked?: () => void;
+}
+
 export class MusicEngine {
-  constructor({ getContext, onEnded, onDurationKnown, onError, onBlocked } = {}) {
+  getContext: (() => AudioContext | null) | undefined;
+  onEnded: ((entryId: string) => void) | undefined;
+  onDurationKnown: ((entryId: string, durationSec: number) => void) | undefined;
+  onError: ((erro: MusicEngineError) => void) | undefined;
+  onBlocked: (() => void) | undefined;
+
+  /** Saída para o mesh. */
+  destination: MediaStreamAudioDestinationNode | null;
+  /** Ramo de monitoração local do dono. */
+  monitorGain: GainNode | null;
+  /** `<audio>` da faixa corrente. */
+  element: HTMLAudioElement | null;
+  /** `MediaElementSource` da faixa corrente. */
+  source: MediaElementAudioSourceNode | null;
+  entryId: string | null;
+  delivery: Delivery;
+  objectUrl: string | null;
+  destroyed: boolean;
+  monitorVolume: number;
+
+  constructor({ getContext, onEnded, onDurationKnown, onError, onBlocked }: MusicEngineOptions = {}) {
     this.getContext = getContext;
     this.onEnded = onEnded;
     this.onDurationKnown = onDurationKnown;
     this.onError = onError;
     this.onBlocked = onBlocked;
 
-    this.destination = null;   // MediaStreamDestination (saída para o mesh)
-    this.monitorGain = null;   // ramo de monitoração local do dono
-    this.element = null;       // <audio> da faixa corrente
-    this.source = null;        // MediaElementSource da faixa corrente
+    this.destination = null;
+    this.monitorGain = null;
+    this.element = null;
+    this.source = null;
     this.entryId = null;
     this.delivery = 'stream';
     this.objectUrl = null;
@@ -56,7 +92,7 @@ export class MusicEngine {
 
   // ------------------------------------------------------------------- grafo
 
-  _ensureGraph() {
+  _ensureGraph(): AudioContext | null {
     const ctx = this.getContext?.();
     if (!ctx) return null;
     if (!this.destination) {
@@ -69,7 +105,7 @@ export class MusicEngine {
   }
 
   /** O track que vai para `mesh.setMusicTrack`. `null` enquanto não há grafo. */
-  get track() {
+  get track(): MediaStreamTrack | null {
     return this.destination?.stream.getAudioTracks()[0] || null;
   }
 
@@ -77,8 +113,11 @@ export class MusicEngine {
    * Volume que **o dono** ouve da própria música (monitoração), e o volume da
    * reprodução no modo `local`. Nunca trafega: cada um ouve o que quiser.
    */
-  setMonitorVolume(value) {
-    const volume = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 1));
+  setMonitorVolume(value: unknown): void {
+    const volume = Math.min(
+      1,
+      Math.max(0, typeof value === 'number' && Number.isFinite(value) ? value : 1),
+    );
     this.monitorVolume = volume;
     if (this.monitorGain) this.monitorGain.gain.value = volume;
     if (this.element && this.delivery === 'local') this.element.volume = volume;
@@ -91,7 +130,7 @@ export class MusicEngine {
    * deixa — e a resposta precisa vir **antes** de tocar, porque depois o sintoma
    * é silêncio sem erro. Um `Range` de um byte basta e não baixa a faixa inteira.
    */
-  async probeDelivery(entry) {
+  async probeDelivery(entry: QueueEntry | null | undefined): Promise<Delivery> {
     if (!entry) return 'stream';
     if (entry.kind === 'file') return 'stream'; // o arquivo é local: só há esse caminho
     if (entry.kind !== 'url') return 'local';
@@ -117,11 +156,18 @@ export class MusicEngine {
    * máquina de quem adicionou). `asOwner` distingue quem transmite de quem
    * apenas reproduz a mesma URL em modo `local`.
    */
-  async load(entry, { file = null, delivery = 'stream', asOwner = true } = {}) {
+  async load(
+    entry: QueueEntry | null | undefined,
+    {
+      file = null,
+      delivery = 'stream',
+      asOwner = true,
+    }: { file?: Blob | null; delivery?: Delivery; asOwner?: boolean } = {},
+  ): Promise<MediaStreamTrack | null> {
     this.stop();
     if (this.destroyed || !entry) return null;
 
-    let src;
+    let src: string;
     if (entry.kind === 'file') {
       if (!file) {
         this.onError?.({ reason: 'missing-file', entryId: entry.id });
@@ -169,9 +215,11 @@ export class MusicEngine {
       }
       try {
         this.source = ctx.createMediaElementSource(element);
-        this.source.connect(this.destination);
+        // `_ensureGraph` acabou de garantir os dois nós; o `!` só diz isso ao
+        // compilador, que não acompanha o efeito colateral do método.
+        this.source.connect(this.destination!);
         // …e o ramo de monitoração, sem o qual o dono é o único que não ouve.
-        this.source.connect(this.monitorGain);
+        this.source.connect(this.monitorGain!);
       } catch (err) {
         console.warn('[music] createMediaElementSource falhou:', err);
         this.onError?.({ reason: 'graph-error', entryId: entry.id });
@@ -187,9 +235,9 @@ export class MusicEngine {
     return this.track;
   }
 
-  _waitReady(element) {
+  _waitReady(element: HTMLAudioElement): Promise<void> {
     if (element.readyState >= 1) return Promise.resolve();
-    return new Promise((resolve) => {
+    return new Promise<void>((resolve) => {
       const done = () => {
         clearTimeout(timer);
         element.removeEventListener('loadedmetadata', done);
@@ -210,7 +258,7 @@ export class MusicEngine {
    * "não toca e ninguém sabe por quê": ela vira `onBlocked`, e a UI mostra um
    * aviso clicável.
    */
-  async play() {
+  async play(): Promise<boolean> {
     const element = this.element;
     if (!element) return false;
     try {
@@ -224,13 +272,13 @@ export class MusicEngine {
     }
   }
 
-  pause() {
+  pause(): void {
     this.element?.pause();
   }
 
-  seek(positionSec) {
+  seek(positionSec: unknown): void {
     const element = this.element;
-    if (!element || !Number.isFinite(positionSec)) return;
+    if (!element || typeof positionSec !== 'number' || !Number.isFinite(positionSec)) return;
     try {
       element.currentTime = Math.max(0, positionSec);
     } catch {
@@ -238,28 +286,28 @@ export class MusicEngine {
     }
   }
 
-  get positionSec() {
+  get positionSec(): number {
     return this.element?.currentTime || 0;
   }
 
-  get durationSec() {
+  get durationSec(): number | null {
     const value = this.element?.duration;
-    return Number.isFinite(value) && value > 0 ? value : null;
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
   }
 
-  get playing() {
+  get playing(): boolean {
     return !!this.element && !this.element.paused && !this.element.ended;
   }
 
   /** Está engasgando? Corrigir posição durante buffering só piora a deriva. */
-  get buffering() {
+  get buffering(): boolean {
     return !!this.element && this.element.readyState < 3;
   }
 
   // ---------------------------------------------------------------- teardown
 
   /** Solta a faixa corrente. O grafo de saída **permanece**, e o track também. */
-  stop() {
+  stop(): void {
     const element = this.element;
     this.element = null;
     this.entryId = null;
@@ -287,7 +335,7 @@ export class MusicEngine {
     }
   }
 
-  destroy() {
+  destroy(): void {
     this.stop();
     this.destroyed = true;
     try {

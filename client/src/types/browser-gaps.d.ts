@@ -45,6 +45,7 @@ interface YTPlayer {
   getCurrentTime(): number;
   getDuration(): number;
   getPlayerState(): number;
+  getVideoData?(): { title?: string; video_id?: string } | undefined;
   destroy(): void;
 }
 

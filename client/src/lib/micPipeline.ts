@@ -17,7 +17,22 @@
  */
 
 import workletUrl from './noiseSuppressorWorklet.js?url';
-import { MODE, PROCESSOR_NAME, decideCapabilityMode } from './noiseSuppression.js';
+import { MODE, PROCESSOR_NAME, decideCapabilityMode, type NoiseMode } from './noiseSuppression.js';
+
+/**
+ * O que `createMicPipeline` entrega, nos dois caminhos (grafo montado ou
+ * passthrough). `track` é o que vai para o mesh; `rawTrack` é o que o
+ * `getUserMedia` devolveu, e os dois só coincidem no passthrough.
+ */
+export interface MicPipeline {
+  mode: NoiseMode | undefined;
+  processing: boolean;
+  track: MediaStreamTrack | null;
+  rawTrack: MediaStreamTrack | null;
+  /** Desmonta o grafo mantendo o track cru vivo. */
+  release(): MicPipeline;
+  stop(): void;
+}
 
 /**
  * Pergunta ao navegador o que ele sabe fazer e devolve o modo.
@@ -27,8 +42,8 @@ import { MODE, PROCESSOR_NAME, decideCapabilityMode } from './noiseSuppression.j
  * o ponto por onde o E2E força o caminho de fallback: basta o harness devolver
  * um `getSupportedConstraints()` sem `noiseSuppression`.
  */
-export function detectNoiseMode() {
-  let supportedConstraints = null;
+export function detectNoiseMode(): NoiseMode {
+  let supportedConstraints: MediaTrackSupportedConstraints | null = null;
   try {
     supportedConstraints = navigator.mediaDevices?.getSupportedConstraints?.() || null;
   } catch {
@@ -46,9 +61,9 @@ export function detectNoiseMode() {
  * global faria a segunda sala pular o `addModule` num contexto que nunca o
  * recebeu, e o `AudioWorkletNode` falharia com "unknown processor".
  */
-const moduleLoads = new WeakMap();
+const moduleLoads = new WeakMap<BaseAudioContext, Promise<boolean>>();
 
-function ensureModule(context) {
+function ensureModule(context: BaseAudioContext): Promise<boolean> {
   let load = moduleLoads.get(context);
   if (!load) {
     // A rejeição é tratada aqui e vira `false`: uma promise rejeitada solta
@@ -57,7 +72,7 @@ function ensureModule(context) {
     load = context.audioWorklet
       .addModule(workletUrl)
       .then(() => true)
-      .catch((err) => {
+      .catch((err: unknown) => {
         console.warn('[micPipeline] addModule falhou; seguindo sem supressão:', err);
         return false;
       });
@@ -71,9 +86,9 @@ function ensureModule(context) {
  * modo nativo (o navegador já processou), com o toggle desligado, e em
  * **qualquer** caminho de erro.
  */
-function passthrough(rawTrack, mode) {
+function passthrough(rawTrack: MediaStreamTrack | null, mode: NoiseMode | undefined): MicPipeline {
   let stopped = false;
-  const pipeline = {
+  const pipeline: MicPipeline = {
     mode,
     processing: false,
     track: rawTrack,
@@ -99,7 +114,17 @@ function passthrough(rawTrack, mode) {
  * ícone de microfone normal, o anel de fala apagado e ninguém a ouvindo — sem
  * um erro sequer no console.
  */
-export async function createMicPipeline({ rawTrack, enabled, mode, context } = {}) {
+export async function createMicPipeline({
+  rawTrack,
+  enabled,
+  mode,
+  context,
+}: {
+  rawTrack?: MediaStreamTrack | null;
+  enabled?: boolean;
+  mode?: NoiseMode;
+  context?: AudioContext | null;
+} = {}): Promise<MicPipeline> {
   if (!rawTrack) return passthrough(null, mode);
   // No modo nativo o navegador já entregou o áudio processado; montar o grafo
   // aqui empilharia duas supressões em série.
@@ -114,9 +139,9 @@ export async function createMicPipeline({ rawTrack, enabled, mode, context } = {
   const loaded = await ensureModule(context);
   if (!loaded) return passthrough(rawTrack, mode);
 
-  let source = null;
-  let node = null;
-  let destination = null;
+  let source: MediaStreamAudioSourceNode | null = null;
+  let node: AudioWorkletNode | null = null;
+  let destination: MediaStreamAudioDestinationNode | null = null;
   try {
     source = context.createMediaStreamSource(new MediaStream([rawTrack]));
     node = new AudioWorkletNode(context, PROCESSOR_NAME, {
@@ -142,13 +167,16 @@ export async function createMicPipeline({ rawTrack, enabled, mode, context } = {
     return passthrough(rawTrack, mode);
   }
 
-  const processed = destination.stream.getAudioTracks()[0] || null;
+  // O `try` acima ou atribuiu os três, ou retornou; o `!` diz isso ao
+  // compilador, que não acompanha o fluxo através do `catch` com `return`.
+  const grafo = { source: source!, node: node!, destination: destination! };
+  const processed = grafo.destination.stream.getAudioTracks()[0] || null;
   // Invariante: nunca entregar um track morto. Sem track no destino, o cru é a
   // resposta certa — pior que não suprimir é não ter áudio.
   if (!processed || processed.readyState !== 'live') {
     try {
-      source.disconnect();
-      node.disconnect();
+      grafo.source.disconnect();
+      grafo.node.disconnect();
     } catch {
       // já desconectado
     }
@@ -160,9 +188,9 @@ export async function createMicPipeline({ rawTrack, enabled, mode, context } = {
   let stopped = false;
   const teardown = () => {
     try {
-      source.disconnect();
-      node.disconnect();
-      destination.disconnect();
+      grafo.source.disconnect();
+      grafo.node.disconnect();
+      grafo.destination.disconnect();
     } catch {
       // já desconectado
     }

@@ -35,10 +35,39 @@ const OEMBED_TIMEOUT_MS = 2_500;
 /** Mesmo alfabeto de `musicSources.js` — aqui só para não montar URL com lixo. */
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 
-let apiPromise = null;
+let apiPromise: Promise<YTNamespace> | null = null;
 
 /** A origem YouTube está ligada nesta instalação? */
-export function isYouTubeEnabled() {
+/** O que uma sondagem do oEmbed conseguiu (ou não) provar sobre o vídeo. */
+export interface YouTubeMeta {
+  title: string | null;
+  availability: 'ok' | 'embed-blocked' | 'not-found' | 'unknown';
+  status: number | null;
+}
+
+/** Classificação de um código de erro da IFrame API. */
+export interface YouTubeErrorClass {
+  code: number | null;
+  kind: string;
+  transient: boolean;
+}
+
+/** Contador de tentativas da faixa corrente — uma só, por construção. */
+export interface YouTubeAttempts {
+  entryId: string | null;
+  count: number;
+}
+
+/** O que fazer diante de um erro do player. */
+export interface YouTubeErrorPlan {
+  kind: string;
+  code: number | null;
+  action: 'retry' | 'skip' | 'notice-only';
+  notice: string;
+  attempts: YouTubeAttempts;
+}
+
+export function isYouTubeEnabled(): boolean {
   const flag = import.meta.env?.VITE_ENABLE_YOUTUBE;
   return flag === undefined || flag === '' || flag === 'true' || flag === true;
 }
@@ -48,13 +77,14 @@ export function isYouTubeEnabled() {
  * bundle nem no `index.html`: quem nunca adiciona uma faixa de YouTube nunca
  * fala com a Google.
  */
-export function loadYouTubeApi() {
+export function loadYouTubeApi(): Promise<YTNamespace> {
   if (apiPromise) return apiPromise;
   if (typeof window === 'undefined') return Promise.reject(new Error('sem window'));
 
-  apiPromise = new Promise((resolve, reject) => {
-    if (window.YT?.Player) {
-      resolve(window.YT);
+  apiPromise = new Promise<YTNamespace>((resolve, reject) => {
+    const yt = window.YT;
+    if (yt?.Player) {
+      resolve(yt);
       return;
     }
     const timer = setTimeout(() => reject(new Error('IFrame API não carregou')), 15_000);
@@ -64,7 +94,8 @@ export function loadYouTubeApi() {
     window.onYouTubeIframeAPIReady = () => {
       clearTimeout(timer);
       previous?.();
-      resolve(window.YT);
+      // A API acabou de se instalar; sem ela o `onYouTubeIframeAPIReady` não roda.
+      resolve(window.YT!);
     };
     if (!document.querySelector(`script[src="${API_SRC}"]`)) {
       const script = document.createElement('script');
@@ -93,14 +124,14 @@ export function loadYouTubeApi() {
  * viram "ninguém consegue adicionar música" — um sintoma que ninguém rastreia
  * até aqui. Tudo que não está nesta lista é `unknown`, e `unknown` enfileira.
  */
-const AVAILABILITY_BY_STATUS = new Map([
+const AVAILABILITY_BY_STATUS = new Map<number, YouTubeMeta['availability']>([
   [401, 'embed-blocked'], // o dono desabilitou a incorporação
   [403, 'embed-blocked'],
   [404, 'not-found'], // removido, privado, ou id que nunca existiu
 ]);
 
 /** Nada foi provado sobre o vídeo: quem chama segue como seguia antes. */
-function unknownMeta() {
+function unknownMeta(): YouTubeMeta {
   return { title: null, availability: 'unknown', status: null };
 }
 
@@ -128,7 +159,14 @@ function unknownMeta() {
  * propósito**: a promessa "nenhuma requisição à Google" tem que valer no ponto
  * onde a requisição nasceria, não só no chamador de hoje.
  */
-export async function fetchYouTubeOEmbed(videoId, { signal, fetchImpl, enabled = isYouTubeEnabled() } = {}) {
+export async function fetchYouTubeOEmbed(
+  videoId: unknown,
+  {
+    signal,
+    fetchImpl,
+    enabled = isYouTubeEnabled(),
+  }: { signal?: AbortSignal | null; fetchImpl?: typeof fetch | null; enabled?: boolean } = {},
+): Promise<YouTubeMeta> {
   // `enabled` é a flag, e é parâmetro só porque `import.meta.env` não existe em
   // `node:test`: sem essa costura, "com a flag desligada nenhuma requisição
   // nasce" só seria verificável no navegador. O padrão continua sendo a flag.
@@ -153,17 +191,20 @@ export async function fetchYouTubeOEmbed(videoId, { signal, fetchImpl, enabled =
     });
     const status = typeof response?.status === 'number' ? response.status : null;
     if (!response?.ok) {
-      return { title: null, availability: AVAILABILITY_BY_STATUS.get(status) || 'unknown', status };
+      const availability = (status !== null && AVAILABILITY_BY_STATUS.get(status)) || 'unknown';
+      return { title: null, availability, status };
     }
-    const data = await response.json();
-    const title = typeof data?.title === 'string' ? data.title.trim() : '';
+    const data: unknown = await response.json();
+    const bruto = data as { title?: unknown } | null;
+    const title = typeof bruto?.title === 'string' ? bruto.title.trim() : '';
     return { title: title || null, availability: 'ok', status };
   } catch {
     // Rede, CORS, abort, JSON inválido: não houve prova nenhuma sobre o vídeo, e
     // o que não é prova não recusa.
     return unknownMeta();
   } finally {
-    clearTimeout(timer);
+    // `?? undefined` só para o compilador: `clearTimeout(null)` é no-op válido.
+    clearTimeout(timer ?? undefined);
     signal?.removeEventListener?.('abort', abort);
   }
 }
@@ -176,7 +217,10 @@ export async function fetchYouTubeOEmbed(videoId, { signal, fetchImpl, enabled =
  * evita obrigar todo chamador futuro a desembrulhar um objeto para pegar um
  * nome. Um título bonito continua não valendo bloquear o enfileiramento.
  */
-export async function fetchYouTubeTitle(videoId, options) {
+export async function fetchYouTubeTitle(
+  videoId: unknown,
+  options?: { signal?: AbortSignal | null; fetchImpl?: typeof fetch | null; enabled?: boolean },
+): Promise<string | null> {
   const { title } = await fetchYouTubeOEmbed(videoId, options);
   return title;
 }
@@ -193,7 +237,7 @@ export async function fetchYouTubeTitle(videoId, options) {
  * recarregar ajuda, o comportamento conservador é o de sempre (pular), e é o
  * `console.warn` com o código cru que permite reclassificar depois com dado real.
  */
-const YOUTUBE_ERROR_KINDS = new Map([
+const YOUTUBE_ERROR_KINDS = new Map<number, string>([
   [2, 'invalid-id'],       // videoId malformado
   [5, 'html5'],            // falha do player HTML5 — soluço, não sentença
   [100, 'unavailable'],    // removido ou privado
@@ -213,7 +257,7 @@ const UNTITLED = 'A faixa';
  * aviso genérico para tudo é o que fazia o usuário ver "vídeo indisponível" num
  * vídeo que existe e toca — e não dizia o que ele podia fazer a respeito.
  */
-const YOUTUBE_ERROR_NOTICES = {
+const YOUTUBE_ERROR_NOTICES: Record<string, (title: string) => string> = {
   retry: (title) => `Falhou ao carregar "${title}". Tentando de novo…`,
   'invalid-id': (title) => `O link de "${title}" não é um vídeo válido do YouTube.`,
   unavailable: (title) => `"${title}" não está mais disponível no YouTube (vídeo removido ou privado).`,
@@ -222,7 +266,7 @@ const YOUTUBE_ERROR_NOTICES = {
 };
 
 /** O que este código de erro quer dizer, e dá para tentar de novo? */
-export function classifyYouTubeError(code) {
+export function classifyYouTubeError(code: unknown): YouTubeErrorClass {
   const numeric = typeof code === 'number' && Number.isFinite(code) ? code : null;
   const kind = (numeric !== null && YOUTUBE_ERROR_KINDS.get(numeric)) || 'unknown';
   return { code: numeric, kind, transient: TRANSIENT_KINDS.has(kind) };
@@ -239,23 +283,37 @@ export function classifyYouTubeError(code) {
  * erro numa faixa diferente da contada reinicia a contagem, sem `Map` que cresce
  * a sessão inteira nem política de expiração para um dado que só interessa agora.
  */
-export function planYouTubeError({ code, entryId = null, title = null, isOwner = false, attempts = null } = {}) {
+export function planYouTubeError({
+  code,
+  entryId = null,
+  title = null,
+  isOwner = false,
+  attempts = null,
+}: {
+  code?: unknown;
+  entryId?: string | null;
+  title?: string | null;
+  isOwner?: boolean;
+  attempts?: YouTubeAttempts | null;
+} = {}): YouTubeErrorPlan {
   const { code: parsedCode, kind, transient } = classifyYouTubeError(code);
   const id = typeof entryId === 'string' && entryId ? entryId : null;
   const trimmed = typeof title === 'string' ? title.trim() : '';
   const label = trimmed || UNTITLED;
-  const notice = (key) => (YOUTUBE_ERROR_NOTICES[key] || YOUTUBE_ERROR_NOTICES.generic)(label);
+  const notice = (key: string) => (YOUTUBE_ERROR_NOTICES[key] || YOUTUBE_ERROR_NOTICES.generic!)(label);
   const message = YOUTUBE_ERROR_NOTICES[kind] ? notice(kind) : notice('generic');
 
   // Sem faixa identificada não há sobre o que agir: avisa e não toca no contador
   // da faixa que estiver tocando.
   if (!id) {
-    const kept = typeof attempts?.entryId === 'string' ? attempts : { entryId: null, count: 0 };
+    const kept: YouTubeAttempts = typeof attempts?.entryId === 'string' ? attempts : { entryId: null, count: 0 };
     return { kind, code: parsedCode, action: 'notice-only', notice: message, attempts: kept };
   }
 
   const sameTrack = attempts?.entryId === id;
-  const count = sameTrack && Number.isFinite(attempts?.count) ? attempts.count : 0;
+  const count = sameTrack && typeof attempts?.count === 'number' && Number.isFinite(attempts.count)
+    ? attempts.count
+    : 0;
 
   if (transient && count < 1) {
     return {
@@ -285,7 +343,7 @@ export function planYouTubeError({ code, entryId = null, title = null, isOwner =
  * string `"null"`, e a suíte roda com um `window` dublê sem `location`), a chave
  * simplesmente não entra.
  */
-function pageOrigin() {
+function pageOrigin(): string | null {
   if (typeof window === 'undefined') return null;
   const origin = window.location?.origin;
   return typeof origin === 'string' && /^https?:\/\/./.test(origin) ? origin : null;
@@ -321,7 +379,38 @@ function pageOrigin() {
  * e a fila pularia duas de uma vez, de forma intermitente.
  */
 export class YouTubeTrackPlayer {
-  constructor({ host, onEnded, onError, onDurationKnown, onTitle } = {}) {
+  host: HTMLElement | null | undefined;
+  onEnded: ((videoId: string) => void) | undefined;
+  onError: ((erro: { reason: string; code: number | null; videoId: string }) => void) | undefined;
+  onDurationKnown: ((videoId: string, durationSec: number) => void) | undefined;
+  onTitle: ((videoId: string, title: string) => void) | undefined;
+  player: YTPlayer | null;
+  mount: HTMLElement | null;
+  videoId: string | null;
+  ready: boolean;
+  destroyed: boolean;
+  volume: number;
+  /** Intenção de reprodução, viva também enquanto o player carrega. */
+  desiredPlaying: boolean;
+  /** Incrementa a cada `load`/`stop`/`destroy`: identifica a faixa vigente. */
+  generation: number;
+  _loading: boolean;
+  /** `{ generation, resolve }` do `load` que espera o `onReady`. */
+  _pendingReady: { generation: number; resolve: () => void } | null;
+
+  constructor({
+    host,
+    onEnded,
+    onError,
+    onDurationKnown,
+    onTitle,
+  }: {
+    host?: HTMLElement | null;
+    onEnded?: (videoId: string) => void;
+    onError?: (erro: { reason: string; code: number | null; videoId: string }) => void;
+    onDurationKnown?: (videoId: string, durationSec: number) => void;
+    onTitle?: (videoId: string, title: string) => void;
+  } = {}) {
     this.host = host;
     this.onEnded = onEnded;
     this.onError = onError;
@@ -343,11 +432,14 @@ export class YouTubeTrackPlayer {
   }
 
   /** Verdadeiro entre o início do `load()` e o `onReady` da faixa corrente. */
-  get loading() {
+  get loading(): boolean {
     return this._loading;
   }
 
-  async load(videoId, { startSeconds = 0, autoplay = false } = {}) {
+  async load(
+    videoId: string,
+    { startSeconds = 0, autoplay = false }: { startSeconds?: number; autoplay?: boolean } = {},
+  ): Promise<boolean> {
     if (this.destroyed || !this.host) return false;
 
     const generation = (this.generation += 1);
@@ -358,7 +450,7 @@ export class YouTubeTrackPlayer {
     this.desiredPlaying = !!autoplay;
     this._loading = true;
 
-    let YT;
+    let YT: YTNamespace;
     try {
       YT = await loadYouTubeApi();
     } catch (err) {
@@ -373,7 +465,7 @@ export class YouTubeTrackPlayer {
     this.host.appendChild(mount);
     this.mount = mount;
 
-    let instance = null;
+    let instance: YTPlayer | null = null;
     let readyFired = false;
 
     const origin = pageOrigin();
@@ -432,7 +524,7 @@ export class YouTubeTrackPlayer {
     if (!this._stale(generation)) this.player = instance;
 
     if (!readyFired) {
-      await new Promise((resolve) => {
+      await new Promise<void>((resolve) => {
         this._pendingReady = { generation, resolve };
       });
     }
@@ -447,12 +539,12 @@ export class YouTubeTrackPlayer {
   }
 
   /** O `load` desta geração ainda manda? (usado depois de cada espera) */
-  _stale(generation) {
+  _stale(generation: number): boolean {
     return this.destroyed || this.generation !== generation;
   }
 
   /** Evento chegando de um player que já não é o vigente. */
-  _obsolete(generation, instance) {
+  _obsolete(generation: number, instance: YTPlayer | null): boolean {
     return this.destroyed || this.generation !== generation || this.player !== instance;
   }
 
@@ -461,7 +553,7 @@ export class YouTubeTrackPlayer {
    * Sem essa conferência, o `onReady` atrasado de um player já derrubado faria o
    * `load` novo devolver `true` antes de o player dele estar pronto.
    */
-  _settleReady(generation) {
+  _settleReady(generation?: number): void {
     const pending = this._pendingReady;
     if (!pending) return;
     if (generation !== undefined && pending.generation !== generation) return;
@@ -469,10 +561,12 @@ export class YouTubeTrackPlayer {
     pending.resolve();
   }
 
-  _announceMetadata(videoId) {
+  _announceMetadata(videoId: string): void {
     if (!this.ready || !this.player) return;
     const duration = this.player.getDuration?.();
-    if (Number.isFinite(duration) && duration > 0) this.onDurationKnown?.(videoId, duration);
+    if (typeof duration === 'number' && Number.isFinite(duration) && duration > 0) {
+      this.onDurationKnown?.(videoId, duration);
+    }
     const title = this.player.getVideoData?.()?.title;
     if (title) this.onTitle?.(videoId, title);
   }
@@ -482,7 +576,7 @@ export class YouTubeTrackPlayer {
    * nem em `destroyed`: quem chama decide se isto é uma troca de faixa, um
    * `stop()` ou o fim do envelope.
    */
-  _teardown() {
+  _teardown(): void {
     const player = this.player;
     this.player = null;
     this.ready = false;
@@ -501,44 +595,47 @@ export class YouTubeTrackPlayer {
     this._settleReady();
   }
 
-  play() {
+  play(): Promise<boolean> {
     // Registrada mesmo durante o carregamento: o `onReady` aplica a mais recente.
     this.desiredPlaying = true;
     if (this.ready) this.player?.playVideo?.();
     return Promise.resolve(true);
   }
 
-  pause() {
+  pause(): void {
     this.desiredPlaying = false;
     if (this.ready) this.player?.pauseVideo?.();
   }
 
-  seek(positionSec) {
-    if (this.ready && Number.isFinite(positionSec)) {
+  seek(positionSec: unknown): void {
+    if (this.ready && typeof positionSec === 'number' && Number.isFinite(positionSec)) {
       this.player?.seekTo?.(Math.max(0, positionSec), true);
     }
   }
 
   /** Volume é local, como em todo o resto do player (0–1 aqui, 0–100 no YT). */
-  setVolume(value) {
-    this.volume = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 1));
+  setVolume(value: unknown): void {
+    this.volume = Math.min(
+      1,
+      Math.max(0, typeof value === 'number' && Number.isFinite(value) ? value : 1),
+    );
     if (this.ready) this.player?.setVolume?.(Math.round(this.volume * 100));
   }
 
-  get positionSec() {
+  get positionSec(): number {
     return (this.ready && this.player?.getCurrentTime?.()) || 0;
   }
 
-  get durationSec() {
-    const value = this.ready && this.player?.getDuration?.();
-    return Number.isFinite(value) && value > 0 ? value : null;
+  get durationSec(): number | null {
+    const value = this.ready ? this.player?.getDuration?.() : undefined;
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
   }
 
-  get playing() {
+  get playing(): boolean {
     return this.ready && this.player?.getPlayerState?.() === 1;
   }
 
-  get buffering() {
+  get buffering(): boolean {
     return this.ready && this.player?.getPlayerState?.() === 3;
   }
 
@@ -547,7 +644,7 @@ export class YouTubeTrackPlayer {
    * continua utilizável. Um `stopVideo()` que deixasse o iframe de pé é
    * exatamente o que produzia áudio órfão na transição YouTube→arquivo/URL.
    */
-  stop() {
+  stop(): void {
     this.generation += 1;
     this._teardown();
     this.videoId = null;
@@ -555,7 +652,7 @@ export class YouTubeTrackPlayer {
   }
 
   /** Como `stop()`, e o envelope não aceita mais nenhum `load()`. */
-  destroy() {
+  destroy(): void {
     this.destroyed = true;
     this.generation += 1;
     this._teardown();

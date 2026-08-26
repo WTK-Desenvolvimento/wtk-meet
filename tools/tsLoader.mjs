@@ -24,7 +24,7 @@
  * lado: um hook por problema.
  */
 import { existsSync } from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 /** Candidatos a substituir cada sufixo. `.ts` primeiro: é o caso comum. */
 const SUBSTITUTOS = {
@@ -50,13 +50,20 @@ async function esbuildTransform() {
 }
 
 export async function resolve(specifier, context, nextResolve) {
-  const sufixo = Object.keys(SUBSTITUTOS).find((ext) => specifier.endsWith(ext));
+  // A query é separada antes de olhar o sufixo, e recolocada depois. Dois
+  // consumidores reais dependem disso: `algo.js?url` (o worklet, via Vite) e
+  // `algo.js?n=3` (cache-busting de `await import()` em teste, que precisa de uma
+  // instância nova do módulo a cada caso).
+  const corte = specifier.indexOf('?');
+  const caminho = corte < 0 ? specifier : specifier.slice(0, corte);
+  const query = corte < 0 ? '' : specifier.slice(corte);
+  const sufixo = Object.keys(SUBSTITUTOS).find((ext) => caminho.endsWith(ext));
 
   // Bare specifiers ficam de fora: este hook nunca resolve pacote.
-  if (sufixo && (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('file:'))) {
+  if (sufixo && (caminho.startsWith('.') || caminho.startsWith('/') || caminho.startsWith('file:'))) {
     let alvo;
     try {
-      alvo = new URL(specifier, context.parentURL);
+      alvo = new URL(caminho, context.parentURL);
     } catch {
       alvo = null;
     }
@@ -64,7 +71,7 @@ export async function resolve(specifier, context, nextResolve) {
       const base = alvo.href.slice(0, -sufixo.length);
       for (const candidato of SUBSTITUTOS[sufixo]) {
         if (existsSync(fileURLToPath(new URL(base + candidato)))) {
-          return nextResolve(base + candidato, context);
+          return nextResolve(base + candidato + query, context);
         }
       }
     }
@@ -76,18 +83,20 @@ export async function resolve(specifier, context, nextResolve) {
 }
 
 export async function load(url, context, nextLoad) {
-  // `.ts` vai para o type stripping nativo do Node.
-  if (!url.endsWith('.tsx')) return nextLoad(url, context);
+  // `.ts` vai para o type stripping nativo do Node. A query é ignorada aqui
+  // pelo mesmo motivo do `resolve`.
+  const semQuery = url.split('?')[0];
+  if (!semQuery.endsWith('.tsx')) return nextLoad(url, context);
 
   const { readFile } = await import('node:fs/promises');
   const transform = await esbuildTransform();
-  const source = await readFile(fileURLToPath(url), 'utf8');
+  const source = await readFile(fileURLToPath(semQuery), 'utf8');
   const { code } = await transform(source, {
     loader: 'tsx',
     jsx: 'automatic',
     format: 'esm',
     // Preservado para o stack trace apontar para o arquivo de verdade.
-    sourcefile: fileURLToPath(pathToFileURL(fileURLToPath(url))),
+    sourcefile: fileURLToPath(semQuery),
   });
 
   return { format: 'module', source: code, shortCircuit: true };

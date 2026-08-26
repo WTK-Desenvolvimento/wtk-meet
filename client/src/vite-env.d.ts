@@ -8,7 +8,13 @@
  */
 interface ImportMetaEnv {
   readonly VITE_SIGNALING_URL?: string;
-  readonly VITE_ENABLE_YOUTUBE?: string;
+  /**
+   * `string | boolean` porque o código a compara com os dois: o Vite injeta
+   * string, mas um `define` de build pode substituir a expressão por um
+   * booleano literal, e a checagem defensiva de `isYouTubeEnabled` cobre os
+   * dois casos desde antes desta migração.
+   */
+  readonly VITE_ENABLE_YOUTUBE?: string | boolean;
 }
 
 interface ImportMeta {
