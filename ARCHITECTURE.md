@@ -908,29 +908,73 @@ servidor e `console` do navegador (§5), não um endpoint de métricas.
 - **Backend (sinalização):** Node.js + Express + Socket.IO. Estado 100% em memória
   (`Map`), sem banco de dados, sem filas, sem cache externo.
 - **TURN:** credenciais efêmeras emitidas pela **Cloudflare TURN API** através do
-  servidor de sinalização (`server/src/turnCredentials.js`), nunca baked no bundle —
+  servidor de sinalização (`server/src/turnCredentials.ts`), nunca baked no bundle —
   ver §6.12. Sem STUN público em nenhum caminho: sob `iceTransportPolicy: 'relay'` um
   STUN não gera candidato utilizável, então oferecê-lo como fallback seria uma falha
   silenciosa com cara de sucesso. `infra/coturn/` permanece como config de referência
   para self-hosting (e é o que o E2E sobe em `127.0.0.1`), mas **não** é o caminho de
   produção; o README §3 registra a deriva.
-- **Sem TypeScript** neste MVP para reduzir footprint de ferramentas — decisão
-  reversível se o time crescer.
+- ~~**Sem TypeScript** neste MVP para reduzir footprint de ferramentas — decisão
+  reversível se o time crescer.~~ **Decisão revertida em 2026-08 (WTK-MEET-20).** O
+  texto acima fica como registro: a reversibilidade era prevista, e foi exercida.
+
+  **TypeScript em `strict: true`** nos três pacotes. O motivo não é preferência de
+  estilo — é o histórico de defeitos deste repositório. `showVideo = !!stream &&
+  !cameraOff` com um stream só de áudio (WTK-MEET-19), participante nascendo sem o
+  campo `cameraOff` (`!!undefined === false`), quatro pontos do `Room` assumindo que
+  o track do `getUserMedia` era o track que ia para o mesh, `planAdvance` duplicado
+  por fusão de duas sessões: são erros de **forma de objeto** e de **identidade de
+  recurso**, a classe exata que o compilador elimina antes do E2E de 10 minutos.
+
+  O footprint que a decisão original protegia continua protegido: nenhuma
+  dependência de runtime nova, nenhum runner de teste novo. O `node --test` enxerga
+  TypeScript por meio de dois arquivos de hook em `tools/` (~40 linhas), o `.ts` roda
+  pelo type stripping nativo do Node e só o `.tsx` passa pelo esbuild — que já
+  estava na árvore, via Vite. O que entrou de verdade: `typescript` e
+  `typescript-eslint` nas devDependencies e um passo de compilação no server.
+
+  **Rigor adotado:** `strict: true` puro, mais `isolatedModules`,
+  `verbatimModuleSyntax`, `erasableSyntaxOnly`, `noUnusedLocals` e
+  `noUnusedParameters` (`tsconfig.base.json`, um lugar só). `any`, cast de contorno e
+  `@ts-expect-error` só nas bordas de APIs de browser mal tipadas — Insertable
+  Streams, AudioWorklet, `setSinkId` —, declaradas em `client/src/types/*.d.ts` e
+  cada uma com o comentário que diz qual lacuna da `lib.dom` ela cobre. Os módulos
+  puros (`musicVote`, `musicSession`, `gridLayout`, `spotlightLayout`, `roomSlug`,
+  `roomRouting`, `musicProtocol`) não têm nenhum dos três.
+
+  **Próximo degrau, não feito aqui:** `noUncheckedIndexedAccess`,
+  `exactOptionalPropertyTypes`, `noPropertyAccessFromIndexSignature` e type-aware
+  linting (`projectService` do typescript-eslint). Cada um exige mudança de código
+  real ou multiplica o tempo de lint, e misturá-los com a migração tornaria
+  impossível dizer de onde veio uma regressão.
 
 ## 8. Estrutura de pastas
 
 ```
-server/        signaling server (Express + Socket.IO, estado em memória)
+tsconfig.base.json  o que "strict" significa neste repositório — um lugar só; os três
+               pacotes estendem e acrescentam só o que é deles (lib, types, jsx, emissão)
+tools/         hooks de módulo que fazem o `node --test` enxergar TypeScript:
+               resolve `.js`→`.ts`/`.tsx` e transforma `.tsx` com esbuild. Sem runner novo
+server/        signaling server (Express + Socket.IO, estado em memória); compila para
+               server/dist/ (`npm run build`), que é o que o container e o E2E rodam
 server/test/   testes unitários (node:test): TTL e timeout da credencial de TURN e os
-               três desfechos de /turn-credentials (§6.12)
+               três desfechos de /turn-credentials (§6.12), o RoomStore e os handlers
+               de sinalização ponta a ponta com socket.io-client
 client/        app React (Vite) — UI, WebRTC mesh, E2EE via insertable streams
+client/src/types/  declarações das lacunas da lib.dom (insertable streams, AudioWorklet,
+               setSinkId, a API do YouTube) — o único lugar onde cast de borda é permitido
 client/test/   testes unitários (node:test): histerese de áudio, modelo de chat,
-               cálculo da grade de vídeos (§6.7), do palco em destaque (§6.8)
-               e o estado musical — fila, votação, parsing de origens e
-               sanitização do protocolo (§6.9)
+               cálculo da grade de vídeos (§6.7), do palco em destaque (§6.8),
+               o estado musical — fila, votação, parsing de origens e
+               sanitização do protocolo (§6.9) — e as fases da sala e o contrato do mesh
 e2e/           teste ponta a ponta com 3 participantes Chromium + TURN local
 infra/coturn/  config de referência para STUN/TURN self-hosted
 ```
+
+> Cada pacote tem seu `package.json`, seu `node_modules` e seu `tsconfig.json`: não há
+> workspace na raiz. É o que mantém os dois `Dockerfile` independentes. O preço é que
+> o contexto de build do `docker-compose.yml` é a **raiz** (com `dockerfile:`
+> explícito), porque de dentro de `./client` o `tsconfig.base.json` não é visível.
 
 ## 9. Limitações conhecidas / trabalho futuro
 
