@@ -264,7 +264,10 @@ test('o mesh real entrega a transição a quem passar onPeerStateChange', async 
     const { WebRTCMesh } = await import('../src/lib/webrtcMesh.js');
     const mesh = new WebRTCMesh({
       signaling: { sendSignal() {}, socket: { id: 'me' } },
-      iceServers: [],
+      // Com lista vazia o mesh reporta 'failed' na entrada (_reportMissingTurn):
+      // sob relay sem TURN a conexão é impossível por construção. Este caso é
+      // sobre a *propagação* da transição, então a fixture traz um TURN válido.
+      iceServers: [{ urls: 'turn:127.0.0.1:3478', username: 'u', credential: 'c' }],
       localStream: null,
       getSelfId: () => 'me',
       onPeerStateChange: (peerId, state) => seen.push([peerId, state]),
