@@ -18,7 +18,7 @@
  */
 
 import { sanitizeEntry, sanitizePlayback } from './musicSession.js';
-import { VOTE_DURATION_MS, isVoteKind, type VoteKind, type VoteTarget } from './musicVote.js';
+import { VOTE_DURATION_MS, isVoteKind, type VoteKind, type VoteResult, type VoteTarget } from './musicVote.js';
 import type { Playback, QueueEntry, SessionSnapshot } from './musicSession.js';
 
 export const MUSIC_MESSAGE_TYPES = new Set([
@@ -45,6 +45,51 @@ export interface MusicMessage {
   type: string;
   [campo: string]: unknown;
 }
+
+/**
+ * O que `sanitizeMusicMessage` devolve — uma união discriminada por `type`.
+ *
+ * O tipo de entrada (`MusicMessage`) é um saco de campos `unknown`, porque é o
+ * que chega do fio; o de **saída** é o oposto, e essa assimetria é o valor deste
+ * módulo inteiro: depois de passar por aqui, cada campo tem tipo, e quem consome
+ * não precisa re-checar nada.
+ */
+export type SanitizedMusicMessage =
+  | {
+      type: 'music-vote-open';
+      voteId: string;
+      kind: VoteKind;
+      lamport: number;
+      /** Sempre o remetente da conexão, nunca o que o payload declarou. */
+      proposerId: string;
+      proposerName: string;
+      electorate: string[];
+      durationMs: number;
+      target: VoteTarget | null;
+    }
+  | { type: 'music-vote-cast'; voteId: string; voterId: string; vote: 'yes' | 'no' }
+  | {
+      type: 'music-vote-result';
+      voteId: string;
+      arbiterId: string;
+      kind: VoteKind;
+      approved: boolean;
+      yes: number;
+      no: number;
+      target: VoteTarget | null;
+    }
+  | { type: 'music-queue-add'; entry: QueueEntry }
+  | { type: 'music-queue-remove'; entryId: string; byId: string; byName: string }
+  | { type: 'music-queue-reorder'; entryId: string; lamport: number; byId: string; byName: string }
+  | { type: 'music-playback'; playback: Playback }
+  | {
+      type: 'music-command';
+      entryId: string | null;
+      action: string;
+      positionSec: number | null;
+      byId: string;
+    }
+  | { type: 'music-snapshot'; fromPeerId: string; snapshot: unknown };
 
 export function isMusicMessage(payload: unknown): payload is MusicMessage {
   return (
@@ -91,7 +136,7 @@ export function voteCastMessage({ voteId, vote }: { voteId: string; vote: 'yes' 
   return { type: 'music-vote-cast', voteId, vote };
 }
 
-export function voteResultMessage(result: Record<string, unknown>): MusicMessage {
+export function voteResultMessage(result: VoteResult): MusicMessage {
   return { type: 'music-vote-result', ...result };
 }
 
@@ -167,7 +212,7 @@ function name(value: unknown): string {
 export function sanitizeMusicMessage(
   payload: unknown,
   { fromPeerId }: { fromPeerId?: unknown } = {},
-): MusicMessage | null {
+): SanitizedMusicMessage | null {
   if (!isMusicMessage(payload)) return null;
   if (typeof fromPeerId !== 'string' || !fromPeerId) return null;
 
@@ -188,7 +233,7 @@ export function sanitizeMusicMessage(
           ? payload.durationMs
           : VOTE_DURATION_MS;
       return {
-        type: payload.type,
+        type: 'music-vote-open',
         voteId,
         kind,
         lamport: inteiro(payload.lamport),
@@ -205,14 +250,14 @@ export function sanitizeMusicMessage(
       const voteId = str(payload.voteId, 80);
       if (!voteId) return null;
       if (payload.vote !== 'yes' && payload.vote !== 'no') return null;
-      return { type: payload.type, voteId, voterId: fromPeerId, vote: payload.vote };
+      return { type: 'music-vote-cast', voteId, voterId: fromPeerId, vote: payload.vote };
     }
 
     case 'music-vote-result': {
       const voteId = str(payload.voteId, 80);
       if (!voteId) return null;
       return {
-        type: payload.type,
+        type: 'music-vote-result',
         voteId,
         arbiterId: fromPeerId,
         kind: isVoteKind(payload.kind) ? payload.kind : 'enable',
@@ -226,13 +271,13 @@ export function sanitizeMusicMessage(
     case 'music-queue-add': {
       const entry = sanitizeEntry(payload.entry, { addedBy: fromPeerId });
       if (!entry) return null;
-      return { type: payload.type, entry };
+      return { type: 'music-queue-add', entry };
     }
 
     case 'music-queue-remove': {
       const entryId = str(payload.entryId, 80);
       if (!entryId) return null;
-      return { type: payload.type, entryId, byId: fromPeerId, byName: name(payload.byName) };
+      return { type: 'music-queue-remove', entryId, byId: fromPeerId, byName: name(payload.byName) };
     }
 
     case 'music-queue-reorder': {
@@ -240,7 +285,7 @@ export function sanitizeMusicMessage(
       if (!entryId) return null;
       if (typeof payload.lamport !== 'number' || !Number.isFinite(payload.lamport)) return null;
       return {
-        type: payload.type,
+        type: 'music-queue-reorder',
         entryId,
         lamport: Math.max(0, Math.floor(payload.lamport)),
         byId: fromPeerId,
@@ -252,7 +297,7 @@ export function sanitizeMusicMessage(
       // `ownerId` é o remetente: só o dono da faixa publica reprodução.
       const playback = sanitizePlayback(payload, { ownerId: fromPeerId });
       if (!playback) return null;
-      return { type: payload.type, playback };
+      return { type: 'music-playback', playback };
     }
 
     case 'music-command': {
@@ -260,7 +305,7 @@ export function sanitizeMusicMessage(
       if (typeof payload.action !== 'string' || !COMMAND_ACTIONS.has(payload.action)) return null;
       if (payload.action !== 'play-entry' && !entryId) return null;
       return {
-        type: payload.type,
+        type: 'music-command',
         entryId: entryId || null,
         action: payload.action,
         positionSec:
@@ -279,7 +324,7 @@ export function sanitizeMusicMessage(
         ? payload.tombstones.filter((id): id is string => typeof id === 'string' && !!id).slice(0, 400)
         : [];
       return {
-        type: payload.type,
+        type: 'music-snapshot',
         fromPeerId,
         snapshot: {
           enabled: !!payload.enabled,

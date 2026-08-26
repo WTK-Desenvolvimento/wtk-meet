@@ -54,6 +54,12 @@ export interface Vote {
   openedAt: number;
   target: VoteTarget | null;
   votes: Record<string, VoteChoice>;
+  /**
+   * Preenchido quando a votação **decide** (`useMusicRoom` anexa o resultado ao
+   * objeto). Enquanto for `undefined`, a votação está aberta — é essa a
+   * pergunta que `finishArbitration` e `adoptVote` fazem.
+   */
+  result?: VoteResult;
 }
 
 /** O que a votação decide, quando decide sobre algo (uma faixa, no `skip`). */

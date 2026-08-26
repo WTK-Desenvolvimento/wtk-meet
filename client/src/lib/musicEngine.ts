@@ -130,7 +130,11 @@ export class MusicEngine {
    * deixa — e a resposta precisa vir **antes** de tocar, porque depois o sintoma
    * é silêncio sem erro. Um `Range` de um byte basta e não baixa a faixa inteira.
    */
-  async probeDelivery(entry: QueueEntry | null | undefined): Promise<Delivery> {
+  async probeDelivery(
+    // Só os dois campos que a sonda olha, e não uma `QueueEntry` inteira: quem
+    // chama a usa **antes** de a entrada existir, com o que acabou de ser colado.
+    entry: Pick<QueueEntry, 'kind' | 'sourceRef'> | null | undefined,
+  ): Promise<Delivery> {
     if (!entry) return 'stream';
     if (entry.kind === 'file') return 'stream'; // o arquivo é local: só há esse caminho
     if (entry.kind !== 'url') return 'local';

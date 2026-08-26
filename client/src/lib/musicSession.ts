@@ -667,7 +667,19 @@ export function planAdvance({
 export function planPositionHeartbeat({
   playback,
   player,
-}: { playback?: Playback | null; player?: PlayerProbe | null } = {}): {
+}: {
+  playback?: Playback | null;
+  player?: PlayerProbe | null;
+  /**
+   * TODO(WTK-MEET-21): `useMusicRoom` passa `recovering: recoveringRef.current`
+   * aqui, e esta função **não o lê** — o parâmetro é descartado no
+   * desestruturamento. O comentário do ref diz "enquanto isto for verdadeiro o
+   * dono não publica", e hoje ele publica. Declarado para o tipo dizer a
+   * verdade sobre a chamada; o comportamento fica exatamente como está, porque
+   * esta entrega migra tipos e não corrige comportamento.
+   */
+  recovering?: boolean;
+} = {}): {
   publish: { positionSec: number; playing: boolean } | null;
 } {
   const idle = { publish: null };
