@@ -9,7 +9,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "node --watch --import ../tools/registerTs.mjs src/index.ts",
-    "test": "node --import ../tools/registerTs.mjs --test \"test/*.test.mjs\"",
+    "test": "node --import ../tools/registerTs.mjs --test \"test/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.typecheck.json --noEmit",
     "lint": "eslint ."
   },
