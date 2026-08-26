@@ -4,7 +4,119 @@ import {
   getIceServers as defaultGetIceServers,
   getIceServersStatus,
   hasTurnServer,
+  type IceServer,
 } from './iceServers.js';
+import type { ChatMessage } from './chat.js';
+import type { MusicMessage } from './musicProtocol.js';
+import type { SessionSnapshot } from './musicSession.js';
+
+/** As quatro finalidades de m-line deste protocolo, na ordem em que nascem. */
+export type TransceiverKind = 'audio' | 'camera' | 'screen' | 'music';
+
+/**
+ * O estado de um **par**, tal como ele chega pelo data channel.
+ *
+ * `displayName` é `unknown` e não `string` porque é isso que ele é: o campo
+ * atravessa do payload do outro browser direto para o callback, sem validação.
+ * TODO(WTK-MEET-21): sanitizar como `chat.js` já faz com o autor da mensagem.
+ * Preservado como está — esta entrega migra tipos, não corrige comportamento.
+ */
+export interface RemotePeerState {
+  cameraOff: boolean;
+  micOff: boolean;
+  screenOn: boolean;
+  displayName: unknown;
+}
+
+/** O estado que cada participante anuncia aos outros pelo data channel. */
+export interface LocalState {
+  displayName: string;
+  cameraOff: boolean;
+  micOff: boolean;
+  screenOn: boolean;
+}
+
+/** O que trafega no evento `signal` do servidor, nos dois sentidos. */
+export interface SignalPayload {
+  type: 'description' | 'ice-candidate';
+  sdp?: RTCSessionDescription | RTCSessionDescriptionInit | null;
+  candidate?: RTCIceCandidateInit;
+}
+
+/** A sinalização, do ponto de vista do mesh: só o que ele chama. */
+export interface MeshSignaling {
+  sendSignal(peerId: string, data: SignalPayload): void;
+  socket?: { id?: string | undefined } | null;
+}
+
+/**
+ * Tudo que o mesh guarda sobre um par.
+ *
+ * Os quatro transceivers são `sendonly` e nascem numa ordem que **é** o
+ * protocolo (ver `_classifyTransceiver`). Os handles de timer são
+ * `ReturnType<typeof setTimeout>` e nunca `number`: com `@types/node` e `DOM`
+ * no mesmo programa, `setTimeout` resolve para a sobrecarga do Node.
+ */
+export interface PeerRecord {
+  pc: RTCPeerConnection;
+  peerId: string;
+  polite: boolean;
+  makingOffer: boolean;
+  ignoreOffer: boolean;
+  settingRemoteAnswerPending: boolean;
+  negotiationQueued: boolean;
+  recovering: boolean;
+  recoveryTimer: ReturnType<typeof setTimeout> | null;
+  recoveryDelay: number;
+  recoveryAttempts: number;
+  recoveryExhausted: boolean;
+  politeValveTimer: ReturnType<typeof setTimeout> | null;
+  verifyTimer: ReturnType<typeof setTimeout> | null;
+  verifyAttempts: number;
+  lastStateRequestAt: number;
+  candidateQueue: RTCIceCandidateInit[];
+  /** Serializa o tratamento de sinais: nada de `setRemoteDescription` interleavado. */
+  tasks: Promise<unknown>;
+  /** mic + câmera do peer. */
+  stream: MediaStream;
+  /** compartilhamento de tela do peer. */
+  screenStream: MediaStream;
+  /** música que o peer está transmitindo. */
+  musicStream: MediaStream;
+  hasMusicTrack: boolean;
+  hasScreenTrack: boolean;
+  remoteScreenOn: boolean;
+  channel: RTCDataChannel | null;
+  /**
+   * Opcionais só na declaração: os quatro são atribuídos **sincronamente**
+   * logo depois de `peers.set(peerId, rec)`, sem nenhum `await` entre as duas
+   * coisas, então nenhum outro código consegue observar o intervalo. É por isso
+   * que os usos abaixo afirmam a presença com `!` em vez de ramificar.
+   */
+  audioT?: RTCRtpTransceiver;
+  camT?: RTCRtpTransceiver;
+  screenT?: RTCRtpTransceiver;
+  musicT?: RTCRtpTransceiver;
+}
+
+export interface WebRTCMeshOptions {
+  signaling: MeshSignaling;
+  iceServers?: IceServer[];
+  localStream?: MediaStream | null;
+  getSelfId?: () => string;
+  getRoomKey?: () => CryptoKey | null;
+  onRemoteStream?: (peerId: string, stream: MediaStream) => void;
+  /** `null` é o sinal de "a track existe mas não há imagem nela". */
+  onRemoteScreen?: (peerId: string, stream: MediaStream | null) => void;
+  onRemotePeerState?: (peerId: string, state: RemotePeerState) => void;
+  onChatMessage?: (peerId: string, message: unknown) => void;
+  onRemoteStreamClosed?: (peerId: string) => void;
+  onPeerStateChange?: (peerId: string, state: RTCPeerConnectionState) => void;
+  onRemoteMusic?: (peerId: string, stream: MediaStream) => void;
+  onMusicMessage?: (peerId: string, payload: MusicMessage) => void;
+  getMusicSnapshot?: () => SessionSnapshot | null;
+  getIceServers?: (opts?: { force?: boolean }) => Promise<IceServer[]>;
+}
 
 /**
  * Teto de banda do canal de música. O client roda com
@@ -109,6 +221,34 @@ const STATE_REQUEST_COALESCE_MS = 1_000;
  *    câmera/tela — nunca pelo servidor de sinalização.
  */
 export class WebRTCMesh {
+  signaling: MeshSignaling;
+  iceServers: IceServer[] | undefined;
+  getIceServers: WebRTCMeshOptions['getIceServers'];
+  getSelfId: WebRTCMeshOptions['getSelfId'];
+  getRoomKey: WebRTCMeshOptions['getRoomKey'];
+  onRemoteStream: WebRTCMeshOptions['onRemoteStream'];
+  onRemoteScreen: WebRTCMeshOptions['onRemoteScreen'];
+  onRemotePeerState: WebRTCMeshOptions['onRemotePeerState'];
+  onChatMessage: WebRTCMeshOptions['onChatMessage'];
+  onRemoteStreamClosed: WebRTCMeshOptions['onRemoteStreamClosed'];
+  onPeerStateChange: WebRTCMeshOptions['onPeerStateChange'];
+  onRemoteMusic: WebRTCMeshOptions['onRemoteMusic'];
+  onMusicMessage: WebRTCMeshOptions['onMusicMessage'];
+  getMusicSnapshot: WebRTCMeshOptions['getMusicSnapshot'];
+
+  peers: Map<string, PeerRecord>;
+  /** Pares em construção — ver a nota grande em `addPeer`. */
+  pendingPeers: Map<string, Promise<void>>;
+  /** `removePeer` chamado durante a construção. */
+  abandonedPeers: Set<string>;
+  closed: boolean;
+
+  localAudioTrack: MediaStreamTrack | null;
+  localCameraTrack: MediaStreamTrack | null;
+  localScreenTrack: MediaStreamTrack | null;
+  localMusicTrack: MediaStreamTrack | null;
+  localState: LocalState;
+
   constructor({
     signaling,
     iceServers,
@@ -129,7 +269,7 @@ export class WebRTCMesh {
     // nada aqui pode passar a exigir um parâmetro novo de quem constrói o mesh.
     // Quem injeta é só o teste, com um dublê.
     getIceServers = defaultGetIceServers,
-  }) {
+  }: WebRTCMeshOptions) {
     this.signaling = signaling;
     // Semente, não fonte da verdade: é a lista que o `Room.jsx` buscou no setup
     // da sala e que, numa aba aberta há horas, já está velha. Serve como último
@@ -171,12 +311,12 @@ export class WebRTCMesh {
     };
   }
 
-  setLocalState(patch) {
+  setLocalState(patch: Partial<LocalState>): void {
     this.localState = { ...this.localState, ...patch };
     this.broadcast({ type: 'state', ...this.localState });
   }
 
-  _selfId() {
+  _selfId(): string {
     return this.getSelfId?.() || this.signaling?.socket?.id || '';
   }
 
@@ -185,7 +325,7 @@ export class WebRTCMesh {
    * a comparação é total, então exatamente um lado é polite — sem sorteio, sem
    * round-trip extra e estável entre reconexões.
    */
-  _isPolite(peerId) {
+  _isPolite(peerId: string): boolean {
     const selfId = this._selfId();
     if (!selfId) return true; // sem id ainda: assumir polite (cede em caso de dúvida)
     return selfId < peerId;
@@ -209,8 +349,8 @@ export class WebRTCMesh {
    * reiniciar o ICE seria repetir a mesma falha, gastando uma rodada inteira de
    * ICE para chegar ao mesmo lugar. Melhor esperar a credencial voltar.
    */
-  async _currentIceServers({ force = false } = {}) {
-    let servers = [];
+  async _currentIceServers({ force = false }: { force?: boolean } = {}): Promise<IceServer[]> {
+    let servers: IceServer[] = [];
     try {
       servers = (await this.getIceServers?.({ force })) || [];
     } catch (err) {
@@ -237,7 +377,7 @@ export class WebRTCMesh {
    * `(peerId, connectionState)` continua exatamente a de hoje — quem consome o
    * callback não precisa saber que esta verificação existe.
    */
-  _reportMissingTurn(peerId, iceServers) {
+  _reportMissingTurn(peerId: string, iceServers: IceServer[]): boolean {
     if (hasTurnServer(iceServers)) return false;
     console.error(
       `[mesh] sem servidor TURN utilizável (provedor: ${getIceServersStatus()}) — ` +
@@ -264,7 +404,7 @@ export class WebRTCMesh {
    *
    * Daí o mapa de em-voo: chamadas concorrentes recebem **a mesma promise**.
    */
-  async addPeer(peerId, { initiator } = {}) {
+  async addPeer(peerId: string, { initiator }: { initiator?: boolean } = {}): Promise<void> {
     void initiator; // perfect negotiation dispensa papel de iniciador
     if (this.closed || this.peers.has(peerId)) return;
 
@@ -281,7 +421,7 @@ export class WebRTCMesh {
     }
   }
 
-  async _createPeer(peerId) {
+  async _createPeer(peerId: string): Promise<void> {
     const iceServers = await this._currentIceServers();
 
     // Depois do await, o mundo pode ter mudado: a sala fechou, o par saiu (e o
@@ -295,7 +435,7 @@ export class WebRTCMesh {
       iceTransportPolicy: 'relay',
     });
 
-    const rec = {
+    const rec: PeerRecord = {
       pc,
       peerId,
       polite: this._isPolite(peerId),
@@ -413,7 +553,7 @@ export class WebRTCMesh {
    * isso recuperar aqui é, obrigatoriamente e nesta ordem: **renovar →
    * `setConfiguration` → `restartIce`**.
    */
-  _onConnectivityChange(rec) {
+  _onConnectivityChange(rec: PeerRecord): void {
     const { pc } = rec;
 
     if (pc.connectionState === 'connected') {
@@ -439,7 +579,7 @@ export class WebRTCMesh {
    * volta por aqui pedindo recuperação **imediata** — e sem esse piso ele
    * furaria o backoff e viraria um laço apertado de restarts.
    */
-  _scheduleRecovery(rec, reason, requestedDelayMs) {
+  _scheduleRecovery(rec: PeerRecord, reason: string, requestedDelayMs: number): void {
     if (this.closed || !this.peers.has(rec.peerId) || rec.pc.signalingState === 'closed') return;
     if (rec.recovering) return;
 
@@ -466,7 +606,7 @@ export class WebRTCMesh {
     }, delay);
   }
 
-  async _recoverPeer(rec, reason) {
+  async _recoverPeer(rec: PeerRecord, reason: string): Promise<void> {
     const { pc } = rec;
     // Tudo o que segue um `setTimeout` reconfere o mundo: o par pode ter saído
     // da sala, e ressuscitar uma conexão para quem já foi embora é o modo mais
@@ -490,7 +630,11 @@ export class WebRTCMesh {
     rec.recoveryAttempts += 1;
     try {
       const iceServers = await this._currentIceServers({ force: true });
-      if (this.closed || !this.peers.has(rec.peerId) || pc.signalingState === 'closed') return;
+      // `'closed'` saiu da `RTCSignalingState` da spec (e da `lib.dom`), mas os
+      // navegadores continuam reportando-o numa conexão fechada. A checagem é
+      // intencional; o `String()` é o que a torna expressável.
+      const signalingState: string = pc.signalingState;
+      if (this.closed || !this.peers.has(rec.peerId) || signalingState === 'closed') return;
 
       if (this._reportMissingTurn(rec.peerId, iceServers)) {
         // Reiniciar o ICE sem credencial é o no-op caro descrito acima: mesma
@@ -529,7 +673,7 @@ export class WebRTCMesh {
   /**
    * Válvula do lado polite: se o impolite não voltou, o polite reinicia também.
    */
-  _armPoliteValve(rec) {
+  _armPoliteValve(rec: PeerRecord): void {
     if (rec.politeValveTimer) return;
     rec.politeValveTimer = setTimeout(() => {
       rec.politeValveTimer = null;
@@ -542,7 +686,7 @@ export class WebRTCMesh {
   }
 
   /** Voltou a `connected`: zera o orçamento de tentativas e desarma tudo. */
-  _onPeerRecovered(rec) {
+  _onPeerRecovered(rec: PeerRecord): void {
     const vinhaDeRecuperacao = rec.recoveryAttempts > 0 || rec.recoveryTimer !== null;
 
     this._clearPeerTimers(rec);
@@ -556,10 +700,11 @@ export class WebRTCMesh {
     if (vinhaDeRecuperacao) this._announceState(rec);
   }
 
-  _clearPeerTimers(rec) {
-    clearTimeout(rec.recoveryTimer);
-    clearTimeout(rec.politeValveTimer);
-    clearTimeout(rec.verifyTimer);
+  _clearPeerTimers(rec: PeerRecord): void {
+    // `?? undefined` só para o compilador: `clearTimeout(null)` é no-op válido.
+    clearTimeout(rec.recoveryTimer ?? undefined);
+    clearTimeout(rec.politeValveTimer ?? undefined);
+    clearTimeout(rec.verifyTimer ?? undefined);
     rec.recoveryTimer = null;
     rec.politeValveTimer = null;
     rec.verifyTimer = null;
@@ -593,7 +738,7 @@ export class WebRTCMesh {
    * vencedor do glare nunca tem transceiver sem `mid`, ela é auto-limitante por
    * construção — só o perdedor pode renegociar, que é o comportamento correto.
    */
-  _scheduleVerifyNegotiation(rec) {
+  _scheduleVerifyNegotiation(rec: PeerRecord): void {
     if (this.closed || !this.peers.has(rec.peerId)) return;
     if (rec.verifyTimer) return;
     if (rec.verifyAttempts >= VERIFY_DELAYS_MS.length) return;
@@ -604,13 +749,15 @@ export class WebRTCMesh {
     }, VERIFY_DELAYS_MS[rec.verifyAttempts]);
   }
 
-  _verifyNegotiation(rec) {
+  _verifyNegotiation(rec: PeerRecord): void {
     if (this.closed || !this.peers.has(rec.peerId)) return;
 
     const { pc } = rec;
     if (pc.signalingState !== 'stable') return; // há negociação em curso: nada a concluir ainda
 
-    const nossos = [rec.audioT, rec.camT, rec.screenT, rec.musicT].filter(Boolean);
+    const nossos = [rec.audioT, rec.camT, rec.screenT, rec.musicT].filter(
+      (t): t is RTCRtpTransceiver => !!t,
+    );
     const orfaos = nossos.filter((t) => t.mid === null || t.mid === undefined);
     // Sem evidência não há ação: disparar aqui dobraria a negociação em toda
     // entrada, inclusive quando a segunda rodada automática já resolveu.
@@ -647,7 +794,7 @@ export class WebRTCMesh {
    * garantido (o `_enqueue` engoliria num `console.error` e a fila seguiria como
    * se nada fosse).
    */
-  async _negotiate(rec) {
+  async _negotiate(rec: PeerRecord): Promise<void> {
     const { pc } = rec;
     if (this.closed || pc.signalingState === 'closed') return;
     if (pc.signalingState !== 'stable') return;
@@ -671,7 +818,7 @@ export class WebRTCMesh {
    * para que "a conexão recuperou" e "faltou associar um transceiver" — que
    * acontecem no mesmo instante, por construção — não virem duas.
    */
-  _queueNegotiation(rec) {
+  _queueNegotiation(rec: PeerRecord): Promise<unknown> | undefined {
     if (rec.negotiationQueued) return;
     rec.negotiationQueued = true;
     return this._enqueue(rec, async () => {
@@ -680,14 +827,14 @@ export class WebRTCMesh {
     });
   }
 
-  _enqueue(rec, fn) {
+  _enqueue(rec: PeerRecord, fn: () => unknown): Promise<unknown> {
     rec.tasks = rec.tasks.then(fn).catch((err) => {
       console.error('[mesh] task failed:', err);
     });
     return rec.tasks;
   }
 
-  async _safeReplace(sender, track) {
+  async _safeReplace(sender: RTCRtpSender, track: MediaStreamTrack | null): Promise<void> {
     try {
       await sender.replaceTrack(track || null);
     } catch (err) {
@@ -709,7 +856,7 @@ export class WebRTCMesh {
    * `rec.stream` de voz, onde ela acende o anel de "falando" no tile de quem
    * toca e deixa de ter volume próprio — e tudo isso *parece* funcionar.
    */
-  _classifyTransceiver(rec, transceiver) {
+  _classifyTransceiver(rec: PeerRecord, transceiver: RTCRtpTransceiver): TransceiverKind {
     if (transceiver === rec.audioT) return 'audio';
     if (transceiver === rec.camT) return 'camera';
     if (transceiver === rec.screenT) return 'screen';
@@ -717,7 +864,8 @@ export class WebRTCMesh {
 
     const ours = new Set([rec.audioT, rec.camT, rec.screenT, rec.musicT]);
     const theirs = rec.pc.getTransceivers().filter((t) => !ours.has(t));
-    const kind = ['audio', 'camera', 'screen', 'music'][theirs.indexOf(transceiver)];
+    const ordem: TransceiverKind[] = ['audio', 'camera', 'screen', 'music'];
+    const kind = ordem[theirs.indexOf(transceiver)];
     if (kind) return kind;
 
     // Layout inesperado (navegador que pareia bidirecionalmente, por exemplo):
@@ -725,7 +873,7 @@ export class WebRTCMesh {
     return transceiver.receiver.track?.kind === 'audio' ? 'audio' : 'camera';
   }
 
-  _handleTrack(rec, event) {
+  _handleTrack(rec: PeerRecord, event: RTCTrackEvent): void {
     const { track, transceiver } = event;
     const kind = this._classifyTransceiver(rec, transceiver);
     const target =
@@ -756,7 +904,7 @@ export class WebRTCMesh {
 
   // ---------------------------------------------------------------- sinalização
 
-  async handleSignal(peerId, data) {
+  async handleSignal(peerId: string, data: SignalPayload): Promise<unknown> {
     if (this.closed) return;
     if (!this.peers.has(peerId)) {
       await this.addPeer(peerId);
@@ -766,7 +914,7 @@ export class WebRTCMesh {
     return this._enqueue(rec, () => this._applySignal(rec, data));
   }
 
-  async _applySignal(rec, data) {
+  async _applySignal(rec: PeerRecord, data: SignalPayload): Promise<void> {
     const { pc } = rec;
     if (pc.signalingState === 'closed') return;
 
@@ -814,7 +962,7 @@ export class WebRTCMesh {
     }
   }
 
-  async _flushCandidateQueue(rec) {
+  async _flushCandidateQueue(rec: PeerRecord): Promise<void> {
     const queued = rec.candidateQueue;
     rec.candidateQueue = [];
     for (const candidate of queued) {
@@ -834,14 +982,14 @@ export class WebRTCMesh {
    * negociado não dispara `negotiationneeded`: não há SDP novo, e o áudio nem
    * é tocado.
    */
-  async setCameraTrack(track) {
+  async setCameraTrack(track: MediaStreamTrack | null): Promise<void> {
     this.localCameraTrack = track || null;
     await Promise.all(
-      [...this.peers.values()].map((rec) => this._safeReplace(rec.camT.sender, this.localCameraTrack)),
+      [...this.peers.values()].map((rec) => this._safeReplace(rec.camT!.sender, this.localCameraTrack)),
     );
   }
 
-  async setScreenTrack(track) {
+  async setScreenTrack(track: MediaStreamTrack | null): Promise<void> {
     this.localScreenTrack = track || null;
     if (this.localScreenTrack) {
       // Tela é conteúdo de detalhe: prioriza nitidez sobre framerate quando a
@@ -853,14 +1001,14 @@ export class WebRTCMesh {
       }
     }
     await Promise.all(
-      [...this.peers.values()].map((rec) => this._safeReplace(rec.screenT.sender, this.localScreenTrack)),
+      [...this.peers.values()].map((rec) => this._safeReplace(rec.screenT!.sender, this.localScreenTrack)),
     );
   }
 
-  async setAudioTrack(track) {
+  async setAudioTrack(track: MediaStreamTrack | null): Promise<void> {
     this.localAudioTrack = track || null;
     await Promise.all(
-      [...this.peers.values()].map((rec) => this._safeReplace(rec.audioT.sender, this.localAudioTrack)),
+      [...this.peers.values()].map((rec) => this._safeReplace(rec.audioT!.sender, this.localAudioTrack)),
     );
   }
 
@@ -872,7 +1020,7 @@ export class WebRTCMesh {
    * `localAudioTrack`, e é justamente por serem canais diferentes que silenciar
    * o mic durante a música não silencia a música para a sala.
    */
-  async setMusicTrack(track) {
+  async setMusicTrack(track: MediaStreamTrack | null): Promise<void> {
     this.localMusicTrack = track || null;
     if (this.localMusicTrack) {
       try {
@@ -885,7 +1033,7 @@ export class WebRTCMesh {
     }
     await Promise.all(
       [...this.peers.values()].map(async (rec) => {
-        await this._safeReplace(rec.musicT.sender, this.localMusicTrack);
+        await this._safeReplace(rec.musicT!.sender, this.localMusicTrack);
         if (this.localMusicTrack) this._applyMusicEncoding(rec);
       }),
     );
@@ -896,13 +1044,13 @@ export class WebRTCMesh {
    * numa sala cheia sobe N−1 fluxos de Opus sem limite pelo TURN, disputando
    * banda com o vídeo exatamente quando há mais gente para degradar.
    */
-  _applyMusicEncoding(rec) {
+  _applyMusicEncoding(rec: PeerRecord): void {
     const sender = rec.musicT?.sender;
     if (!sender?.getParameters) return;
     try {
       const params = sender.getParameters();
       if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
-      params.encodings[0].maxBitrate = MUSIC_MAX_BITRATE;
+      params.encodings[0]!.maxBitrate = MUSIC_MAX_BITRATE;
       sender.setParameters(params).catch(() => {
         // navegador que não aceita o parâmetro: tocar sem teto é melhor que não tocar
       });
@@ -913,7 +1061,7 @@ export class WebRTCMesh {
 
   // ------------------------------------------------------------- data channel
 
-  _send(rec, payload) {
+  _send(rec: PeerRecord, payload: unknown): boolean {
     if (rec.channel?.readyState !== 'open') return false;
     try {
       rec.channel.send(JSON.stringify(payload));
@@ -935,7 +1083,7 @@ export class WebRTCMesh {
    * enganoso aqui: lá o destino é a sala inteira porque a mudança é de fato de
    * todos.)
    */
-  _announceState(rec) {
+  _announceState(rec: PeerRecord): void {
     this._send(rec, { type: 'state', ...this.localState });
     // …e o estado musical inteiro, que é o que faz quem entra no meio de uma
     // faixa ver a mesma fila e entrar na música em andamento, não do começo.
@@ -944,7 +1092,7 @@ export class WebRTCMesh {
   }
 
   /** Envia para todos os peers com canal aberto. Retorna quantos receberam. */
-  broadcast(payload) {
+  broadcast(payload: unknown): number {
     let delivered = 0;
     for (const rec of this.peers.values()) {
       if (this._send(rec, payload)) delivered += 1;
@@ -952,16 +1100,16 @@ export class WebRTCMesh {
     return delivered;
   }
 
-  sendChatMessage(message) {
+  sendChatMessage(message: ChatMessage): number {
     return this.broadcast({ type: 'chat', message });
   }
 
   /** Qualquer mensagem `music-*` (ver `lib/musicProtocol.js`). */
-  sendMusicMessage(payload) {
+  sendMusicMessage(payload: MusicMessage): number {
     return this.broadcast(payload);
   }
 
-  _handleChannelMessage(rec, raw) {
+  _handleChannelMessage(rec: PeerRecord, raw: unknown): void {
     const payload = parseChannelPayload(raw);
     if (!payload) return;
 
@@ -972,7 +1120,12 @@ export class WebRTCMesh {
 
     // Autoria é a conexão, não o payload: `rec.peerId` é o único id confiável
     // aqui (ver a regra de identidade em `lib/musicProtocol.js`).
-    if (isMusicMessage(payload)) {
+    // Guardado num `boolean` de propósito. `isMusicMessage` é um predicado, e
+    // `ChannelPayload` e `MusicMessage` têm a mesma forma estrutural — deixar o
+    // predicado estreitar aqui colapsaria o ramo negativo para `never` e as
+    // mensagens de `state` abaixo deixariam de compilar.
+    const ehMusica: boolean = isMusicMessage(payload);
+    if (ehMusica) {
       this.onMusicMessage?.(rec.peerId, payload);
       return;
     }
@@ -1018,7 +1171,7 @@ export class WebRTCMesh {
 
   // ---------------------------------------------------------------- teardown
 
-  removePeer(peerId) {
+  removePeer(peerId: string): void {
     // "Saiu antes de terminar de entrar": a construção do par espera a
     // renovação da credencial, e quem sai nessa janela não está no mapa ainda —
     // um `removePeer` mudo aqui deixaria a construção registrar, depois, uma
@@ -1058,7 +1211,7 @@ export class WebRTCMesh {
     this.onRemoteStreamClosed?.(peerId);
   }
 
-  closeAll() {
+  closeAll(): void {
     this.closed = true;
     for (const peerId of [...this.peers.keys()]) {
       this.removePeer(peerId);

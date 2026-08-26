@@ -114,7 +114,10 @@ function mensagemDe(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function hasTurnServer(iceServers: unknown): boolean {
+// Predicado, e não `boolean`: a primeira linha recusa o que não é array, então
+// quem passa pela guarda tem uma lista de verdade — é o que permite ao mesh
+// devolver `this.iceServers` sem cast quando ela tem TURN.
+export function hasTurnServer(iceServers: unknown): iceServers is IceServer[] {
   if (!Array.isArray(iceServers)) return false;
   return iceServers.some((server) => {
     const urls = server?.urls ?? server?.url;
