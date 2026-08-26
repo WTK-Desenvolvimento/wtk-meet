@@ -36,7 +36,7 @@ export const VOTE_KINDS: ReadonlySet<string> = new Set(['enable', 'skip']);
 export type VoteKind = 'enable' | 'skip';
 
 /** Discrimina de verdade, sem cast: é o guard que o `createVote` usa. */
-const isVoteKind = (valor: unknown): valor is VoteKind => valor === 'enable' || valor === 'skip';
+export const isVoteKind = (valor: unknown): valor is VoteKind => valor === 'enable' || valor === 'skip';
 
 /** Uma opção de voto. Qualquer outra coisa é descartada em `castVote`. */
 export type VoteChoice = 'yes' | 'no';
@@ -58,7 +58,7 @@ export interface Vote {
 
 /** O que a votação decide, quando decide sobre algo (uma faixa, no `skip`). */
 export interface VoteTarget {
-  entryId?: string;
+  entryId?: string | null;
   title?: string;
   [campo: string]: unknown;
 }

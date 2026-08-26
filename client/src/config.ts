@@ -1,4 +1,4 @@
-import { configureIceServers, getIceServers } from './lib/iceServers.js';
+import { configureIceServers, getIceServers, type IceServer } from './lib/iceServers.js';
 
 export const SIGNALING_URL = import.meta.env.VITE_SIGNALING_URL || 'http://localhost:4000';
 
@@ -34,6 +34,6 @@ configureIceServers({ endpoint: `${SIGNALING_URL}/turn-credentials` });
  *   sucesso, que ainda por cima falava com um terceiro. Quem torna a lista vazia
  *   visível é o mesh, via `onPeerStateChange(peerId, 'failed')`.
  */
-export async function fetchIceServers() {
+export async function fetchIceServers(): Promise<IceServer[]> {
   return getIceServers();
 }

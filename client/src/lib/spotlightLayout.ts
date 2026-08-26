@@ -51,38 +51,71 @@ export const RAIL_GUTTER = 10;
  */
 export const MIN_THUMB_WIDTH = 120;
 
-const isPositive = (value) => Number.isFinite(value) && value > 0;
+const isPositive = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0;
+
+/** Modo do palco: coluna no fluxo, ou coluna como painel sob demanda. */
+export type SpotlightMode = 'spotlight' | 'spotlight-narrow';
+
+export interface SpotlightLayout {
+  mode: SpotlightMode;
+  spotlight: { width: number; height: number };
+  rail: { width: number; thumbWidth: number; thumbHeight: number; scrolls: boolean };
+}
+
+export interface SpotlightLayoutInput {
+  /** Largura útil do palco (px). */
+  width?: number;
+  /** Altura útil do palco (px). */
+  height?: number;
+  /** Quantidade de miniaturas na coluna. */
+  count?: number;
+  /** Proporção largura/altura dos tiles. */
+  aspect?: number;
+  /** Espaçamento entre destaque/coluna e entre miniaturas. */
+  gap?: number;
+  /** Piso da largura da coluna (px). */
+  railMin?: number;
+  /** Teto da largura da coluna (px). */
+  railMax?: number;
+  /** Fração alvo da largura do palco. */
+  railRatio?: number;
+  /** Limiar do modo estreito (px). */
+  narrowWidth?: number;
+  /** Piso de legibilidade da miniatura (px). */
+  minThumbWidth?: number;
+}
+
+/** Uma tela compartilhada, do ponto de vista deste módulo. */
+export interface ScreenLike {
+  screenId: string;
+  [campo: string]: unknown;
+}
+
+/** Uma miniatura da coluna. `key` é a identidade usada no congelamento. */
+export interface RailItem {
+  key: string;
+  screenId?: string | null;
+  audioId?: string | null;
+  sharing?: boolean;
+  local?: boolean;
+  [campo: string]: unknown;
+}
 
 /**
  * Estrutura neutra do "ainda não medido". Uma nova a cada chamada, para que
  * ninguém consiga mutar o estado compartilhado de um módulo puro.
  */
-const neutral = () => ({
+const neutral = (): SpotlightLayout => ({
   mode: 'spotlight',
   spotlight: { width: 0, height: 0 },
   rail: { width: 0, thumbWidth: 0, thumbHeight: 0, scrolls: false },
 });
 
-const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+const clamp = (value: number, min: number, max: number): number =>
+  Math.min(Math.max(value, min), max);
 
 /**
- * @param {object} input
- * @param {number} input.width   Largura útil do palco (px).
- * @param {number} input.height  Altura útil do palco (px).
- * @param {number} input.count   Quantidade de miniaturas na coluna.
- * @param {number} [input.aspect]      Proporção largura/altura dos tiles.
- * @param {number} [input.gap]         Espaçamento entre destaque/coluna e entre miniaturas.
- * @param {number} [input.railMin]     Piso da largura da coluna (px).
- * @param {number} [input.railMax]     Teto da largura da coluna (px).
- * @param {number} [input.railRatio]   Fração alvo da largura do palco.
- * @param {number} [input.narrowWidth] Limiar do modo estreito (px).
- * @param {number} [input.minThumbWidth] Piso de legibilidade da miniatura (px).
- * @returns {{
- *   mode: 'spotlight' | 'spotlight-narrow',
- *   spotlight: {width: number, height: number},
- *   rail: {width: number, thumbWidth: number, thumbHeight: number, scrolls: boolean},
- * }}
- *
  * `spotlight.width === 0` significa "ainda não medido": é o primeiro render,
  * antes de o `ResizeObserver` entregar a caixa real. O componente usa isso para
  * não pintar o palco com um tamanho que seria errado por um frame.
@@ -103,14 +136,16 @@ export function computeSpotlightLayout({
   railRatio = RAIL_TARGET_RATIO,
   narrowWidth = NARROW_STAGE_WIDTH,
   minThumbWidth = MIN_THUMB_WIDTH,
-} = {}) {
+}: SpotlightLayoutInput = {}): SpotlightLayout {
   if (!isPositive(width) || !isPositive(height) || !isPositive(aspect)) return neutral();
 
-  const thumbs = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  const thumbs = typeof count === 'number' && Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
   const spacing = Number.isFinite(gap) && gap > 0 ? gap : 0;
   const min = isPositive(railMin) ? railMin : 0;
   const max = isPositive(railMax) && railMax >= min ? railMax : min;
-  const narrow = width < (Number.isFinite(narrowWidth) ? narrowWidth : NARROW_STAGE_WIDTH);
+  const narrow =
+    width <
+    (typeof narrowWidth === 'number' && Number.isFinite(narrowWidth) ? narrowWidth : NARROW_STAGE_WIDTH);
 
   // Largura "ideal" da coluna: o alvo de 20%, preso entre o piso e o teto, e
   // nunca maior que metade do palco — a invariante "o destaque nunca é menor que
@@ -121,7 +156,12 @@ export function computeSpotlightLayout({
   // O teto continua tendo a última palavra (`clamp` aplica o `min` primeiro),
   // porque um `railMax` explícito é uma decisão de quem chama.
   const thumbFloor = isPositive(minThumbWidth) ? minThumbWidth : 0;
-  const target = Math.floor(width * (Number.isFinite(railRatio) && railRatio > 0 ? railRatio : RAIL_TARGET_RATIO));
+  const target = Math.floor(
+    width *
+      (typeof railRatio === 'number' && Number.isFinite(railRatio) && railRatio > 0
+        ? railRatio
+        : RAIL_TARGET_RATIO),
+  );
   const railWidth = Math.min(
     Math.floor(clamp(target, Math.max(min, thumbFloor + RAIL_GUTTER), max)),
     Math.max(0, Math.floor((width - spacing) / 2)),
@@ -169,13 +209,16 @@ export function computeSpotlightLayout({
  * @returns {object|null} A tela em destaque, ou `null` quando não há nenhuma
  *   ativa — o sinal de "volte para a grade uniforme".
  */
-export function resolveSpotlightScreen(screens, pinnedId) {
+export function resolveSpotlightScreen<T extends ScreenLike>(
+  screens: readonly T[] | null | undefined,
+  pinnedId?: string | null,
+): T | null {
   if (!Array.isArray(screens) || screens.length === 0) return null;
   if (pinnedId) {
     const pinned = screens.find((screen) => screen && screen.screenId === pinnedId);
     if (pinned) return pinned;
   }
-  return screens[0];
+  return screens[0] ?? null;
 }
 
 /** Faixas de prioridade da coluna. Menor = mais perto do topo. */
@@ -185,7 +228,7 @@ const RANK_SHARING = 2;
 const RANK_LOCAL = 3;
 const RANK_OTHER = 4;
 
-function rankOf(item, speaking) {
+function rankOf(item: RailItem | null | undefined, speaking: ReadonlySet<string>): number {
   if (!item) return RANK_OTHER;
   if (item.screenId) return RANK_SCREEN;
   if (item.audioId && speaking.has(item.audioId)) return RANK_SPEAKING;
@@ -219,12 +262,26 @@ function rankOf(item, speaking) {
  * @param {boolean} [input.frozen] Manter a ordem anterior (usuário rolando).
  * @returns {Array<object>} Os mesmos objetos de `items`, reordenados.
  */
-export function orderRailItems({ items, speaking, previousOrder, frozen = false } = {}) {
+export function orderRailItems<T extends RailItem>({
+  items,
+  speaking,
+  previousOrder,
+  frozen = false,
+}: {
+  /** Miniaturas na ordem determinística de origem. */
+  items?: readonly T[] | null;
+  /** `audioId`s de quem está falando. */
+  speaking?: Iterable<string> | null;
+  /** Chaves na ordem do render anterior. */
+  previousOrder?: readonly string[] | null;
+  /** Manter a ordem anterior (usuário rolando). */
+  frozen?: boolean;
+} = {}): T[] {
   if (!Array.isArray(items) || items.length === 0) return [];
 
   if (frozen && Array.isArray(previousOrder) && previousOrder.length > 0) {
-    const pending = new Map(items.map((item) => [item.key, item]));
-    const kept = [];
+    const pending = new Map<string, T>(items.map((item) => [item.key, item]));
+    const kept: T[] = [];
     for (const key of previousOrder) {
       const item = pending.get(key);
       if (item) {
@@ -238,7 +295,7 @@ export function orderRailItems({ items, speaking, previousOrder, frozen = false 
     return kept;
   }
 
-  const speakingSet = speaking instanceof Set ? speaking : new Set(speaking || []);
+  const speakingSet: ReadonlySet<string> = speaking instanceof Set ? speaking : new Set(speaking || []);
   return items
     .map((item, index) => ({ item, index, rank: rankOf(item, speakingSet) }))
     .sort((a, b) => (a.rank === b.rank ? a.index - b.index : a.rank - b.rank))

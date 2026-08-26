@@ -24,7 +24,7 @@
  *    exatamente a mesma fila.
  */
 
-import { MAX_SOURCE_REF, MAX_TITLE, SOURCE_KINDS } from './musicSources.js';
+import { MAX_SOURCE_REF, MAX_TITLE, SOURCE_KINDS, type SourceKind } from './musicSources.js';
 
 /** Entradas vivas na sala inteira. */
 export const MAX_QUEUE = 100;
@@ -33,9 +33,95 @@ export const MAX_PER_PEER = 10;
 /** Tombstones guardados; os mais antigos caem primeiro. */
 export const MAX_TOMBSTONES = 200;
 
-export const DELIVERY = new Set(['stream', 'local']);
+export const DELIVERY: ReadonlySet<string> = new Set(['stream', 'local']);
 
-export function emptyPlayback() {
+/** Como a faixa chega aos outros: transmitida no mesh, ou tocada localmente. */
+export type Delivery = 'stream' | 'local';
+
+/**
+ * Um objeto cru vindo do data channel: as chaves existem ou não, e cada valor é
+ * `unknown` até ser checado. Existe para que este arquivo leia payload hostil
+ * **sem um único cast** — o item 12 do DoD proíbe cast de contorno aqui, e com
+ * razão: um `as` sobre um payload de outro browser é exatamente a afirmação que
+ * ninguém pode fazer.
+ */
+interface Cru {
+  [campo: string]: unknown;
+}
+
+/** Guard, não cast: "se é objeto não nulo, leia como um saco de campos crus". */
+const ehObjeto = (valor: unknown): valor is Cru => !!valor && typeof valor === 'object';
+
+/** Discrimina sem cast — usado por `sanitizePlayback` e `planAdvance`. */
+const isDelivery = (valor: unknown): valor is Delivery => valor === 'stream' || valor === 'local';
+
+/** Uma faixa na fila, já sanitizada. */
+export interface QueueEntry {
+  id: string;
+  kind: SourceKind;
+  title: string;
+  sourceRef: string;
+  durationSec: number | null;
+  addedBy: string;
+  addedByName: string;
+  lamport: number;
+}
+
+/** O estado de reprodução da sala — um por sala, com dono. */
+export interface Playback {
+  version: number;
+  ownerId: string;
+  entryId: string | null;
+  positionSec: number;
+  playing: boolean;
+  delivery: Delivery;
+  endedReason: string | null;
+  /** Instante **local** (monótono) em que este estado foi aplicado aqui. */
+  receivedAt: number;
+}
+
+/** Tudo que a sala sabe sobre música. Imutável: cada função devolve um novo. */
+export interface MusicSession {
+  enabled: boolean;
+  lamport: number;
+  entries: Record<string, QueueEntry>;
+  tombstones: string[];
+  playback: Playback;
+}
+
+/** O que viaja no `music-snapshot`. */
+export interface SessionSnapshot {
+  enabled: boolean;
+  lamport: number;
+  entries: QueueEntry[];
+  tombstones: string[];
+  playback: Omit<Playback, 'endedReason' | 'receivedAt'>;
+}
+
+/** O que `planAdvance` manda publicar, quando manda. */
+export interface AdvancePublish {
+  entryId: string | null;
+  playing: boolean;
+  positionSec: number;
+  delivery?: Delivery;
+  endedReason: string | null;
+}
+
+export interface AdvancePlan {
+  removedEntryId: string | null;
+  broadcastRemove: boolean;
+  publish: AdvancePublish | null;
+}
+
+/** O que o heartbeat lê do player. Só três campos — nada mais é olhado. */
+export interface PlayerProbe {
+  positionSec?: number;
+  playing?: boolean;
+  loading?: boolean;
+  buffering?: boolean;
+}
+
+export function emptyPlayback(): Playback {
   return {
     version: 0,
     ownerId: '',
@@ -49,7 +135,7 @@ export function emptyPlayback() {
   };
 }
 
-export function createSession() {
+export function createSession(): MusicSession {
   return {
     enabled: false,
     lamport: 0,
@@ -62,20 +148,20 @@ export function createSession() {
 // --------------------------------------------------------------- relógio lógico
 
 /** Emissão: o relógio anda um passo e o valor novo vai na mensagem. */
-export function bumpLamport(session) {
+export function bumpLamport(session: MusicSession): { session: MusicSession; lamport: number } {
   const lamport = session.lamport + 1;
   return { session: { ...session, lamport }, lamport };
 }
 
 /** Recepção: `local = max(local, recebido) + 1`. */
-export function observeLamport(session, received) {
-  const value = Number.isFinite(received) ? Math.floor(received) : 0;
+export function observeLamport(session: MusicSession, received: unknown): MusicSession {
+  const value = typeof received === 'number' && Number.isFinite(received) ? Math.floor(received) : 0;
   return { ...session, lamport: Math.max(session.lamport, value) + 1 };
 }
 
 // ----------------------------------------------------------------------- fila
 
-function isPlainString(value) {
+function isPlainString(value: unknown): value is string {
   return typeof value === 'string';
 }
 
@@ -86,15 +172,21 @@ function isPlainString(value) {
  * sobrescrito pelo peer da conexão — aceitar um `addedBy` declarado deixaria
  * qualquer um adicionar faixa em nome de outro.
  */
-export function sanitizeEntry(raw, { addedBy } = {}) {
-  if (!raw || typeof raw !== 'object') return null;
+export function sanitizeEntry(
+  bruto: unknown,
+  { addedBy }: { addedBy?: unknown } = {},
+): QueueEntry | null {
+  // Vem do data channel: nada da forma é confiável, então é lido campo a campo.
+  if (!ehObjeto(bruto)) return null;
+  const raw = bruto;
   if (!isPlainString(raw.id) || !raw.id || raw.id.length > 80) return null;
   if (!isPlainString(raw.kind) || !SOURCE_KINDS.has(raw.kind)) return null;
+  const kind: SourceKind = raw.kind === 'youtube' ? 'youtube' : raw.kind === 'file' ? 'file' : 'url';
 
   const sourceRef = isPlainString(raw.sourceRef) ? raw.sourceRef.slice(0, MAX_SOURCE_REF) : '';
-  if (raw.kind === 'youtube' && !/^[A-Za-z0-9_-]{11}$/.test(sourceRef)) return null;
-  if (raw.kind === 'url') {
-    let url;
+  if (kind === 'youtube' && !/^[A-Za-z0-9_-]{11}$/.test(sourceRef)) return null;
+  if (kind === 'url') {
+    let url: URL;
     try {
       url = new URL(sourceRef);
     } catch {
@@ -103,7 +195,7 @@ export function sanitizeEntry(raw, { addedBy } = {}) {
     // `javascript:`, `data:`, `blob:`, `file:` — descarte imediato.
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
   }
-  if (raw.kind === 'file' && sourceRef !== '') return null;
+  if (kind === 'file' && sourceRef !== '') return null;
 
   const title = isPlainString(raw.title) ? raw.title.trim().slice(0, MAX_TITLE) : '';
   if (!title) return null;
@@ -112,49 +204,54 @@ export function sanitizeEntry(raw, { addedBy } = {}) {
   if (!owner) return null;
 
   const durationSec =
-    Number.isFinite(raw.durationSec) && raw.durationSec > 0 ? Math.min(raw.durationSec, 24 * 3600) : null;
+    typeof raw.durationSec === 'number' && Number.isFinite(raw.durationSec) && raw.durationSec > 0
+      ? Math.min(raw.durationSec, 24 * 3600)
+      : null;
 
   return {
     id: raw.id,
-    kind: raw.kind,
+    kind,
     title,
     sourceRef,
     durationSec,
     addedBy: owner,
     addedByName: (isPlainString(raw.addedByName) ? raw.addedByName.trim().slice(0, 40) : '') || 'Participante',
-    lamport: Number.isFinite(raw.lamport) ? Math.max(0, Math.floor(raw.lamport)) : 0,
+    lamport:
+      typeof raw.lamport === 'number' && Number.isFinite(raw.lamport)
+        ? Math.max(0, Math.floor(raw.lamport))
+        : 0,
   };
 }
 
 /** Ordem total: `(lamport, addedBy, id)`. Nunca por relógio de parede. */
-export function compareEntries(a, b) {
+export function compareEntries(a: QueueEntry, b: QueueEntry): number {
   if (a.lamport !== b.lamport) return a.lamport - b.lamport;
   if (a.addedBy !== b.addedBy) return a.addedBy < b.addedBy ? -1 : 1;
   if (a.id === b.id) return 0;
   return a.id < b.id ? -1 : 1;
 }
 
-export function orderedQueue(session) {
+export function orderedQueue(session: MusicSession): QueueEntry[] {
   return Object.values(session.entries).sort(compareEntries);
 }
 
-export function entryById(session, entryId) {
+export function entryById(session: MusicSession, entryId?: string | null): QueueEntry | null {
   return (entryId && session.entries[entryId]) || null;
 }
 
-export function countByPeer(session, peerId) {
+export function countByPeer(session: MusicSession, peerId: string): number {
   return Object.values(session.entries).filter((entry) => entry.addedBy === peerId).length;
 }
 
 /** Já existe uma entrada viva com a mesma origem? (checagem local, pré-envio) */
-export function hasSameSource(session, kind, sourceRef) {
+export function hasSameSource(session: MusicSession, kind: string, sourceRef: string): boolean {
   if (kind === 'file') return false;
   return Object.values(session.entries).some(
     (entry) => entry.kind === kind && entry.sourceRef === sourceRef,
   );
 }
 
-function trimTombstones(list) {
+function trimTombstones(list: string[]): string[] {
   return list.length > MAX_TOMBSTONES ? list.slice(list.length - MAX_TOMBSTONES) : list;
 }
 
@@ -163,11 +260,14 @@ function trimTombstones(list) {
  * chave. Dois clients com o mesmo conjunto ficam com a mesma fila,
  * independentemente da ordem em que as adições chegaram.
  */
-function enforceLimits(entries) {
+function enforceLimits(entries: Record<string, QueueEntry>): {
+  entries: Record<string, QueueEntry>;
+  dropped: string[];
+} {
   const ordered = Object.values(entries).sort(compareEntries);
-  const perPeer = new Map();
-  const kept = [];
-  const dropped = [];
+  const perPeer = new Map<string, number>();
+  const kept: QueueEntry[] = [];
+  const dropped: string[] = [];
 
   for (const entry of ordered) {
     const used = perPeer.get(entry.addedBy) || 0;
@@ -180,7 +280,7 @@ function enforceLimits(entries) {
   }
 
   if (dropped.length === 0) return { entries, dropped };
-  const next = {};
+  const next: Record<string, QueueEntry> = {};
   for (const entry of kept) next[entry.id] = entry;
   return { entries: next, dropped };
 }
@@ -189,7 +289,10 @@ function enforceLimits(entries) {
  * Insere uma entrada. Ignora id já conhecido (*first-write-wins*) e id
  * tombstoneado (uma remoção não pode ser desfeita por um snapshot velho).
  */
-export function addEntry(session, entry) {
+export function addEntry(
+  session: MusicSession,
+  entry: QueueEntry | null,
+): { session: MusicSession; ok: boolean; reason: string | null } {
   if (!entry) return { session, ok: false, reason: 'invalid' };
   if (session.entries[entry.id]) return { session, ok: false, reason: 'duplicate' };
   if (session.tombstones.includes(entry.id)) return { session, ok: false, reason: 'removed' };
@@ -204,7 +307,7 @@ export function addEntry(session, entry) {
   return { session: { ...session, entries }, ok: true, reason: null };
 }
 
-export function removeEntry(session, entryId) {
+export function removeEntry(session: MusicSession, entryId?: string | null): MusicSession {
   if (!entryId) return session;
   const entries = { ...session.entries };
   delete entries[entryId];
@@ -215,7 +318,11 @@ export function removeEntry(session, entryId) {
 }
 
 /** Remove todas as entradas de um peer (usado quando ele sai da sala). */
-export function removeEntriesBy(session, peerId, { kinds = null } = {}) {
+export function removeEntriesBy(
+  session: MusicSession,
+  peerId: string,
+  { kinds = null }: { kinds?: readonly string[] | null } = {},
+): MusicSession {
   const victims = Object.values(session.entries).filter(
     (entry) => entry.addedBy === peerId && (!kinds || kinds.includes(entry.kind)),
   );
@@ -227,10 +334,10 @@ export function removeEntriesBy(session, peerId, { kinds = null } = {}) {
  * anda para frente (`max` vence), o que faz duas reordenações concorrentes
  * convergirem sem coordenação — e mantém a faixa com quem tem o arquivo.
  */
-export function applyReorder(session, entryId, lamport) {
+export function applyReorder(session: MusicSession, entryId: string, lamport: unknown): MusicSession {
   const entry = session.entries[entryId];
   if (!entry) return session;
-  const value = Number.isFinite(lamport) ? Math.floor(lamport) : 0;
+  const value = typeof lamport === 'number' && Number.isFinite(lamport) ? Math.floor(lamport) : 0;
   if (value <= entry.lamport) return session;
   return {
     ...session,
@@ -239,9 +346,11 @@ export function applyReorder(session, entryId, lamport) {
 }
 
 /** Anota a duração descoberta ao carregar a mídia (não afeta a ordem). */
-export function applyDuration(session, entryId, durationSec) {
+export function applyDuration(session: MusicSession, entryId: string, durationSec: unknown): MusicSession {
   const entry = session.entries[entryId];
-  if (!entry || !Number.isFinite(durationSec) || durationSec <= 0) return session;
+  if (!entry || typeof durationSec !== 'number' || !Number.isFinite(durationSec) || durationSec <= 0) {
+    return session;
+  }
   if (entry.durationSec === durationSec) return session;
   return {
     ...session,
@@ -251,7 +360,7 @@ export function applyDuration(session, entryId, durationSec) {
 
 // ----------------------------------------------------------------- navegação
 
-export function nextEntry(session, entryId) {
+export function nextEntry(session: MusicSession, entryId?: string | null): QueueEntry | null {
   const queue = orderedQueue(session);
   if (!entryId) return queue[0] || null;
   const index = queue.findIndex((entry) => entry.id === entryId);
@@ -259,12 +368,12 @@ export function nextEntry(session, entryId) {
   return queue[index + 1] || null;
 }
 
-export function previousEntry(session, entryId) {
+export function previousEntry(session: MusicSession, entryId?: string | null): QueueEntry | null {
   const queue = orderedQueue(session);
   if (!entryId) return null;
   const index = queue.findIndex((entry) => entry.id === entryId);
   if (index <= 0) return null;
-  return queue[index - 1];
+  return queue[index - 1] ?? null;
 }
 
 /**
@@ -272,21 +381,29 @@ export function previousEntry(session, entryId) {
  * é o que permite avançar corretamente quando a faixa corrente foi removida
  * (por exemplo, porque quem a transmitia fechou a aba).
  */
-export function nextEntryAfterKey(session, key) {
+export function nextEntryAfterKey(session: MusicSession, key?: QueueEntry | null): QueueEntry | null {
   if (!key) return orderedQueue(session)[0] || null;
   return orderedQueue(session).find((entry) => compareEntries(entry, key) > 0) || null;
 }
 
 // --------------------------------------------------------------- reprodução
 
-export function sanitizePlayback(raw, { ownerId } = {}) {
-  if (!raw || typeof raw !== 'object') return null;
-  if (!Number.isFinite(raw.version) || raw.version < 0) return null;
+export function sanitizePlayback(
+  bruto: unknown,
+  { ownerId }: { ownerId?: unknown } = {},
+): Playback | null {
+  // Também vem do canal: lido campo a campo, sem assumir forma.
+  if (!ehObjeto(bruto)) return null;
+  const raw = bruto;
+  if (typeof raw.version !== 'number' || !Number.isFinite(raw.version) || raw.version < 0) return null;
   const owner = typeof ownerId === 'string' && ownerId ? ownerId : null;
   if (!owner) return null;
   const entryId = typeof raw.entryId === 'string' && raw.entryId ? raw.entryId : null;
-  const positionSec = Number.isFinite(raw.positionSec) && raw.positionSec >= 0 ? raw.positionSec : 0;
-  const delivery = DELIVERY.has(raw.delivery) ? raw.delivery : 'stream';
+  const positionSec =
+    typeof raw.positionSec === 'number' && Number.isFinite(raw.positionSec) && raw.positionSec >= 0
+      ? raw.positionSec
+      : 0;
+  const delivery: Delivery = isDelivery(raw.delivery) ? raw.delivery : 'stream';
   return {
     version: Math.floor(raw.version),
     ownerId: owner,
@@ -300,14 +417,19 @@ export function sanitizePlayback(raw, { ownerId } = {}) {
 }
 
 /** `(version, ownerId)` — par lexicográfico, comparação total. */
-export function isNewerPlayback(candidate, current) {
+// Predicado, e não `boolean`: a primeira linha do corpo já recusa `candidate`
+// nulo, então quem passa pela guarda tem um `Playback` de verdade em mãos.
+export function isNewerPlayback(
+  candidate?: Playback | null,
+  current?: Playback | null,
+): candidate is Playback {
   if (!candidate) return false;
   if (!current) return true;
   if (candidate.version !== current.version) return candidate.version > current.version;
   return candidate.ownerId > current.ownerId;
 }
 
-export function applyPlayback(session, playback, now = 0) {
+export function applyPlayback(session: MusicSession, playback: Playback | null, now = 0): MusicSession {
   if (!isNewerPlayback(playback, session.playback)) return session;
   return { ...session, playback: { ...playback, receivedAt: now } };
 }
@@ -317,7 +439,7 @@ export function applyPlayback(session, playback, now = 0) {
  * relógio local a partir do instante de recepção: `Date.now()` de máquinas
  * diferentes pode divergir minutos, e nada aqui precisa saber a hora do outro.
  */
-export function estimatePosition(playback, now) {
+export function estimatePosition(playback: Playback | null | undefined, now: number): number {
   if (!playback || !playback.entryId) return 0;
   if (!playback.playing) return playback.positionSec;
   const elapsed = Math.max(0, (now - playback.receivedAt) / 1000);
@@ -326,7 +448,7 @@ export function estimatePosition(playback, now) {
 
 // ------------------------------------------------------------------ snapshot
 
-export function buildSnapshot(session) {
+export function buildSnapshot(session: MusicSession): SessionSnapshot {
   return {
     enabled: session.enabled,
     lamport: session.lamport,
@@ -354,25 +476,28 @@ export function buildSnapshot(session) {
  * está só repassando o que viu), mas nada além de id/kind/título sobrevive à
  * sanitização.
  */
-export function mergeSnapshot(session, snapshot, now = 0) {
-  if (!snapshot || typeof snapshot !== 'object') return session;
+export function mergeSnapshot(session: MusicSession, bruto: unknown, now = 0): MusicSession {
+  // Vem do canal, como tudo mais neste arquivo.
+  if (!ehObjeto(bruto)) return session;
+  const snapshot = bruto;
 
-  let next = { ...session };
+  let next: MusicSession = { ...session };
 
-  if (Number.isFinite(snapshot.lamport)) {
+  if (typeof snapshot.lamport === 'number' && Number.isFinite(snapshot.lamport)) {
     next.lamport = Math.max(next.lamport, Math.floor(snapshot.lamport));
   }
   if (snapshot.enabled) next.enabled = true; // habilitar é monotônico
 
-  const tombstones = new Set(next.tombstones);
+  const tombstones = new Set<string>(next.tombstones);
   for (const id of Array.isArray(snapshot.tombstones) ? snapshot.tombstones : []) {
     if (typeof id === 'string' && id) tombstones.add(id);
   }
   next.tombstones = trimTombstones([...tombstones]);
 
   const entries = { ...next.entries };
-  for (const raw of Array.isArray(snapshot.entries) ? snapshot.entries : []) {
-    const entry = sanitizeEntry(raw, { addedBy: raw?.addedBy });
+  const recebidas: unknown[] = Array.isArray(snapshot.entries) ? snapshot.entries : [];
+  for (const raw of recebidas) {
+    const entry = sanitizeEntry(raw, { addedBy: ehObjeto(raw) ? raw.addedBy : undefined });
     if (!entry) continue;
     if (entries[entry.id]) continue;
     if (next.tombstones.includes(entry.id)) continue;
@@ -383,8 +508,9 @@ export function mergeSnapshot(session, snapshot, now = 0) {
 
   next.entries = enforceLimits(entries).entries;
 
-  if (snapshot.playback) {
-    const playback = sanitizePlayback(snapshot.playback, { ownerId: snapshot.playback.ownerId });
+  if (ehObjeto(snapshot.playback)) {
+    const recebido = snapshot.playback;
+    const playback = sanitizePlayback(recebido, { ownerId: recebido.ownerId });
     if (playback) next = applyPlayback(next, playback, now);
   }
 
@@ -396,10 +522,13 @@ export function mergeSnapshot(session, snapshot, now = 0) {
  * O mesmo critério lexicográfico determinístico do polite/impolite — todos
  * chegam à mesma conclusão sem trocar mensagem, então exatamente um publica.
  */
-export function successorOwner(presentIds) {
-  const ids = (Array.isArray(presentIds) ? presentIds : []).filter((id) => typeof id === 'string' && id);
+export function successorOwner(presentIds: unknown): string | null {
+  const brutos: unknown[] = Array.isArray(presentIds) ? presentIds : [];
+  const ids = brutos.filter(
+    (id): id is string => typeof id === 'string' && !!id,
+  );
   if (ids.length === 0) return null;
-  return ids.sort()[0];
+  return ids.sort()[0] ?? null;
 }
 
 /**
@@ -408,8 +537,8 @@ export function successorOwner(presentIds) {
  * é o que faz exatamente um cliente agir — "quem descobrir primeiro assume" faria
  * dois assumirem, dois publicarem, e o estado oscilar.
  */
-export function ownerFor(entry, presentIds) {
-  const ids = Array.isArray(presentIds) ? presentIds : [];
+export function ownerFor(entry: QueueEntry | null | undefined, presentIds: unknown): string | null {
+  const ids: readonly string[] = Array.isArray(presentIds) ? presentIds : [];
   if (!entry) return null;
   if (ids.includes(entry.addedBy)) return entry.addedBy;
   return successorOwner(ids);
@@ -449,8 +578,16 @@ export function planAdvance({
   presentIds = [],
   selfId = '',
   delivery = 'stream',
-} = {}) {
-  const idle = { removedEntryId: null, broadcastRemove: false, publish: null };
+}: {
+  session?: MusicSession | null;
+  finishedEntryId?: string | null;
+  reason?: string | null;
+  presentIds?: readonly string[];
+  selfId?: string;
+  /** Valor fixo, ou uma função da faixa — a decisão vem da sonda de CORS. */
+  delivery?: Delivery | ((entry: QueueEntry) => string);
+} = {}): AdvancePlan {
+  const idle: AdvancePlan = { removedEntryId: null, broadcastRemove: false, publish: null };
   if (!session) return idle;
 
   const finished = entryById(session, finishedEntryId);
@@ -489,7 +626,7 @@ export function planAdvance({
       entryId: next.id,
       playing: true,
       positionSec: 0,
-      delivery: DELIVERY.has(how) ? how : 'stream',
+      delivery: isDelivery(how) ? how : 'stream',
       endedReason: reason || null,
     },
   };
@@ -527,7 +664,12 @@ export function planAdvance({
  * pode responder `0` sem saber de nada. Publicar esse `0` mandaria a sala
  * inteira para o começo da faixa.
  */
-export function planPositionHeartbeat({ playback, player } = {}) {
+export function planPositionHeartbeat({
+  playback,
+  player,
+}: { playback?: Playback | null; player?: PlayerProbe | null } = {}): {
+  publish: { positionSec: number; playing: boolean } | null;
+} {
   const idle = { publish: null };
   if (!player || !playback) return idle;
 
@@ -539,7 +681,7 @@ export function planPositionHeartbeat({ playback, player } = {}) {
   // Trocando de faixa: o player ainda não sabe nada de si.
   if (player.loading) return idle;
 
-  const positionSec = player.positionSec;
+  const positionSec = player.positionSec ?? NaN;
   const known = Number.isFinite(positionSec) && positionSec > 0;
 
   // Entre `onReady` (que já zerou `loading`) e o primeiro frame, o iframe pode

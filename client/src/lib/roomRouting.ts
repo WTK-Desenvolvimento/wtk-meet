@@ -64,12 +64,12 @@ export const ROUTE_TABLE = Object.freeze([
 ]);
 
 /** Segmentos que o cliente nunca deve tratar como sala. */
-export function isReservedPath(path) {
+export function isReservedPath(path: string): boolean {
   return RESERVED_SEGMENTS.includes(path) || BLOCKED_SEGMENTS.includes(path);
 }
 
 /** Path utilizável como sala: normalizado, dentro do charset e não reservado. */
-export function isRoomPath(path) {
+export function isRoomPath(path: string): boolean {
   return isValidRoomPath(path) && !isReservedPath(path);
 }
 
@@ -81,11 +81,11 @@ export function isRoomPath(path) {
  * propósito: com hierarquia, reservar namespace no futuro (`/app/algo` novo)
  * passaria a roubar a sala de alguém.
  */
-export function roomPathFromLocation(pathname) {
+export function roomPathFromLocation(pathname: unknown): string {
   if (typeof pathname !== 'string') return '';
   const segments = pathname.split('/').filter(Boolean);
   if (segments.length !== 1) return '';
-  const path = normalizeRoomPath(segments[0]);
+  const path = normalizeRoomPath(segments[0] ?? '');
   return isRoomPath(path) ? path : '';
 }
 
@@ -97,7 +97,7 @@ export function roomPathFromLocation(pathname) {
  * (minúsculo, alfanumérico com hífen) atravessa a normalização sem mudar, então
  * o redirect preserva a sala e não só a página.
  */
-export function legacyRoomRedirect(roomId, hash = '') {
+export function legacyRoomRedirect(roomId: unknown, hash = ''): string {
   const path = normalizeRoomPath(roomId);
   if (!isRoomPath(path)) return '/';
   return `/${path}${hash || ''}`;
@@ -110,7 +110,7 @@ export function legacyRoomRedirect(roomId, hash = '') {
  * porque `new URL()` sozinho quebra nos dois formatos sem esquema e a exceção
  * escaparia para o render.
  */
-export function parseInviteLink(text) {
+export function parseInviteLink(text: unknown): { path: string; passphrase: string } | null {
   if (typeof text !== 'string') return null;
   const trimmed = text.trim();
   if (!trimmed) return null;
@@ -128,7 +128,7 @@ export function parseInviteLink(text) {
     pathname = firstSlash === -1 ? '' : pathname.slice(firstSlash);
   }
   // Query string não faz parte do endereço da sala.
-  pathname = pathname.split('?')[0];
+  pathname = pathname.split('?')[0] ?? '';
 
   const segments = pathname.split('/').filter(Boolean);
   // Formato legado: `/room/<id>` — o `room` some e o id vira o path.
