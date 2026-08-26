@@ -1,0 +1,10 @@
+{
+  // `npm run typecheck` confere `src` **e** `test`; o build (`tsconfig.json`)
+  // compila só `src`, porque teste não entra em `dist/`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src", "test", "eslint.config.js"]
+}

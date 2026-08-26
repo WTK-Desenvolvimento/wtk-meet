@@ -4,16 +4,32 @@
   "private": true,
   "description": "Ephemeral WebRTC signaling server for wtk-meet (no persistence, in-memory rooms only)",
   "type": "module",
-  "main": "src/index.js",
+  "main": "dist/index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
-    "test": "node --test \"test/*.test.mjs\""
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "node --watch --import ../tools/registerTs.mjs src/index.ts",
+    "test": "node --import ../tools/registerTs.mjs --test \"test/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.typecheck.json --noEmit",
+    "lint": "eslint ."
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "express": "^4.19.2",
     "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^4.17.25",
+    "@types/node": "^26.3.0",
+    "eslint": "^9.39.5",
+    "globals": "^17.11.0",
+    "socket.io-client": "^4.8.3",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.68.0"
+  },
+  "engines": {
+    "node": ">=22.18"
   }
 }

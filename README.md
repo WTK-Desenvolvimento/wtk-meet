@@ -10,7 +10,11 @@ Veja `ARCHITECTURE.md` para as decisões de arquitetura e trade-offs.
 
 ## Rodando localmente
 
-Requer Node.js 20+.
+**Requer Node.js >= 22.18** (ou >= 24). O código-fonte é TypeScript e roda sem passo de
+build no desenvolvimento e nos testes: quem apaga os tipos é o *type stripping* nativo
+do Node, que só existe a partir dessa versão. Em Node 20 nem `npm test` nem
+`node e2e/run.ts` funcionam. Só o **artefato de produção** é compilado (`npm run build`
+no server, `vite build` no client) — e aí qualquer Node 20+ roda o `dist/`.
 
 ### 1. Servidor de sinalização
 
@@ -18,11 +22,19 @@ Requer Node.js 20+.
 cd server
 cp .env.example .env
 npm install
-npm run dev
+npm run dev            # roda src/index.ts direto, com --watch
 ```
 
 Sobe em `http://localhost:4000`. Estado 100% em memória — reiniciar o processo apaga
 todas as salas.
+
+Para rodar como em produção — que é o que o container e o E2E fazem:
+
+```bash
+cd server
+npm run build          # tsc → dist/
+npm start              # node dist/index.js
+```
 
 ### 2. Client
 
@@ -292,17 +304,26 @@ da sessão. Se a promessa de privacidade for absoluta na sua instalação, desli
 ## Testes
 
 ```bash
-cd client && npm test     # unitários (node:test): histerese do indicador, modelo de chat,
-                          # grade de vídeos, seleção de dispositivos, o estado do player
-                          # de música e o ciclo de vida da credencial de TURN
-cd client && npm run lint
+cd client && npm test       # unitários (node:test): histerese do indicador, modelo de chat,
+                            # grade de vídeos, seleção de dispositivos, o estado do player
+                            # de música, as fases da sala e o contrato do mesh
+cd client && npm run typecheck   # tsc --noEmit: 0 erros é o portão
+cd client && npm run lint        # eslint 9 flat config + typescript-eslint, .ts/.tsx
 
-cd server && npm test     # unitários (node:test): resolução de CF_TURN_TTL e do timeout,
-                          # e os três desfechos de /turn-credentials (200 / 503 / 502)
+cd server && npm test       # unitários (node:test): resolução de CF_TURN_TTL e do timeout,
+                            # os três desfechos de /turn-credentials (200 / 503 / 502),
+                            # o RoomStore e os handlers de sinalização (socket.io-client)
+cd server && npm run typecheck   # inclui src/ e test/
+cd server && npm run lint
 
-cd e2e && npm install     # uma vez
-node e2e/run.mjs          # ponta a ponta: 3 participantes Chromium + TURN local
+cd e2e && npm install       # uma vez
+cd e2e && npm run typecheck
+node e2e/run.ts             # ponta a ponta: 3 participantes Chromium + TURN local
 ```
+
+O typecheck é portão **separado** do build: `npm run build` no client não roda `tsc`,
+de propósito — o E2E builda o client a cada execução e não deve pagar por isso duas
+vezes. Rode `npm run typecheck` antes de commitar.
 
 O E2E sobe um TURN em `127.0.0.1` (o client usa `iceTransportPolicy: 'relay'`, então
 sem TURN nenhuma conexão fecha nem em loopback), builda o client apontando para uma
@@ -320,9 +341,17 @@ câmera" seria inexecutável no navegador.
 ## Estrutura
 
 ```
+tsconfig.base.json  o rigor de tipos comum aos três pacotes (strict: true)
+tools/         hooks de módulo que fazem o `node --test` enxergar TypeScript
 server/        sinalização (Express + Socket.IO), estado em memória, credenciais TURN efêmeras
+server/dist/   artefato compilado (`npm run build`) — é o que o container roda
 client/        app React (Vite) — UI, mesh WebRTC, E2EE via insertable streams
 client/test/   testes unitários
 e2e/           teste ponta a ponta com 3 participantes
 infra/coturn/  config de referência para STUN/TURN self-hosted
 ```
+
+Os três pacotes são independentes: cada um tem seu `package.json`, seu `node_modules` e
+seu `tsconfig.json` — não há workspace na raiz. `npm install` roda **três vezes**, uma
+em cada. Só o `tsconfig.base.json` é compartilhado, e é por isso que o
+`docker compose build` tem a raiz como contexto (ver `docker-compose.yml`).

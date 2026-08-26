@@ -1,0 +1,16 @@
+{
+  // O único pacote que pode usar o caminho mais simples, e usa: não emite, não
+  // tem JSX e não é importado por ninguém. Roda com o type stripping nativo do
+  // Node, e por isso importa `'./harness.ts'` com a extensão real —
+  // `allowImportingTsExtensions` é o que torna isso legal para o `tsc`.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["*.ts"],
+  "exclude": ["node_modules"]
+}

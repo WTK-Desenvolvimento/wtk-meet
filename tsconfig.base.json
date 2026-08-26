@@ -1,0 +1,45 @@
+{
+  // O que "strict" significa neste repositório — um lugar só.
+  //
+  // Os três pacotes (client, server, e2e) continuam independentes, cada um com
+  // seu `package.json` e seu `node_modules`; o que eles compartilham é este
+  // arquivo, e nada mais. Três cópias de `strict` derivariam, e a primeira que
+  // derivasse criaria um pacote menos rigoroso sem ninguém perceber.
+  //
+  // Cada pacote acrescenta só o que é dele: `lib`, `types`, `jsx`,
+  // `noEmit`/`outDir`, `moduleResolution` e `include`.
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleDetection": "force",
+
+    // O pedido da task, puro: nenhuma sub-flag afrouxada.
+    "strict": true,
+
+    // esbuild (nos testes) e o type stripping do Node transpilam arquivo a
+    // arquivo. Sem isto, construções que o `tsc` aceita quebram em runtime.
+    "isolatedModules": true,
+    // Obriga `import type` explícito. É o que impede o transpilador de manter
+    // um import que só existia para tipos — e o efeito colateral de módulo que
+    // vem junto.
+    "verbatimModuleSyntax": true,
+    // Proíbe `enum`, `namespace` e parameter properties: o type stripping do
+    // Node não os suporta, e o fonte precisa rodar direto.
+    "erasableSyntaxOnly": true,
+
+    // Paridade com o `no-unused-vars` que o lint do projeto já exigia.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+
+    // Os `@types` de terceiros não são responsabilidade desta entrega.
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true
+  }
+
+  // Não habilitados nesta entrega, cada um por exigir mudança de código real —
+  // registrados como próximo degrau no ARCHITECTURE.md §7:
+  // `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`,
+  // `noPropertyAccessFromIndexSignature`.
+}
