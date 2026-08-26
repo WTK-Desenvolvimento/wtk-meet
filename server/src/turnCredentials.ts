@@ -31,7 +31,34 @@ export const DEFAULT_TIMEOUT_MS = 5000;
  * log de servidor (e o log de servidor termina em algum agregador), a
  * sanitização é feita na saída, não na confiança de que nenhum caminho vaza.
  */
-function redact(message, env) {
+/** As variáveis que este módulo lê. Um subconjunto de `process.env`. */
+export interface TurnEnv {
+  CF_TURN_TOKEN_ID?: string | undefined;
+  CF_TURN_API_TOKEN?: string | undefined;
+  CF_TURN_TTL?: string | undefined;
+  CF_TURN_TIMEOUT_MS?: string | undefined;
+}
+
+/** Um item de `iceServers`, como a Cloudflare o devolve. */
+export interface IceServer {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
+}
+
+/** Credencial obtida. `ttl` é autoritativo; `expiresAt` é informativo. */
+export interface TurnCredentials {
+  iceServers: IceServer[];
+  ttl: number;
+  expiresAt: string;
+}
+
+/** A mensagem de um erro capturado — sob `strict`, o `catch` entrega `unknown`. */
+function mensagemDe(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function redact(message: unknown, env: TurnEnv): string {
   let out = String(message ?? '');
   for (const secret of [env.CF_TURN_TOKEN_ID, env.CF_TURN_API_TOKEN]) {
     if (secret) out = out.split(secret).join('***');
@@ -48,7 +75,7 @@ function redact(message, env) {
  * Cloudflare — um health check não pode depender de terceiro nem custar uma
  * credencial por requisição.
  */
-export function isTurnConfigured(env = process.env) {
+export function isTurnConfigured(env: TurnEnv = process.env): boolean {
   return Boolean(env.CF_TURN_TOKEN_ID && env.CF_TURN_API_TOKEN);
 }
 
@@ -61,7 +88,7 @@ export function isTurnConfigured(env = process.env) {
  * (aceitar calado) é a mesma classe de silêncio que esta task existe para
  * eliminar.
  */
-export function resolveTurnTtl(env = process.env, warn = console.warn) {
+export function resolveTurnTtl(env: TurnEnv = process.env, warn = console.warn): number {
   const raw = env.CF_TURN_TTL;
   if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_TTL;
 
@@ -84,7 +111,7 @@ export function resolveTurnTtl(env = process.env, warn = console.warn) {
 }
 
 /** Mesmo espírito do TTL, sem clamp: um timeout absurdo cai no default. */
-export function resolveTimeoutMs(env = process.env, warn = console.warn) {
+export function resolveTimeoutMs(env: TurnEnv = process.env, warn = console.warn): number {
   const raw = env.CF_TURN_TIMEOUT_MS;
   if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_TIMEOUT_MS;
   const parsed = Number(raw);
@@ -122,7 +149,11 @@ export async function fetchCloudflareIceServers({
   env = process.env,
   fetchImpl = globalThis.fetch,
   warn = console.warn,
-} = {}) {
+}: {
+  env?: TurnEnv;
+  fetchImpl?: typeof fetch;
+  warn?: (...args: unknown[]) => void;
+} = {}): Promise<TurnCredentials | null> {
   const tokenId = env.CF_TURN_TOKEN_ID;
   const apiToken = env.CF_TURN_API_TOKEN;
 
@@ -134,7 +165,7 @@ export async function fetchCloudflareIceServers({
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  let res;
+  let res: Response;
   try {
     res = await fetchImpl(`${CF_API_URL}/${tokenId}/credentials/generate-ice-servers`, {
       method: 'POST',
@@ -149,21 +180,21 @@ export async function fetchCloudflareIceServers({
     if (controller.signal.aborted) {
       throw new Error(`Cloudflare TURN API timeout após ${timeoutMs}ms`);
     }
-    throw new Error(`Cloudflare TURN API inacessível: ${redact(err?.message, env)}`);
+    throw new Error(`Cloudflare TURN API inacessível: ${redact(mensagemDe(err), env)}`);
   } finally {
     clearTimeout(timer);
   }
 
   if (!res.ok) throw new Error(`Cloudflare TURN API error: ${res.status}`);
 
-  let body;
+  let body: { iceServers?: unknown } | null;
   try {
-    body = await res.json();
+    body = (await res.json()) as { iceServers?: unknown } | null;
   } catch (err) {
-    throw new Error(`Cloudflare TURN API devolveu corpo ilegível: ${redact(err?.message, env)}`);
+    throw new Error(`Cloudflare TURN API devolveu corpo ilegível: ${redact(mensagemDe(err), env)}`);
   }
 
-  const iceServers = body?.iceServers;
+  const iceServers = body?.iceServers as IceServer[] | undefined;
   // Lista vazia é tratada como erro de upstream, e não como sucesso magro: sob
   // `relay` ela não conecta ninguém, e responder 200 com ela seria reintroduzir
   // exatamente o silêncio que esta entrega remove.
