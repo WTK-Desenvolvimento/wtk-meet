@@ -1,0 +1,20 @@
+{
+  // O server **emite**: `npm run build` produz `dist/`, e é `node dist/index.js`
+  // que sobe no container e no E2E. Por isso `moduleResolution: NodeNext` e por
+  // isso nenhum import pode apontar para `.ts` — `allowImportingTsExtensions` é
+  // proibido quando há emissão.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist",
+    "rootDir": "src",
+    // Ninguém consome o server como biblioteca.
+    "declaration": false,
+    "sourceMap": true,
+    "lib": ["ES2023"],
+    "types": ["node"]
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist"]
+}

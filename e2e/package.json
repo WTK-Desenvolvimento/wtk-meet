@@ -5,10 +5,18 @@
   "description": "Teste ponta a ponta com 3 participantes Chromium e TURN local",
   "type": "module",
   "scripts": {
-    "test": "node run.mjs"
+    "test": "node run.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "node-turn": "^0.0.6",
     "playwright": "^1.62.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.3.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.18"
   }
 }

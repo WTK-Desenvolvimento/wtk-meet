@@ -1,0 +1,20 @@
+# O contexto de build dos dois Dockerfile passou a ser a **raiz** do
+# repositório, porque `client/tsconfig.json` e `server/tsconfig.json` estendem
+# `tsconfig.base.json`, que mora aqui e não seria enxergado de dentro de
+# `./client` ou `./server`. Sem este arquivo, o contexto passaria a carregar
+# `node_modules` dos três pacotes e o `.git` inteiro a cada build.
+**/node_modules
+**/dist
+**/dist-smoke
+.git
+.gitignore
+
+# Não entram em imagem nenhuma.
+e2e
+docs
+infra
+*.md
+**/*.log
+.env
+.env.*
+core.*

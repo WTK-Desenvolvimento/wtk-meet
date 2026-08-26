@@ -1,0 +1,26 @@
+{
+  // Um `tsconfig` só, cobrindo `src/`, `test/` e o próprio `vite.config.ts`.
+  //
+  // O portão do projeto é `npx tsc --noEmit` — comando simples, sem `-b` e sem
+  // grafo de projetos. O custo aceito é ter os globais de Node visíveis no
+  // código de browser; a separação em project references
+  // (`tsconfig.app`/`test`/`node`) fica registrada como trabalho futuro.
+  //
+  // Armadilha direta dessa escolha, e ela aparece: com `@types/node` e `DOM` no
+  // mesmo programa, `setTimeout`/`setInterval` resolvem para a sobrecarga do
+  // Node (`NodeJS.Timeout`), não para `number`. **Regra do projeto: todo handle
+  // de timer é `ReturnType<typeof setTimeout>`, nunca `number`.**
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    // O Vite constrói; o `tsc` só confere.
+    "noEmit": true,
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    // `DOM.Iterable` é o que permite `for..of` em `NodeList` e `MediaStream`.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "allowJs": false
+  },
+  "include": ["src", "test", "vite.config.ts"],
+  "exclude": ["node_modules", "dist"]
+}

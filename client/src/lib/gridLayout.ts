@@ -29,7 +29,31 @@ export const MIN_TILE_WIDTH = 120;
  */
 const TIE_EPSILON = 0.5;
 
-const NEUTRAL = Object.freeze({
+/** O que `computeGridLayout` devolve. */
+export interface GridLayout {
+  cols: number;
+  rows: number;
+  tileWidth: number;
+  tileHeight: number;
+  overflow: boolean;
+}
+
+export interface GridLayoutInput {
+  /** Largura útil do container da grade (px). */
+  width?: number;
+  /** Altura útil do container da grade (px). */
+  height?: number;
+  /** Quantidade de tiles a acomodar. */
+  count?: number;
+  /** Proporção largura/altura do tile. */
+  aspect?: number;
+  /** Espaçamento entre tiles (px). */
+  gap?: number;
+  /** Piso de largura do tile (px). */
+  minTileWidth?: number;
+}
+
+const NEUTRAL: Readonly<GridLayout> = Object.freeze({
   cols: 1,
   rows: 1,
   tileWidth: 0,
@@ -37,18 +61,10 @@ const NEUTRAL = Object.freeze({
   overflow: false,
 });
 
-const isPositive = (value) => Number.isFinite(value) && value > 0;
+const isPositive = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0;
 
 /**
- * @param {object} input
- * @param {number} input.width  Largura útil do container da grade (px).
- * @param {number} input.height Altura útil do container da grade (px).
- * @param {number} input.count  Quantidade de tiles a acomodar.
- * @param {number} [input.aspect]        Proporção largura/altura do tile.
- * @param {number} [input.gap]           Espaçamento entre tiles (px).
- * @param {number} [input.minTileWidth]  Piso de largura do tile (px).
- * @returns {{cols: number, rows: number, tileWidth: number, tileHeight: number, overflow: boolean}}
- *
  * `tileWidth === 0` significa "ainda não medido / nada a posicionar": é o
  * resultado do primeiro render, antes do `ResizeObserver` entregar a caixa real.
  * O componente usa isso para não pintar a grade com tamanho errado.
@@ -60,15 +76,17 @@ export function computeGridLayout({
   aspect = TILE_ASPECT,
   gap = GRID_GAP,
   minTileWidth = MIN_TILE_WIDTH,
-} = {}) {
-  const tiles = Math.floor(count);
+}: GridLayoutInput = {}): GridLayout {
+  // `count` pode chegar `undefined`; `NaN` reprova no `Number.isFinite` logo
+  // abaixo, exatamente como `Math.floor(undefined)` fazia antes.
+  const tiles = Math.floor(count ?? NaN);
   if (!Number.isFinite(tiles) || tiles <= 0) return { ...NEUTRAL };
   if (!isPositive(width) || !isPositive(height) || !isPositive(aspect)) return { ...NEUTRAL };
 
   const spacing = Number.isFinite(gap) && gap > 0 ? gap : 0;
   const floor = isPositive(minTileWidth) ? minTileWidth : 0;
 
-  let best = null;
+  let best: { cols: number; rows: number; tileWidth: number } | null = null;
   for (let cols = 1; cols <= tiles; cols += 1) {
     const rows = Math.ceil(tiles / cols);
     // Quanto cada tile pode ter de largura pelo eixo horizontal...

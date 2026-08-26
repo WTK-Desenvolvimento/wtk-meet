@@ -85,9 +85,63 @@ const EPSILON = 1e-12;
  * custaria ~4600 chamadas trigonométricas por FFT, 375 vezes por segundo, na
  * thread de áudio.
  */
-const tableCache = new Map();
+/**
+ * Buffer de amostras. O DSP não se importa com a precisão — o estado usa
+ * `Float64Array` onde acumula e `Float32Array` onde o WebAudio entrega —, e
+ * fixar uma das duas nas assinaturas só obrigaria a converter à toa.
+ */
+type FloatBuffer = Float32Array | Float64Array;
 
-function tablesFor(n) {
+export interface NoiseFloorOptions {
+  attack?: number;
+  release?: number;
+  holdRatio?: number;
+}
+
+export interface ComputeGainsOptions {
+  gMin?: number;
+  beta?: number;
+  /** Buffer de saída. Existe para o caminho de tempo real não alocar por quantum. */
+  out?: Float32Array | null;
+}
+
+export interface SmoothGainsOptions {
+  span?: number;
+  alpha?: number;
+}
+
+/** Tudo que um quantum precisa; alocado uma vez por `createState`. */
+export interface SuppressorState {
+  sampleRate: number;
+  window: Float64Array;
+  wolaGain: number;
+  input: Float64Array;
+  overlap: Float64Array;
+  re: Float64Array;
+  im: Float64Array;
+  mags: Float64Array;
+  floor: Float64Array;
+  gains: Float32Array;
+  previous: Float32Array;
+  attack: number;
+  release: number;
+  alpha: number;
+  warmup: number;
+  gMin: number;
+  beta: number;
+  span: number;
+  holdRatio: number;
+}
+
+interface FftTables {
+  cos: Float64Array;
+  sin: Float64Array;
+  rev: Uint32Array;
+}
+
+const tableCache = new Map<number, FftTables>();
+
+function tablesFor(n: number): FftTables {
   let tables = tableCache.get(n);
   if (tables) return tables;
 
@@ -115,7 +169,7 @@ function tablesFor(n) {
   return tables;
 }
 
-function transform(re, im, inverse) {
+function transform(re: Float64Array, im: Float64Array, inverse: boolean): void {
   const n = re.length;
   const { cos, sin, rev } = tablesFor(n);
 
@@ -158,18 +212,21 @@ function transform(re, im, inverse) {
 }
 
 /** FFT radix-2, in-place. `im` entra zerado para um sinal real. */
-export function fftReal(re, im) {
+export function fftReal(re: Float64Array, im: Float64Array): void {
   transform(re, im, false);
 }
 
 /** Inversa da `fftReal`, in-place e já normalizada por N. */
-export function ifftReal(re, im) {
+export function ifftReal(re: Float64Array, im: Float64Array): void {
   transform(re, im, true);
 }
 
+/** Buffer vazio compartilhado: um quantum sem fonte conectada vira silêncio. */
+const SEM_ENTRADA = new Float32Array(0);
+
 // --------------------------------------------------------------------- DSP
 
-function hannWindow(size) {
+function hannWindow(size: number): Float64Array {
   const win = new Float64Array(size);
   // Hann **periódica** (divisor `size`, não `size - 1`): é a que soma constante
   // no overlap-add com passo N/4, e é dessa constância que sai a reconstrução
@@ -178,9 +235,9 @@ function hannWindow(size) {
   return win;
 }
 
-const ringCache = new Map();
+const ringCache = new Map<number, Float64Array>();
 
-function ringFor(size) {
+function ringFor(size: number): Float64Array {
   let ring = ringCache.get(size);
   if (!ring) {
     ring = new Float64Array(size);
@@ -189,15 +246,18 @@ function ringFor(size) {
   return ring;
 }
 
-const timeCoefficient = (frameSeconds, tau) => 1 - Math.exp(-frameSeconds / tau);
+const timeCoefficient = (frameSeconds: number, tau: number): number =>
+  1 - Math.exp(-frameSeconds / tau);
 
 /**
  * Aloca janelas, buffers e o piso de ruído. `sampleRate` entra por parâmetro
  * porque o global de mesmo nome só existe no escopo do worklet — no `node:test`
  * ele não existe.
  */
-export function createState(sampleRate) {
-  const rate = Number.isFinite(sampleRate) && sampleRate > 0 ? sampleRate : 48000;
+export function createState(sampleRate?: number): SuppressorState {
+  const rate = typeof sampleRate === 'number' && Number.isFinite(sampleRate) && sampleRate > 0
+    ? sampleRate
+    : 48000;
   const frameSeconds = HOP_SIZE / rate;
   const win = hannWindow(FFT_SIZE);
 
@@ -240,7 +300,11 @@ export function createState(sampleRate) {
  * Descer rápido é o que acompanha o ambiente ficando mais silencioso; subir
  * devagar é o que impede a fala de virar "ruído".
  */
-export function updateNoiseFloor(floor, mags, { attack = 0, release = 0, holdRatio = Infinity } = {}) {
+export function updateNoiseFloor(
+  floor: FloatBuffer,
+  mags: FloatBuffer,
+  { attack = 0, release = 0, holdRatio = Infinity }: NoiseFloorOptions = {},
+): void {
   for (let b = 0; b < floor.length; b += 1) {
     const m = mags[b];
     const f = floor[b];
@@ -261,7 +325,11 @@ export function updateNoiseFloor(floor, mags, { attack = 0, release = 0, holdRat
  * `out` existe para o caminho de tempo real: alocar por quantum convidaria o GC
  * para a thread de áudio. Sem ele, aloca — que é o que o teste quer.
  */
-export function computeGains(mags, floor, { gMin = G_MIN, beta = OVER_SUBTRACTION, out = null } = {}) {
+export function computeGains(
+  mags: FloatBuffer,
+  floor: FloatBuffer,
+  { gMin = G_MIN, beta = OVER_SUBTRACTION, out = null }: ComputeGainsOptions = {},
+): Float32Array {
   const gains = out || new Float32Array(mags.length);
   for (let b = 0; b < gains.length; b += 1) {
     const m = mags[b];
@@ -285,7 +353,11 @@ export function computeGains(mags, floor, { gMin = G_MIN, beta = OVER_SUBTRACTIO
  * saindo. É o artefato clássico da subtração espectral e o motivo de a versão
  * ingênua soar pior do que não fazer nada.
  */
-export function smoothGains(gains, previous, { span = GAIN_SPAN, alpha = 0 } = {}) {
+export function smoothGains(
+  gains: FloatBuffer,
+  previous: FloatBuffer,
+  { span = GAIN_SPAN, alpha = 0 }: SmoothGainsOptions = {},
+): void {
   const n = gains.length;
   const radius = Math.min(Math.max(0, (span - 1) >> 1), n);
 
@@ -329,14 +401,22 @@ export function smoothGains(gains, previous, { span = GAIN_SPAN, alpha = 0 } = {
  * caminho de overlap-add: mesma latência algorítmica (384 amostras ≈ 8 ms a
  * 48 kHz) e nenhum clique na transição, porque nada é desmontado nem religado.
  */
-export function pushQuantum(state, input, output, { enabled = true } = {}) {
+export function pushQuantum(
+  state: SuppressorState,
+  input: Float32Array | null,
+  output: Float32Array,
+  { enabled = true }: { enabled?: boolean } = {},
+): void {
   const { window: win, input: inBuf, overlap, re, im, mags, floor, gains, previous } = state;
 
   // Desliza a janela: os 384 mais recentes descem, o quantum novo entra no fim.
   inBuf.copyWithin(0, HOP_SIZE);
-  const available = input ? Math.min(HOP_SIZE, input.length) : 0;
+  // `src` em vez de testar `input` duas vezes: com o buffer vazio, `available`
+  // dá 0 e o laço escreve zeros — exatamente o que o `input ? … : 0` fazia.
+  const src = input ?? SEM_ENTRADA;
+  const available = Math.min(HOP_SIZE, src.length);
   const base = FFT_SIZE - HOP_SIZE;
-  for (let i = 0; i < HOP_SIZE; i += 1) inBuf[base + i] = i < available ? input[i] : 0;
+  for (let i = 0; i < HOP_SIZE; i += 1) inBuf[base + i] = i < available ? src[i] : 0;
 
   for (let i = 0; i < FFT_SIZE; i += 1) {
     re[i] = inBuf[i] * win[i];
@@ -390,14 +470,26 @@ export function pushQuantum(state, input, output, { enabled = true } = {}) {
 // Fora do worklet (`node:test`, bundler) a base é uma classe vazia: o arquivo
 // precisa **avaliar** nos dois mundos, e é só no worklet que a classe base
 // existe.
-const ProcessorBase = typeof AudioWorkletProcessor === 'function' ? AudioWorkletProcessor : class {};
+const ProcessorBase: typeof AudioWorkletProcessor =
+  typeof AudioWorkletProcessor === 'function'
+    ? AudioWorkletProcessor
+    // A classe vazia não tem `port`, e não precisa ter: fora do worklet nada
+    // chama `process`. O cast é a única forma de dizer isso ao compilador,
+    // porque `AudioWorkletProcessor` só existe no AudioWorkletGlobalScope.
+    : (class {} as unknown as typeof AudioWorkletProcessor);
 
 // `sampleRate` é global no escopo do `AudioWorkletGlobalScope`, e só lá — não é
 // um global de `window`, então o lint precisa ser avisado.
 /* global sampleRate */
 
 export class NoiseSuppressorProcessor extends ProcessorBase {
-  constructor(options) {
+  state: SuppressorState;
+  enabled: boolean;
+  /** Pré-alocados: nenhuma alocação pode acontecer dentro de `process`. */
+  silence: Float32Array;
+  mono: Float32Array;
+
+  constructor(options?: AudioWorkletNodeOptions) {
     super(options);
     // `sampleRate` é global no escopo do worklet; fora dele, 48 kHz é só um
     // valor de partida que nenhum caminho real usa.
@@ -406,13 +498,15 @@ export class NoiseSuppressorProcessor extends ProcessorBase {
     // Pré-alocados: nenhuma alocação pode acontecer dentro de `process`.
     this.silence = new Float32Array(HOP_SIZE);
     this.mono = new Float32Array(HOP_SIZE);
-    this.port.onmessage = (event) => {
-      const data = event?.data;
-      if (data && data.type === 'enabled') this.enabled = !!data.value;
+    this.port.onmessage = (event: MessageEvent) => {
+      const data: unknown = event?.data;
+      if (data && typeof data === 'object' && 'type' in data && data.type === 'enabled') {
+        this.enabled = (data as { value?: unknown }).value !== false;
+      }
     };
   }
 
-  process(inputs, outputs) {
+  process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
     const output = outputs[0];
     // Sem saída não há o que fazer — mas **nunca** retornar false: o navegador
     // coletaria o nó e o áudio sumiria sem erro nenhum.
