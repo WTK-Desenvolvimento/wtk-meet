@@ -92,14 +92,18 @@ export interface ScreenLike {
   [campo: string]: unknown;
 }
 
-/** Uma miniatura da coluna. `key` é a identidade usada no congelamento. */
+/**
+ * Uma miniatura da coluna, do ponto de vista **deste** módulo: só os quatro
+ * campos que a ordenação olha, mais a chave. Sem assinatura de índice, para que
+ * o genérico de `orderRailItems` aceite o tipo concreto de quem chama (o `Tile`
+ * do `VideoTile`) e o devolva intacto.
+ */
 export interface RailItem {
   key: string;
   screenId?: string | null;
   audioId?: string | null;
   sharing?: boolean;
   local?: boolean;
-  [campo: string]: unknown;
 }
 
 /**

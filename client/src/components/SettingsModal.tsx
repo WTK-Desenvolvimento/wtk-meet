@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createLevelMeter } from '../lib/audioLevels.js';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { createLevelMeter, type LevelMeter } from '../lib/audioLevels.js';
 import {
   DEFAULT_PREFERENCES,
   buildConstraints,
   isSinkIdSupported,
   listDevices,
   resolvePreferredDevice,
+  type DeviceIdKey,
+  type DeviceOption,
+  type DevicePreferences,
 } from '../lib/devices.js';
-import { MODE, noiseConstraints } from '../lib/noiseSuppression.js';
+import { MODE, noiseConstraints, type NoiseMode } from '../lib/noiseSuppression.js';
 
 const SINK_UNSUPPORTED_HINT =
   'Este navegador não permite escolher a saída de áudio pela página. ' +
@@ -49,6 +52,15 @@ const NOISE_HINT = {
  *    clique: desmontar por navegação (escolher na Home e entrar na sala) limpa
  *    igual a fechar pelo botão. Por isso o pai monta com `{open && <Modal/>}`.
  */
+/**
+ * A seleção que o modal devolve: as preferências de hardware **mais** a de
+ * supressão de ruído, que mora em outra chave de storage. O modal entrega uma
+ * seleção só; quem separa é o pai (ver o cabeçalho acima).
+ */
+export interface PendingPreferences extends DevicePreferences {
+  noiseSuppression: boolean;
+}
+
 export default function SettingsModal({
   preferences = DEFAULT_PREFERENCES,
   noiseSuppression = true,
@@ -59,11 +71,25 @@ export default function SettingsModal({
   videoPreview = true,
   onDeviceLost,
   busy = false,
+}: {
+  preferences?: Partial<DevicePreferences> | null;
+  noiseSuppression?: boolean;
+  noiseMode?: NoiseMode;
+  onSave: (selecao: PendingPreferences) => void;
+  onClose: () => void;
+  /**
+   * O contexto compartilhado da sala, ou uma função que o devolve. Os dois
+   * formatos existem: a Home passa o contexto direto, o `Room` passa o getter.
+   */
+  audioContext?: AudioContext | (() => AudioContext | null) | null;
+  videoPreview?: boolean;
+  onDeviceLost?: (label: string) => void;
+  busy?: boolean;
 }) {
   // A supressão entra no mesmo objeto pendente das preferências de hardware,
   // ainda que more em outra chave de storage: o modal devolve uma seleção só, e
   // é o pai quem separa o que vai para cada chave.
-  const [pending, setPending] = useState(() => ({
+  const [pending, setPending] = useState<PendingPreferences>(() => ({
     ...DEFAULT_PREFERENCES,
     ...preferences,
     noiseSuppression,
@@ -73,10 +99,10 @@ export default function SettingsModal({
   const [level, setLevel] = useState(0);
   const [previewError, setPreviewError] = useState('');
 
-  const videoRef = useRef(null);
-  const firstFieldRef = useRef(null);
-  const streamRef = useRef(null);
-  const meterRef = useRef(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const firstFieldRef = useRef<HTMLSelectElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const meterRef = useRef<LevelMeter | null>(null);
   // Espelho para uso dentro de handlers registrados uma única vez.
   const onDeviceLostRef = useRef(onDeviceLost);
   onDeviceLostRef.current = onDeviceLost;
@@ -89,7 +115,7 @@ export default function SettingsModal({
    * que não existe mais o faria exibir o primeiro item sem que o estado mudasse.
    */
   const refreshDevices = useCallback(async () => {
-    let raw = [];
+    let raw: MediaDeviceInfo[] = [];
     try {
       raw = await navigator.mediaDevices.enumerateDevices();
     } catch {
@@ -101,7 +127,7 @@ export default function SettingsModal({
     setPending((prev) => {
       const next = { ...prev };
       let lostLabel = '';
-      const check = (key, list, label) => {
+      const check = (key: DeviceIdKey, list: DeviceOption[], label: string) => {
         if (!prev[key]) return;
         if (resolvePreferredDevice(list, prev[key]).fellBack) {
           next[key] = '';
@@ -211,7 +237,8 @@ export default function SettingsModal({
     const opener = document.activeElement;
     firstFieldRef.current?.focus();
     return () => {
-      if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();
+      // `activeElement` é `Element`; só `HTMLElement` tem `focus`.
+      if (opener && opener.isConnected && opener instanceof HTMLElement) opener.focus();
     };
   }, []);
 
@@ -219,7 +246,7 @@ export default function SettingsModal({
   // aberto, o handler dele (que é em captura) atende primeiro — quem tem alguém
   // esperando do outro lado tem prioridade.
   useEffect(() => {
-    const onKeyDown = (event) => {
+    const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
       onClose?.();
@@ -228,7 +255,7 @@ export default function SettingsModal({
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
 
-  const select = (key) => (event) => {
+  const select = (key: DeviceIdKey) => (event: ChangeEvent<HTMLSelectElement>) => {
     const { value } = event.target;
     setPending((prev) => ({ ...prev, [key]: value }));
   };
@@ -237,7 +264,12 @@ export default function SettingsModal({
     onSave?.({ ...pending });
   };
 
-  const renderSelect = (key, label, list, extra = {}) => (
+  const renderSelect = (
+    key: DeviceIdKey,
+    label: string,
+    list: DeviceOption[],
+    extra: Record<string, unknown> = {},
+  ) => (
     <label className="settings-field">
       <span>{label}</span>
       <select
@@ -246,7 +278,7 @@ export default function SettingsModal({
         ref={key === 'videoInputId' ? firstFieldRef : null}
         {...extra}
       >
-        {list.map((device) => (
+        {list.map((device: DeviceOption) => (
           <option key={device.deviceId || 'default'} value={device.deviceId}>
             {device.label}
           </option>

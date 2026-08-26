@@ -196,7 +196,9 @@ function constraintFor(
  * pureza que torna `devices.test.mjs` executável em `node:test`.
  */
 export function buildConstraints(
-  prefs: DevicePreferences | null | undefined,
+  // `Partial`: o lobby chama com `{ videoInputId }` só, e é legítimo — os
+  // outros campos não participam da montagem das constraints.
+  prefs: Partial<DevicePreferences> | null | undefined,
   {
     video = false,
     audio = false,
@@ -205,8 +207,8 @@ export function buildConstraints(
 ): { video: MediaConstraint; audio: MediaConstraint } {
   const safe = prefs || DEFAULT_PREFERENCES;
   return {
-    video: constraintFor(video, safe.videoInputId),
-    audio: constraintFor(audio, safe.audioInputId, audioProcessing),
+    video: constraintFor(video, safe.videoInputId ?? ''),
+    audio: constraintFor(audio, safe.audioInputId ?? '', audioProcessing),
   };
 }
 

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { formatDuration } from '../lib/musicSources.js';
+import type { Playback, QueueEntry } from '../lib/musicSession.js';
 
 /**
  * Painel do player colaborativo — faixa atual, fila e o formulário de adicionar.
@@ -35,10 +36,31 @@ export default function MusicPanel({
   audioBlocked,
   onUnlock,
   selfId,
+}: {
+  queue: QueueEntry[];
+  currentEntry: QueueEntry | null;
+  playback: Playback;
+  position: number;
+  isOwner: boolean;
+  volume: number;
+  onVolume: (value: number) => void;
+  onClose: () => void;
+  /** `input` é `null` quando a faixa vem de um arquivo escolhido no disco. */
+  onAdd: (input: string | null, file: File | null) => Promise<boolean>;
+  onRemove: (entryId: string) => void;
+  onPause: () => void;
+  onResume: () => void;
+  onSkip: () => void;
+  youtubeEnabled: boolean;
+  notice: string | null;
+  onDismissNotice?: () => void;
+  audioBlocked: boolean;
+  onUnlock: () => void;
+  selfId: string;
 }) {
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
-  const fileInputRef = useRef(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!notice) return undefined;
@@ -46,7 +68,7 @@ export default function MusicPanel({
     return () => clearTimeout(timer);
   }, [notice, onDismissNotice]);
 
-  async function handleSubmit(event) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const value = draft.trim();
     if (!value || busy) return;
@@ -56,7 +78,7 @@ export default function MusicPanel({
     if (ok) setDraft('');
   }
 
-  async function handleFile(event) {
+  async function handleFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     // Limpa o input antes de qualquer await: escolher o mesmo arquivo duas
     // vezes seguidas não dispara `change` se o valor continuar lá.

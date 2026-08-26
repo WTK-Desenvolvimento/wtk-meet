@@ -43,6 +43,12 @@ export interface ChatMessage {
   author: string;
   text: string;
   sentAt: number;
+  /**
+   * Marcado só no eco local (`Room` acrescenta ao ecoar a própria mensagem).
+   * Nunca trafega: `createChatMessage` não o produz e `sanitizeIncomingMessage`
+   * não o lê.
+   */
+  mine?: boolean;
 }
 
 export function createChatMessage({

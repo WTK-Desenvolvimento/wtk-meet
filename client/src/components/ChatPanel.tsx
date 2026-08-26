@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { formatTime, MAX_MESSAGE_LENGTH } from '../lib/chat.js';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { formatTime, MAX_MESSAGE_LENGTH, type ChatMessage } from '../lib/chat.js';
 
 /**
  * Painel de chat da sala. As mensagens chegam e saem pelos data channels P2P
@@ -7,10 +7,20 @@ import { formatTime, MAX_MESSAGE_LENGTH } from '../lib/chat.js';
  * servidor de sinalização e não escreve nada em storage — o histórico é só a
  * prop `messages`, que vive no estado do `Room` e morre com ele.
  */
-export default function ChatPanel({ messages, onSend, onClose, peerCount }) {
+export default function ChatPanel({
+  messages,
+  onSend,
+  onClose,
+  peerCount,
+}: {
+  messages: ChatMessage[];
+  onSend: (text: string) => void;
+  onClose: () => void;
+  peerCount: number;
+}) {
   const [draft, setDraft] = useState('');
-  const listRef = useRef(null);
-  const inputRef = useRef(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -21,7 +31,7 @@ export default function ChatPanel({ messages, onSend, onClose, peerCount }) {
     if (list) list.scrollTop = list.scrollHeight;
   }, [messages]);
 
-  function handleSubmit(event) {
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const text = draft.trim();
     if (!text) return;

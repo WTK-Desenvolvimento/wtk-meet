@@ -17,10 +17,24 @@ const DEFAULT_HINT = 'Cada pedido precisa de uma decisão: Aprovar ou Negar.';
  * acidental deixaria alguém esperando indefinidamente do outro lado. As duas
  * tentativas recebem uma resposta explícita em vez de silêncio.
  */
-export default function JoinRequestModal({ requests, onApprove, onDeny }) {
-  const approveRef = useRef(null);
-  const openerRef = useRef(null);
-  const [hint, setHint] = useState(null);
+/** Um pedido de entrada aguardando decisão. */
+export interface JoinRequest {
+  requesterId: string;
+  displayName: string;
+}
+
+export default function JoinRequestModal({
+  requests,
+  onApprove,
+  onDeny,
+}: {
+  requests: JoinRequest[];
+  onApprove: (requesterId: string) => void;
+  onDeny: (requesterId: string) => void;
+}) {
+  const approveRef = useRef<HTMLButtonElement | null>(null);
+  const openerRef = useRef<Element | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
 
   const open = requests.length > 0;
   const firstId = open ? requests[0].requesterId : null;
@@ -35,7 +49,9 @@ export default function JoinRequestModal({ requests, onApprove, onDeny }) {
     setHint(null);
     return () => {
       openerRef.current = null;
-      if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();
+      // `activeElement` é `Element`; só `HTMLElement` tem `focus`, e o `typeof`
+      // abaixo é a checagem que já existia — aqui ela também estreita o tipo.
+      if (opener && opener.isConnected && opener instanceof HTMLElement) opener.focus();
     };
   }, [open]);
 
@@ -47,7 +63,7 @@ export default function JoinRequestModal({ requests, onApprove, onDeny }) {
 
   useEffect(() => {
     if (!open) return undefined;
-    const onKeyDown = (event) => {
+    const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       // Captura: nenhum outro handler chega a interpretar esse Esc como "fechar".
       event.preventDefault();
@@ -78,7 +94,7 @@ export default function JoinRequestModal({ requests, onApprove, onDeny }) {
         <h2 id="join-request-title">{title}</h2>
 
         <ul className="join-request-list">
-          {requests.map((request, index) => (
+          {requests.map((request: JoinRequest, index: number) => (
             <li key={request.requesterId} className="join-request">
               <span className="join-request-name">
                 <strong>{request.displayName}</strong> quer entrar na sala

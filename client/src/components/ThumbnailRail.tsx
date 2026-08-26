@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import VideoTile from './VideoTile.jsx';
+import { useCallback, useEffect, useRef, useState, type UIEvent } from 'react';
+import VideoTile, { type Tile } from './VideoTile.jsx';
+import type { LevelSnapshot } from '../lib/audioLevels.js';
 import { orderRailItems } from '../lib/spotlightLayout.js';
 
 /**
@@ -26,8 +27,15 @@ export default function ThumbnailRail({
   onSelectScreen,
   className = 'thumb-rail',
   scrolls = false,
+}: {
+  items: Tile[];
+  audioLevels?: LevelSnapshot;
+  spotlightId?: string | null;
+  onSelectScreen?: (screenId: string) => void;
+  className?: string;
+  scrolls?: boolean;
 }) {
-  const previousOrderRef = useRef([]);
+  const previousOrderRef = useRef<string[]>([]);
   // Reordenar a coluna enquanto o usuário rolou para olhar alguém no fim da
   // lista move o conteúdo debaixo da mão dele. Fora do topo, a ordem congela.
   const [frozen, setFrozen] = useState(false);
@@ -49,7 +57,7 @@ export default function ThumbnailRail({
     previousOrderRef.current = ordered.map((item) => item.key);
   });
 
-  const handleScroll = useCallback((event) => {
+  const handleScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
     const atTop = event.currentTarget.scrollTop <= 4;
     setFrozen((prev) => (prev === !atTop ? prev : !atTop));
   }, []);
@@ -97,7 +105,7 @@ export default function ThumbnailRail({
             className={`thumb-item thumb-select${item.spotlighted ? ' spotlighted' : ''}`}
             aria-pressed={pressed}
             aria-label={`Ver a tela de ${item.owner || 'participante'} em destaque`}
-            onClick={() => onSelectScreen?.(item.screenId)}
+            onClick={() => onSelectScreen?.(item.screenId!)}
           >
             {tile}
           </button>

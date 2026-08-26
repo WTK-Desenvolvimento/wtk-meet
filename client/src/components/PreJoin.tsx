@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import VideoTile from './VideoTile.jsx';
-import { DEFAULT_PREFERENCES, buildConstraints } from '../lib/devices.js';
+import { DEFAULT_PREFERENCES, buildConstraints, type DevicePreferences } from '../lib/devices.js';
 
 const PREVIEW_ERROR =
   'Não foi possível abrir a câmera para o preview. Você ainda pode entrar na sala — ' +
@@ -47,9 +47,21 @@ export default function PreJoin({
   onOpenSettings,
   onPreviewError,
   previewError = null,
+}: {
+  preferences?: Partial<DevicePreferences> | null;
+  nameInput?: string;
+  onNameChange: (value: string) => void;
+  cameraOn?: boolean;
+  onToggleCamera?: (ligada: boolean) => void;
+  previewPaused?: boolean;
+  /** Recebe o nome já aparado — não o evento. */
+  onSubmit?: (displayName: string) => void;
+  onOpenSettings: () => void;
+  onPreviewError?: (message: string | null) => void;
+  previewError?: string | null;
 }) {
-  const [previewStream, setPreviewStream] = useState(null);
-  const streamRef = useRef(null);
+  const [previewStream, setPreviewStream] = useState<MediaStream | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   // Espelho: usado dentro do efeito sem entrar nas deps dele — o pai passa uma
   // função nova a cada render, e reiniciar a câmera por isso faria o preview
   // piscar a cada tecla digitada no campo de nome.
@@ -101,7 +113,7 @@ export default function PreJoin({
 
   const trimmed = nameInput.trim();
 
-  const handleSubmit = (event) => {
+  const handleSubmit = (event: { preventDefault: () => void }) => {
     event.preventDefault();
     if (!trimmed) return;
     onSubmit?.(trimmed);

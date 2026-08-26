@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import VideoTile from './VideoTile.jsx';
+import VideoTile, { type Tile } from './VideoTile.jsx';
+import type { LevelSnapshot } from '../lib/audioLevels.js';
 import { computeGridLayout, GRID_GAP } from '../lib/gridLayout.js';
 
 /**
@@ -13,8 +14,14 @@ import { computeGridLayout, GRID_GAP } from '../lib/gridLayout.js';
  * medida. O `setState` também só dispara quando as dimensões inteiras mudam —
  * comparar float faria o subpixel de scrollbar/zoom oscilar para sempre.
  */
-export default function VideoGrid({ tiles, audioLevels }) {
-  const stageRef = useRef(null);
+export default function VideoGrid({
+  tiles,
+  audioLevels,
+}: {
+  tiles: Tile[];
+  audioLevels: LevelSnapshot;
+}) {
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const [box, setBox] = useState({ width: 0, height: 0 });
 
   useEffect(() => {

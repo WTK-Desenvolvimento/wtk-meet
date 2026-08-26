@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import VideoTile from './VideoTile.jsx';
+import VideoTile, { type Tile } from './VideoTile.jsx';
+import type { LevelSnapshot } from '../lib/audioLevels.js';
 import ThumbnailRail from './ThumbnailRail.jsx';
 import { computeSpotlightLayout } from '../lib/spotlightLayout.js';
 import { GRID_GAP } from '../lib/gridLayout.js';
@@ -27,10 +28,16 @@ export default function SpotlightStage({
   thumbnails,
   audioLevels,
   onSelectScreen,
+}: {
+  /** Nunca nulo: o `Room` só monta o palco quando há uma tela em destaque. */
+  spotlight: Tile;
+  thumbnails: Tile[];
+  audioLevels: LevelSnapshot;
+  onSelectScreen?: (screenId: string) => void;
 }) {
-  const stageRef = useRef(null);
-  const panelRef = useRef(null);
-  const toggleRef = useRef(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const toggleRef = useRef<HTMLButtonElement | null>(null);
   const [box, setBox] = useState({ width: 0, height: 0 });
   const [panelOpen, setPanelOpen] = useState(false);
 
@@ -74,14 +81,16 @@ export default function SpotlightStage({
   useEffect(() => {
     if (!panelOpen) return undefined;
 
-    const onKeyDown = (event) => {
+    const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       closePanel();
       toggleRef.current?.focus();
     };
-    const onPointerDown = (event) => {
-      if (panelRef.current?.contains(event.target)) return;
-      if (toggleRef.current?.contains(event.target)) return; // o próprio botão alterna
+    const onPointerDown = (event: PointerEvent) => {
+      // `target` é `EventTarget`; só um `Node` pode estar contido num elemento.
+      const alvo = event.target instanceof Node ? event.target : null;
+      if (panelRef.current?.contains(alvo)) return;
+      if (toggleRef.current?.contains(alvo)) return; // o próprio botão alterna
       closePanel();
     };
 

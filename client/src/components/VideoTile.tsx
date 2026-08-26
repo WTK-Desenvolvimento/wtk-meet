@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import type { ConnectionDescription } from '../lib/peerConnectionStatus.js';
 
 /**
  * Um tile de vídeo. Serve tanto para câmera quanto para compartilhamento de
@@ -26,6 +27,39 @@ import { useEffect, useRef, useState } from 'react';
  * `.video-label`, e escrever "Sem conexão" ali quebraria checagens que não têm
  * nada a ver com o assunto.
  */
+/** O que o tile mostra sobre a conexão. `null` é o caminho feliz. */
+export interface VideoTileProps {
+  stream?: MediaStream | null;
+  label?: string;
+  mirrored?: boolean;
+  contain?: boolean;
+  compact?: boolean;
+  speaking?: boolean;
+  level?: number;
+  cameraOff?: boolean;
+  micOff?: boolean;
+  badge?: ReactNode;
+  connection?: ConnectionDescription | null;
+}
+
+/**
+ * Um tile como a grade e a coluna o manipulam: as props do `VideoTile` mais a
+ * identidade que o `Room` atribui. Mora aqui porque é a forma que este
+ * componente consome — `VideoGrid`, `ThumbnailRail` e `SpotlightStage` só a
+ * repassam.
+ */
+export interface Tile extends VideoTileProps {
+  key: string;
+  /** Chave do medidor de áudio; ausente quando o tile não tem som próprio. */
+  audioId?: string | null;
+  /** Preenchido quando o tile é uma tela compartilhada. */
+  screenId?: string | null;
+  owner?: string;
+  spotlighted?: boolean;
+  local?: boolean;
+  sharing?: boolean;
+}
+
 export default function VideoTile({
   stream,
   label,
@@ -38,8 +72,8 @@ export default function VideoTile({
   micOff = false,
   badge = null,
   connection = null,
-}) {
-  const videoRef = useRef(null);
+}: VideoTileProps) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   /**
    * O stream tem track de vídeo **agora**?
    *
@@ -93,6 +127,8 @@ export default function VideoTile({
         `video-tile${speaking ? ' speaking' : ''}${contain ? ' contain' : ''}` +
         `${compact ? ' compact' : ''}${connection ? ` conn-${connection.level}` : ''}`
       }
+      // Variável CSS: a tipagem de `style` do React não a conhece, e é para
+      // isso que o `CSSProperties` estendido em `src/types/css-vars.d.ts` serve.
       style={{ '--speak-level': level.toFixed(2) }}
     >
       {/* O <video> nunca é escondido com `display:none`: o placeholder é uma

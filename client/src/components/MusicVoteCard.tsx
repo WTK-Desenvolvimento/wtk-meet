@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { remainingMs, tally } from '../lib/musicVote.js';
+import { remainingMs, tally, type Vote, type VoteChoice } from '../lib/musicVote.js';
 
 /**
  * Card de votação da sala — ligar o player, ou pular a faixa corrente.
@@ -22,7 +22,17 @@ import { remainingMs, tally } from '../lib/musicVote.js';
  * clique nenhum, "clique fora" não significa "quis fechar" — significa apenas
  * "usou a sala".
  */
-export default function MusicVoteCard({ vote, myVote, onVote, onClose }) {
+export default function MusicVoteCard({
+  vote,
+  myVote,
+  onVote,
+  onClose,
+}: {
+  vote: Vote | null;
+  myVote: VoteChoice | null;
+  onVote: (choice: VoteChoice) => void;
+  onClose?: () => void;
+}) {
   const [remaining, setRemaining] = useState(() => remainingMs(vote, performance.now()));
 
   useEffect(() => {
@@ -38,7 +48,7 @@ export default function MusicVoteCard({ vote, myVote, onVote, onClose }) {
 
   useEffect(() => {
     if (!vote) return undefined;
-    const onKeyDown = (event) => {
+    const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose?.();
     };
     window.addEventListener('keydown', onKeyDown);
@@ -49,7 +59,9 @@ export default function MusicVoteCard({ vote, myVote, onVote, onClose }) {
 
   const result = tally(vote);
   const seconds = Math.ceil(remaining / 1000);
-  const decided = !!vote.result;
+  // Guardado em vez de `!!vote.result`: assim o `if` abaixo estreita o campo,
+  // e as duas leituras do resultado dispensam asserção.
+  const decided = vote.result;
 
   return (
     <aside className="music-vote-card" role="region" aria-label="Votação de música">
@@ -81,8 +93,8 @@ export default function MusicVoteCard({ vote, myVote, onVote, onClose }) {
       </p>
 
       {decided ? (
-        <p className={`music-vote-result${vote.result.approved ? ' approved' : ''}`}>
-          {vote.result.approved ? 'Aprovado.' : 'Reprovado.'}
+        <p className={`music-vote-result${decided.approved ? ' approved' : ''}`}>
+          {decided.approved ? 'Aprovado.' : 'Reprovado.'}
         </p>
       ) : (
         <>
