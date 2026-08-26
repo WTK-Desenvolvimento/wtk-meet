@@ -22,7 +22,44 @@
 
 export const STORAGE_KEY = 'wtk-meet:devices';
 
-export const DEFAULT_PREFERENCES = {
+/** Os três `kind` de `MediaDeviceInfo` que este produto usa. */
+export type DeviceKind = 'videoinput' | 'audioinput' | 'audiooutput';
+
+/** As três chaves de preferência que guardam um `deviceId`. */
+export type DeviceIdKey = 'videoInputId' | 'audioInputId' | 'audioOutputId';
+
+/** O que fica em `localStorage` sob `wtk-meet:devices`. */
+export interface DevicePreferences {
+  videoInputId: string;
+  audioInputId: string;
+  audioOutputId: string;
+  soundsEnabled: boolean;
+  startCameraOff: boolean;
+}
+
+/** Uma opção de device já normalizada e rotulada, pronta para o `<select>`. */
+export interface DeviceOption {
+  deviceId: string;
+  label: string;
+  groupId: string;
+}
+
+export interface DeviceLists {
+  videoInputs: DeviceOption[];
+  audioInputs: DeviceOption[];
+  audioOutputs: DeviceOption[];
+}
+
+/** Uma `Storage` mínima: só o que este módulo chama, e tudo opcional. */
+export interface PreferenceStorage {
+  getItem?(key: string): string | null;
+  setItem?(key: string, value: string): void;
+}
+
+/** O ramo de `video`/`audio` de um `MediaStreamConstraints`, como este módulo o monta. */
+export type MediaConstraint = boolean | Record<string, unknown>;
+
+export const DEFAULT_PREFERENCES: DevicePreferences = {
   videoInputId: '',
   audioInputId: '',
   audioOutputId: '',
@@ -44,30 +81,32 @@ export const DEFAULT_DEVICE_LABEL = 'Padrão do sistema';
  */
 const RESERVED_IDS = new Set(['default', 'communications']);
 
-const KIND_LABEL = {
+const KIND_LABEL: Record<DeviceKind, string> = {
   videoinput: 'Câmera',
   audioinput: 'Microfone',
   audiooutput: 'Saída',
 };
 
-const KIND_TO_PREF = {
+const KIND_TO_PREF: Record<string, DeviceIdKey | undefined> = {
   videoinput: 'videoInputId',
   audioinput: 'audioInputId',
   audiooutput: 'audioOutputId',
 };
 
-const ID_KEYS = ['videoInputId', 'audioInputId', 'audioOutputId'];
+const ID_KEYS: DeviceIdKey[] = ['videoInputId', 'audioInputId', 'audioOutputId'];
 
-function defaultOption() {
+function defaultOption(): DeviceOption {
   return { deviceId: '', label: DEFAULT_DEVICE_LABEL, groupId: '' };
 }
 
-function normalizeKind(raw, kind) {
-  const seenIds = new Set();
-  const seenSignatures = new Set();
-  const out = [];
+function normalizeKind(raw: readonly unknown[], kind: DeviceKind): DeviceOption[] {
+  const seenIds = new Set<string>();
+  const seenSignatures = new Set<string>();
+  const out: DeviceOption[] = [];
 
-  for (const device of raw) {
+  for (const bruto of raw) {
+    // Vem de `enumerateDevices`, mas o teste injeta objetos crus: nada é assumido.
+    const device = bruto as Partial<MediaDeviceInfo> | null;
     if (!device || device.kind !== kind) continue;
     const deviceId = typeof device.deviceId === 'string' ? device.deviceId : '';
     // Sem permissão concedida, `enumerateDevices` devolve entradas vazias:
@@ -103,8 +142,8 @@ function normalizeKind(raw, kind) {
  * aliases reservados, deduplica, rotula e prepende "Padrão do sistema" às três
  * listas.
  */
-export function listDevices(raw) {
-  const list = Array.isArray(raw) ? raw : [];
+export function listDevices(raw: unknown): DeviceLists {
+  const list: readonly unknown[] = Array.isArray(raw) ? raw : [];
   return {
     videoInputs: normalizeKind(list, 'videoinput'),
     audioInputs: normalizeKind(list, 'audioinput'),
@@ -117,13 +156,23 @@ export function listDevices(raw) {
  * — default do sistema"; `fellBack` diz que o id salvo não existe mais e
  * autoriza quem chamou a regravar a preferência.
  */
-export function resolvePreferredDevice(list, savedId) {
+export function resolvePreferredDevice(
+  list: unknown,
+  savedId: unknown,
+): { deviceId: string; fellBack: boolean } {
   if (!savedId || typeof savedId !== 'string') return { deviceId: '', fellBack: false };
-  const found = (Array.isArray(list) ? list : []).some((d) => d && d.deviceId === savedId);
+  const candidatos: readonly unknown[] = Array.isArray(list) ? list : [];
+  const found = candidatos.some(
+    (d) => !!d && (d as { deviceId?: unknown }).deviceId === savedId,
+  );
   return found ? { deviceId: savedId, fellBack: false } : { deviceId: '', fellBack: true };
 }
 
-function constraintFor(wanted, deviceId, extra = null) {
+function constraintFor(
+  wanted: boolean,
+  deviceId: string,
+  extra: Record<string, unknown> | null = null,
+): MediaConstraint {
   if (!wanted) return false;
   // `ideal`, nunca `exact`: um device que sumiu entre o enumerateDevices e o
   // getUserMedia daria OverconstrainedError com `exact`, e a aplicação teria que
@@ -146,7 +195,14 @@ function constraintFor(wanted, deviceId, extra = null) {
  * `if (getSupportedConstraints().noiseSuppression)` — quebraria justamente a
  * pureza que torna `devices.test.mjs` executável em `node:test`.
  */
-export function buildConstraints(prefs, { video = false, audio = false, audioProcessing = null } = {}) {
+export function buildConstraints(
+  prefs: DevicePreferences | null | undefined,
+  {
+    video = false,
+    audio = false,
+    audioProcessing = null,
+  }: { video?: boolean; audio?: boolean; audioProcessing?: Record<string, unknown> | null } = {},
+): { video: MediaConstraint; audio: MediaConstraint } {
   const safe = prefs || DEFAULT_PREFERENCES;
   return {
     video: constraintFor(video, safe.videoInputId),
@@ -173,12 +229,16 @@ export function buildConstraints(prefs, { video = false, audio = false, audioPro
  * ramos: sem ela, um headset que ficou em outra máquina faria a pessoa entrar
  * sem áudio nenhum — e nada disso pode virar erro na tela.
  */
-export function initialMediaPlan(prefs, { audioProcessing = null } = {}) {
+export function initialMediaPlan(
+  prefs: DevicePreferences | null | undefined,
+  { audioProcessing = null }: { audioProcessing?: Record<string, unknown> | null } = {},
+): { wantsVideo: boolean; cameraOff: boolean; attempts: { video: MediaConstraint; audio: MediaConstraint }[] } {
   const safe = prefs || DEFAULT_PREFERENCES;
   // Só um `false` explícito pede vídeo. Preferência ausente, gravada por versão
   // anterior ou com tipo errado já chegou aqui como `true` via `sanitize`.
   const wantsVideo = safe.startCameraOff === false;
-  const withPreference = (video) => buildConstraints(safe, { video, audio: true, audioProcessing });
+  const withPreference = (video: boolean) =>
+    buildConstraints(safe, { video, audio: true, audioProcessing });
 
   return {
     wantsVideo,
@@ -191,17 +251,20 @@ export function initialMediaPlan(prefs, { audioProcessing = null } = {}) {
   };
 }
 
-function sanitize(candidate) {
-  const out = { ...DEFAULT_PREFERENCES };
+function sanitize(candidate: unknown): DevicePreferences {
+  const out: DevicePreferences = { ...DEFAULT_PREFERENCES };
   if (!candidate || typeof candidate !== 'object') return out;
+  // Vem do storage (ou de uma versão futura do produto): lido campo a campo.
+  const bruto = candidate as Partial<Record<keyof DevicePreferences, unknown>>;
   for (const key of ID_KEYS) {
-    if (typeof candidate[key] === 'string') out[key] = candidate[key];
+    const valor = bruto[key];
+    if (typeof valor === 'string') out[key] = valor;
   }
-  if (typeof candidate.soundsEnabled === 'boolean') out.soundsEnabled = candidate.soundsEnabled;
+  if (typeof bruto.soundsEnabled === 'boolean') out.soundsEnabled = bruto.soundsEnabled;
   // Só booleano de verdade. Copiar sem checar faria um `undefined` gravado
   // virar `undefined` lido, e `!undefined` acenderia a câmera — o oposto do
   // requisito.
-  if (typeof candidate.startCameraOff === 'boolean') out.startCameraOff = candidate.startCameraOff;
+  if (typeof bruto.startCameraOff === 'boolean') out.startCameraOff = bruto.startCameraOff;
   return out;
 }
 
@@ -210,7 +273,7 @@ function sanitize(candidate) {
  * lançando (modo privado), JSON inválido, chave inexistente ou tipos errados
  * caem todos nos defaults. Chaves desconhecidas são descartadas.
  */
-export function readPreferences(storage) {
+export function readPreferences(storage?: PreferenceStorage | null): DevicePreferences {
   try {
     const raw = storage?.getItem?.(STORAGE_KEY);
     if (!raw) return { ...DEFAULT_PREFERENCES };
@@ -225,7 +288,10 @@ export function readPreferences(storage) {
  * resultado efetivo. `setItem` lançando (cota, modo privado) é engolido: a
  * preferência simplesmente não persiste e a sessão corrente continua igual.
  */
-export function writePreferences(storage, patch) {
+export function writePreferences(
+  storage: PreferenceStorage | null | undefined,
+  patch?: Partial<DevicePreferences> | null,
+): DevicePreferences {
   const next = sanitize({ ...readPreferences(storage), ...(patch || {}) });
   try {
     storage?.setItem?.(STORAGE_KEY, JSON.stringify(next));
@@ -236,7 +302,9 @@ export function writePreferences(storage, patch) {
 }
 
 /** Feature detection de roteamento de saída de áudio. */
-export function isSinkIdSupported(proto = globalThis.HTMLMediaElement?.prototype) {
+export function isSinkIdSupported(
+  proto: Partial<HTMLMediaElement> | undefined = globalThis.HTMLMediaElement?.prototype,
+): boolean {
   return typeof proto?.setSinkId === 'function';
 }
 
@@ -249,19 +317,23 @@ export function isSinkIdSupported(proto = globalThis.HTMLMediaElement?.prototype
  * fixado no device do momento: isso transformaria "siga o sistema" em uma
  * escolha concreta pelas costas do usuário.
  */
-export function reconcilePreferences(prefs, tracks) {
+export function reconcilePreferences(
+  prefs: unknown,
+  tracks: readonly (Partial<MediaStreamTrack> | null | undefined)[] | null | undefined,
+): { prefs: DevicePreferences; changed: boolean } {
   const next = sanitize(prefs);
   let changed = false;
 
   for (const track of tracks || []) {
     if (!track) continue;
-    const key = track.kind === 'video' ? 'videoInputId' : track.kind === 'audio' ? 'audioInputId' : null;
+    const key: DeviceIdKey | null =
+      track.kind === 'video' ? 'videoInputId' : track.kind === 'audio' ? 'audioInputId' : null;
     if (!key) continue;
 
     const wanted = next[key];
     if (!wanted) continue; // "padrão do sistema" continua sendo padrão do sistema
 
-    let reported;
+    let reported: string | undefined;
     try {
       reported = track.getSettings?.().deviceId;
     } catch {
@@ -281,6 +353,6 @@ export function reconcilePreferences(prefs, tracks) {
 }
 
 /** Nome da chave de preferência correspondente a um `kind` de device. */
-export function preferenceKeyForKind(kind) {
+export function preferenceKeyForKind(kind: string): DeviceIdKey | null {
   return KIND_TO_PREF[kind] || null;
 }

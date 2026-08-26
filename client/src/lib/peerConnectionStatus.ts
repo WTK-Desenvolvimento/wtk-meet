@@ -24,9 +24,21 @@
  * negociação) é do `webrtcMesh.js`, e não deste módulo.
  */
 
-const CONNECTING = { level: 'warn', label: 'Conectando…', live: 'polite' };
+/** O que o tile mostra quando há algo a dizer. `null` é o caminho feliz. */
+export interface ConnectionDescription {
+  level: 'warn' | 'bad';
+  label: string;
+  live: 'polite' | 'assertive';
+}
 
-const BY_STATE = {
+/** Um participante, do ponto de vista deste módulo: só o campo que ele toca. */
+export interface WithConnectionState {
+  connectionState?: string;
+}
+
+const CONNECTING: ConnectionDescription = { level: 'warn', label: 'Conectando…', live: 'polite' };
+
+const BY_STATE: Record<string, ConnectionDescription | null> = {
   new: CONNECTING,
   connecting: CONNECTING,
   // O único estado sem indicador: ver a decisão 1 acima.
@@ -38,18 +50,17 @@ const BY_STATE = {
 };
 
 /**
- * @param {string} [state] Um valor de `RTCPeerConnection.connectionState`.
- * @returns {{level: 'warn'|'bad', label: string, live: 'polite'|'assertive'}|null}
- *   `null` quando não há nada a dizer (conexão saudável).
+ * Traduz um valor de `RTCPeerConnection.connectionState`. Devolve `null` quando
+ * não há nada a dizer (conexão saudável).
  */
-export function describeConnection(state) {
+export function describeConnection(state?: string | null): ConnectionDescription | null {
   // Ausente é o intervalo entre o registro do participante entrar no mapa e a
   // primeira transição chegar — que é exatamente "conectando", e não "sem
   // informação". Estado desconhecido (um valor novo do navegador) cai aqui pela
   // mesma razão: o pessimismo custa um rótulo, o otimismo custa o silêncio que
   // esta entrega existe para acabar.
   if (state == null || !(state in BY_STATE)) return CONNECTING;
-  return BY_STATE[state];
+  return BY_STATE[state] ?? null;
 }
 
 /**
@@ -61,19 +72,21 @@ export function describeConnection(state) {
  * 1400 linhas elas não têm como ser exercitadas sem navegador. A função é pura —
  * devolve um `Map` novo, ou o **mesmo** `Map` quando não há o que mudar.
  *
- * @param {Map<string, object>} participants
- * @param {string} peerId
- * @param {string} connectionState
- * @returns {Map<string, object>} O mesmo `Map` quando é no-op.
+ * Devolve o **mesmo** `Map` quando é no-op.
  */
-export function applyPeerConnectionState(participants, peerId, connectionState) {
+export function applyPeerConnectionState<T extends WithConnectionState>(
+  participants: Map<string, T>,
+  peerId: string,
+  connectionState: string,
+): Map<string, T> {
   // `removePeer` fecha a `RTCPeerConnection`, e a transição para `closed` chega
   // **depois** da remoção. Sem esta guarda ela recriaria o registro de quem já
   // saiu: um tile fantasma, sem nome e sem stream. É segura porque os dois
   // caminhos de entrada (`join-approved` e `peer-joined`) inserem o registro
   // antes de `mesh.addPeer`.
   if (!participants.has(peerId)) return participants;
-  const current = participants.get(peerId);
+  // O `has` acima já garantiu a presença; o `!` só diz isso ao compilador.
+  const current = participants.get(peerId)!;
   // `connectionstatechange` repete o mesmo valor com frequência. Devolver um
   // `Map` novo a cada repetição re-renderizaria a grade inteira sem trocar um
   // pixel.

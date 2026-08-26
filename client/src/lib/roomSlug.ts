@@ -36,7 +36,7 @@ export const MAX_ROOM_PATH_LENGTH = 64;
 export const ROOM_PATH_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /** Slug aleatório, sem viés de módulo (ver comentário do alfabeto). */
-export function generateRoomSlug() {
+export function generateRoomSlug(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(ROOM_SLUG_LENGTH));
   let slug = '';
   for (const byte of bytes) slug += ROOM_SLUG_ALPHABET[byte % ROOM_SLUG_ALPHABET.length];
@@ -50,7 +50,7 @@ export function generateRoomSlug() {
  * `#` gera chave nova (ver `Room.jsx`). Duas implementações de geração de chave
  * em arquivos diferentes é o tipo de divergência que não aparece em review.
  */
-export function generatePassphrase() {
+export function generatePassphrase(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16)); // 128 bits
   return btoa(String.fromCharCode(...bytes))
     .replace(/\+/g, '-')
@@ -72,7 +72,7 @@ export function generatePassphrase() {
  * aponta para outro lugar. Quem valida tamanho é `isValidRoomPath`; quem avisa
  * é o campo da Home.
  */
-export function normalizeRoomPath(input) {
+export function normalizeRoomPath(input: unknown): string {
   if (typeof input !== 'string') return '';
   return input
     .trim()
@@ -97,18 +97,18 @@ export function normalizeRoomPath(input) {
  * "umasala". O valor que vira endereço de verdade sempre passa por
  * `normalizeRoomPath`, que apara essa ponta.
  */
-export function normalizeRoomPathInput(input) {
+export function normalizeRoomPathInput(input: unknown): string {
   const normalized = normalizeRoomPath(input);
   if (!normalized) return '';
   return /[^a-z0-9]$/.test(String(input)) ? `${normalized}-` : normalized;
 }
 
 /** Path já normalizado que serve como sala. */
-export function isValidRoomPath(path) {
+export function isValidRoomPath(path: unknown): path is string {
   return typeof path === 'string' && ROOM_PATH_PATTERN.test(path);
 }
 
 /** `${origin}/${path}#${passphrase}` — o link de convite, inteiro. */
-export function buildRoomUrl(origin, path, passphrase) {
+export function buildRoomUrl(origin: string, path: string, passphrase: string): string {
   return `${origin}/${path}#${passphrase}`;
 }

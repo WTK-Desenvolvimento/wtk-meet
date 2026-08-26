@@ -13,14 +13,14 @@
  * música em silêncio, sem erro nenhum no console.
  */
 
-let ctx = null;
+let ctx: AudioContext | null = null;
 
 /**
  * Devolve o contexto compartilhado, criando-o se preciso. O contexto nasce
  * suspenso até um gesto do usuário (política de autoplay); o `resume` é
  * tentado a cada chamada e reintentado por `resumeAudioContextOnGesture`.
  */
-export function getAudioContext() {
+export function getAudioContext(): AudioContext | null {
   const Ctor =
     typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
   if (!Ctor) return null;
@@ -37,12 +37,12 @@ export function getAudioContext() {
 }
 
 /** O contexto atual, sem criar nenhum. `null` se ainda não existe ou já fechou. */
-export function peekAudioContext() {
+export function peekAudioContext(): AudioContext | null {
   return ctx && ctx.state !== 'closed' ? ctx : null;
 }
 
 /** Retenta o `resume` no primeiro gesto do usuário. Devolve um desregistrador. */
-export function resumeAudioContextOnGesture() {
+export function resumeAudioContextOnGesture(): () => void {
   if (typeof window === 'undefined') return () => {};
   const handler = () => {
     getAudioContext();
@@ -55,7 +55,7 @@ export function resumeAudioContextOnGesture() {
 }
 
 /** Fecha o contexto compartilhado. Só a limpeza do `Room` chama isto. */
-export function closeAudioContext() {
+export function closeAudioContext(): void {
   const current = ctx;
   ctx = null;
   if (!current || current.state === 'closed') return;

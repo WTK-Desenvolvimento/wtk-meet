@@ -46,13 +46,19 @@ import { useEffect, useRef } from 'react';
  * Pura para poder ser testada sem DOM — é a regra que decide se o áudio de
  * alguém vai ou não sair pelo dispositivo escolhido.
  *
- * @param {object} params
- * @param {string} params.sinkId Preferência atual (`''` = padrão do sistema).
- * @param {boolean} params.applied Este elemento já recebeu algum sink antes?
- * @param {boolean} params.hasSetSinkId O elemento implementa `setSinkId`?
- * @returns {boolean}
  */
-export function shouldApplySink({ sinkId, applied, hasSetSinkId }) {
+export function shouldApplySink({
+  /** Preferência atual (`''` = padrão do sistema). */
+  sinkId,
+  /** Este elemento já recebeu algum sink antes? */
+  applied,
+  /** O elemento implementa `setSinkId`? */
+  hasSetSinkId,
+}: {
+  sinkId?: string;
+  applied?: boolean;
+  hasSetSinkId?: boolean;
+}): boolean {
   // Firefox não tem `setSinkId` por padrão. Chamar mesmo assim lançaria um
   // `TypeError` dentro do efeito e quebraria a montagem do elemento de áudio —
   // isto é, silêncio total: o defeito que este módulo corrige, amplificado.
@@ -70,19 +76,26 @@ export function shouldApplySink({ sinkId, applied, hasSetSinkId }) {
  * roteia a saída para o dispositivo escolhido e reproduz, reportando as duas
  * falhas possíveis em vez de engoli-las.
  *
- * @param {{current: HTMLMediaElement|null}} ref Ref do elemento de mídia.
- * @param {object} options
- * @param {MediaStream} [options.stream]
- * @param {string} [options.sinkId] Preferência de saída (`''` = padrão do sistema).
- * @param {(err: Error) => void} [options.onSinkError] Rejeição de `setSinkId`.
- * @param {() => void} [options.onBlocked] Rejeição de `play()` (autoplay barrado).
- * @param {number} [options.unlockNonce] Muda para re-tentar a reprodução de todos
- *   os elementos montados — é o clique no aviso de "o navegador bloqueou o som".
  */
+export interface AudibleMediaOptions {
+  stream?: MediaStream | null;
+  /** Preferência de saída (`''` = padrão do sistema). */
+  sinkId?: string;
+  /** Rejeição de `setSinkId`. */
+  onSinkError?: (err: unknown) => void;
+  /** Rejeição de `play()` — autoplay barrado. */
+  onBlocked?: () => void;
+  /**
+   * Muda para re-tentar a reprodução de todos os elementos montados — é o
+   * clique no aviso de "o navegador bloqueou o som".
+   */
+  unlockNonce?: number;
+}
+
 export function useAudibleMedia(
-  ref,
-  { stream, sinkId = '', onSinkError, onBlocked, unlockNonce = 0 } = {},
-) {
+  ref: { current: HTMLMediaElement | null },
+  { stream, sinkId = '', onSinkError, onBlocked, unlockNonce = 0 }: AudibleMediaOptions = {},
+): void {
   const onSinkErrorRef = useRef(onSinkError);
   onSinkErrorRef.current = onSinkError;
   const onBlockedRef = useRef(onBlocked);

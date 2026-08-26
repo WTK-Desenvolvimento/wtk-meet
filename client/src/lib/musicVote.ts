@@ -30,20 +30,85 @@ export const VOTE_DURATION_MS = 30_000;
 /** Após uma reprovação, o mesmo proponente fica em silêncio por 2 minutos. */
 export const REPROPOSE_COOLDOWN_MS = 120_000;
 
-export const VOTE_KINDS = new Set(['enable', 'skip']);
+export const VOTE_KINDS: ReadonlySet<string> = new Set(['enable', 'skip']);
+
+/** As duas modalidades de votação, e a diferença entre elas é a regra de apuração. */
+export type VoteKind = 'enable' | 'skip';
+
+/** Discrimina de verdade, sem cast: é o guard que o `createVote` usa. */
+const isVoteKind = (valor: unknown): valor is VoteKind => valor === 'enable' || valor === 'skip';
+
+/** Uma opção de voto. Qualquer outra coisa é descartada em `castVote`. */
+export type VoteChoice = 'yes' | 'no';
+
+/** Uma votação aberta, tal como cada client a mantém. */
+export interface Vote {
+  voteId: string;
+  kind: VoteKind;
+  lamport: number;
+  proposerId: string;
+  proposerName: string;
+  /** Ids dos eleitores, únicos e ordenados — a ordem é comparada entre clients. */
+  electorate: string[];
+  durationMs: number;
+  openedAt: number;
+  target: VoteTarget | null;
+  votes: Record<string, VoteChoice>;
+}
+
+/** O que a votação decide, quando decide sobre algo (uma faixa, no `skip`). */
+export interface VoteTarget {
+  entryId?: string;
+  title?: string;
+  [campo: string]: unknown;
+}
+
+export interface VoteTally {
+  yes: number;
+  no: number;
+  valid: number;
+  abstained: number;
+  electorateSize: number;
+  quorum: number;
+  quorumMet: boolean;
+  majority: number;
+  approved: boolean;
+}
+
+/** Forma publicada pelo árbitro no `music-vote-result`. */
+export interface VoteResult {
+  voteId: string;
+  kind: VoteKind;
+  approved: boolean;
+  yes: number;
+  no: number;
+  target: VoteTarget | null;
+}
+
+export interface CreateVoteInput {
+  voteId: string | number;
+  kind?: string;
+  lamport?: number;
+  proposerId?: string;
+  proposerName?: string;
+  electorate?: unknown;
+  durationMs?: number;
+  openedAt?: number;
+  target?: VoteTarget | null;
+}
 
 /** Maioria simples de um conjunto: metade + 1. */
-export function majorityOf(size) {
+export function majorityOf(size: number): number {
   return Math.floor(Math.max(0, size) / 2) + 1;
 }
 
 /** Quórum mínimo de participação: metade do eleitorado, arredondada para cima. */
-export function quorumFor(size) {
+export function quorumFor(size: number): number {
   return Math.max(1, Math.ceil(Math.max(0, size) / 2));
 }
 
-function normalizeElectorate(list) {
-  const seen = new Set();
+function normalizeElectorate(list: unknown): string[] {
+  const seen = new Set<string>();
   for (const id of Array.isArray(list) ? list : []) {
     if (typeof id === 'string' && id) seen.add(id);
   }
@@ -66,10 +131,10 @@ export function createVote({
   durationMs = VOTE_DURATION_MS,
   openedAt = 0,
   target = null,
-}) {
+}: CreateVoteInput): Vote {
   return {
     voteId: String(voteId),
-    kind: VOTE_KINDS.has(kind) ? kind : 'enable',
+    kind: isVoteKind(kind) ? kind : 'enable',
     lamport: Number.isFinite(lamport) ? lamport : 0,
     proposerId: String(proposerId || ''),
     proposerName: String(proposerName || '').slice(0, 40),
@@ -86,7 +151,7 @@ export function createVote({
  * chegou — nunca um id declarado no payload (ver `musicProtocol.js`). Voto de
  * quem não é eleitor, ou opção fora de `yes`/`no`, é descartado sem efeito.
  */
-export function castVote(vote, voterId, choice) {
+export function castVote(vote: Vote | null, voterId: string, choice: unknown): Vote | null {
   if (!vote) return vote;
   if (choice !== 'yes' && choice !== 'no') return vote;
   if (!vote.electorate.includes(voterId)) return vote;
@@ -95,12 +160,12 @@ export function castVote(vote, voterId, choice) {
 }
 
 /** Apuração determinística. Mesmo conjunto de votos ⇒ mesmo resultado. */
-export function tally(vote) {
+export function tally(vote: Vote | null | undefined): VoteTally {
   const electorateSize = vote?.electorate?.length || 0;
   let yes = 0;
   let no = 0;
   for (const id of vote?.electorate || []) {
-    const choice = vote.votes[id];
+    const choice = vote?.votes[id];
     if (choice === 'yes') yes += 1;
     else if (choice === 'no') no += 1;
   }
@@ -126,12 +191,12 @@ export function tally(vote) {
   };
 }
 
-export function remainingMs(vote, now) {
+export function remainingMs(vote: Vote | null | undefined, now: number): number {
   if (!vote) return 0;
   return Math.max(0, vote.openedAt + vote.durationMs - now);
 }
 
-export function isExpired(vote, now) {
+export function isExpired(vote: Vote | null | undefined, now: number): boolean {
   return remainingMs(vote, now) <= 0;
 }
 
@@ -146,7 +211,7 @@ export function isExpired(vote, now) {
  * Em `enable`, aprovação **não** é monotônica (um "não" que chega depois pode
  * derrubar a maioria dos válidos), então só o prazo ou a votação completa fecham.
  */
-export function isConclusive(vote) {
+export function isConclusive(vote: Vote | null | undefined): boolean {
   if (!vote) return false;
   const result = tally(vote);
   if (result.valid >= result.electorateSize) return true;
@@ -156,7 +221,7 @@ export function isConclusive(vote) {
 }
 
 /** Forma final publicada pelo árbitro (`music-vote-result`). */
-export function finalizeVote(vote) {
+export function finalizeVote(vote: Vote): VoteResult {
   const result = tally(vote);
   return {
     voteId: vote.voteId,
@@ -174,7 +239,7 @@ export function finalizeVote(vote) {
  * total sobre valores que todos veem, então todos escolhem a mesma sem trocar
  * mensagem nenhuma.
  */
-export function chooseVote(a, b) {
+export function chooseVote(a: Vote | null | undefined, b: Vote | null | undefined): Vote | null {
   if (!a) return b || null;
   if (!b) return a;
   if (a.voteId === b.voteId) return a;
@@ -188,12 +253,12 @@ export function chooseVote(a, b) {
  * `REPROPOSE_COOLDOWN_MS`. Verificado por **quem recebe**, não só por quem
  * propõe — a trava não pode depender da boa vontade do client do outro lado.
  */
-export function canPropose(lastRejectedAt, now, cooldownMs = REPROPOSE_COOLDOWN_MS) {
-  if (!Number.isFinite(lastRejectedAt)) return true;
+export function canPropose(lastRejectedAt: unknown, now: number, cooldownMs = REPROPOSE_COOLDOWN_MS): boolean {
+  if (typeof lastRejectedAt !== 'number' || !Number.isFinite(lastRejectedAt)) return true;
   return now - lastRejectedAt >= cooldownMs;
 }
 
-export function cooldownRemainingMs(lastRejectedAt, now, cooldownMs = REPROPOSE_COOLDOWN_MS) {
-  if (!Number.isFinite(lastRejectedAt)) return 0;
+export function cooldownRemainingMs(lastRejectedAt: unknown, now: number, cooldownMs = REPROPOSE_COOLDOWN_MS): number {
+  if (typeof lastRejectedAt !== 'number' || !Number.isFinite(lastRejectedAt)) return 0;
   return Math.max(0, lastRejectedAt + cooldownMs - now);
 }

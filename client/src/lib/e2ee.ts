@@ -6,7 +6,16 @@ const PBKDF2_ITERATIONS = 250_000;
  * `createEncodedStreams`, so we detect and let callers fall back to
  * DTLS-SRTP-only with a visible warning rather than pretending E2EE ran.
  */
-export function isInsertableStreamsSupported() {
+/**
+ * Um quadro codificado, dos dois tipos. `RTCEncodedAudioFrame` não tem `type`,
+ * e é justamente isso que `unencryptedHeaderLength` usa para distinguir os dois.
+ */
+type EncodedFrame = RTCEncodedVideoFrame | RTCEncodedAudioFrame;
+
+/** Lido preguiçosamente: os transforms são ligados antes de a chave existir. */
+type KeyGetter = () => CryptoKey | null;
+
+export function isInsertableStreamsSupported(): boolean {
   return (
     typeof RTCRtpSender !== 'undefined' &&
     typeof RTCRtpSender.prototype.createEncodedStreams === 'function' &&
@@ -20,7 +29,7 @@ export function isInsertableStreamsSupported() {
  * only in the URL fragment (never sent in HTTP requests or emitted to
  * Socket.IO), and roomId is used purely as a PBKDF2 salt.
  */
-export async function deriveRoomKey(passphrase, roomId) {
+export async function deriveRoomKey(passphrase: string, roomId: string): Promise<CryptoKey> {
   const enc = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey(
     'raw',
@@ -46,13 +55,15 @@ export async function deriveRoomKey(passphrase, roomId) {
 // Leave a small unencrypted header so codecs can still read frame metadata
 // (keyframe flag, temporal layering) — same convention as the WebRTC
 // insertable-streams reference samples. It never exposes pixel/audio content.
-function unencryptedHeaderLength(frame) {
-  if (frame.type === undefined) return 1; // audio frames have no `type`
-  return frame.type === 'key' ? 10 : 3;
+function unencryptedHeaderLength(frame: EncodedFrame): number {
+  // `type` só existe no quadro de vídeo — é a discriminação entre os dois.
+  const type = (frame as Partial<RTCEncodedVideoFrame>).type;
+  if (type === undefined) return 1; // audio frames have no `type`
+  return type === 'key' ? 10 : 3;
 }
 
-function makeEncryptTransform(getKey) {
-  return new TransformStream({
+function makeEncryptTransform(getKey: KeyGetter): TransformStream<EncodedFrame, EncodedFrame> {
+  return new TransformStream<EncodedFrame, EncodedFrame>({
     async transform(frame, controller) {
       const key = getKey();
       if (!key) {
@@ -80,8 +91,8 @@ function makeEncryptTransform(getKey) {
   });
 }
 
-function makeDecryptTransform(getKey) {
-  return new TransformStream({
+function makeDecryptTransform(getKey: KeyGetter): TransformStream<EncodedFrame, EncodedFrame> {
+  return new TransformStream<EncodedFrame, EncodedFrame>({
     async transform(frame, controller) {
       const key = getKey();
       if (!key) {
@@ -113,22 +124,24 @@ function makeDecryptTransform(getKey) {
 }
 
 /**
- * @param {RTCRtpSender} sender
- * @param {() => CryptoKey | null} getKey lazily read so callers can attach
- *   transforms before the room key finishes deriving.
+ * `getKey` is read lazily so callers can attach transforms before the room key
+ * finishes deriving.
  */
-export function attachEncryption(sender, getKey) {
+export function attachEncryption(sender: RTCRtpSender, getKey: KeyGetter): void {
+  // A guarda acima já provou que o método existe; o `?.` cobre o compilador,
+  // que não tem como saber disso (a checagem é sobre o `prototype`).
   if (!isInsertableStreamsSupported()) return;
-  const { readable, writable } = sender.createEncodedStreams();
+  const streams = sender.createEncodedStreams?.();
+  if (!streams) return;
+  const { readable, writable } = streams;
   readable.pipeThrough(makeEncryptTransform(getKey)).pipeTo(writable);
 }
 
-/**
- * @param {RTCRtpReceiver} receiver
- * @param {() => CryptoKey | null} getKey
- */
-export function attachDecryption(receiver, getKey) {
+export function attachDecryption(receiver: RTCRtpReceiver, getKey: KeyGetter): void {
+  // Mesma observação de `attachEncryption`.
   if (!isInsertableStreamsSupported()) return;
-  const { readable, writable } = receiver.createEncodedStreams();
+  const streams = receiver.createEncodedStreams?.();
+  if (!streams) return;
+  const { readable, writable } = streams;
   readable.pipeThrough(makeDecryptTransform(getKey)).pipeTo(writable);
 }

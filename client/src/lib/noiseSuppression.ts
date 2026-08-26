@@ -34,7 +34,12 @@
 export const AUDIO_STORAGE_KEY = 'wtk-meet:audio';
 
 /** Nasce **ligada**: quem tem ambiente barulhento não deveria precisar descobrir o toggle. */
-export const DEFAULT_AUDIO_PREFERENCES = {
+/** A preferência de áudio, inteira — hoje um campo só. */
+export interface AudioPreferences {
+  noiseSuppression: boolean;
+}
+
+export const DEFAULT_AUDIO_PREFERENCES: AudioPreferences = {
   noiseSuppression: true,
 };
 
@@ -47,7 +52,28 @@ export const MODE = {
   NATIVE: 'native',
   WORKLET: 'worklet',
   UNSUPPORTED: 'unsupported',
-};
+} as const;
+
+/** Um dos três valores de `MODE`. */
+export type NoiseMode = (typeof MODE)[keyof typeof MODE];
+
+/** O que o navegador consegue fazer, normalizado. */
+export interface NoiseCapabilities {
+  native: boolean;
+  worklet: boolean;
+}
+
+/** Os dois valores crus que `detectCapabilities` recebe do chamador. */
+export interface RawCapabilities {
+  supportedConstraints?: { noiseSuppression?: boolean } | null;
+  audioWorkletSupported?: boolean;
+}
+
+/** Uma `Storage` mínima: só o que este módulo chama, e tudo opcional. */
+export interface PreferenceStorage {
+  getItem?(key: string): string | null;
+  setItem?(key: string, value: string): void;
+}
 
 /**
  * Nome sob o qual o `AudioWorkletProcessor` é registrado.
@@ -67,7 +93,10 @@ export const PROCESSOR_NAME = 'wtk-noise-suppressor';
  * módulo puro — e, de quebra, é o que permite ao E2E forçar o caminho de
  * fallback num Chromium que suporta a constraint nativa.
  */
-export function detectCapabilities({ supportedConstraints, audioWorkletSupported } = {}) {
+export function detectCapabilities({
+  supportedConstraints,
+  audioWorkletSupported,
+}: RawCapabilities = {}): NoiseCapabilities {
   return {
     native: !!(supportedConstraints && supportedConstraints.noiseSuppression),
     worklet: !!audioWorkletSupported,
@@ -82,7 +111,7 @@ export function detectCapabilities({ supportedConstraints, audioWorkletSupported
  * entra onde a constraint nativa **não existe** — que é exatamente a condição
  * que torna impossível empilhar as duas supressões.
  */
-export function decideMode(capabilities) {
+export function decideMode(capabilities?: Partial<NoiseCapabilities> | null): NoiseMode {
   const caps = capabilities || {};
   if (caps.native) return MODE.NATIVE;
   if (caps.worklet) return MODE.WORKLET;
@@ -90,7 +119,7 @@ export function decideMode(capabilities) {
 }
 
 /** Atalho para o caminho real: das capacidades cruas direto ao modo. */
-export function decideCapabilityMode(raw) {
+export function decideCapabilityMode(raw?: RawCapabilities): NoiseMode {
   return decideMode(detectCapabilities(raw));
 }
 
@@ -108,18 +137,19 @@ export function decideCapabilityMode(raw) {
  * `OverconstrainedError` e derruba a aquisição inteira — a pessoa entraria na
  * sala **sem áudio nenhum** por causa de uma preferência de qualidade.
  */
-export function noiseConstraints(prefs) {
+export function noiseConstraints(prefs?: Partial<AudioPreferences> | null): { noiseSuppression: { ideal: boolean } } {
   const safe = sanitize(prefs);
   return { noiseSuppression: { ideal: safe.noiseSuppression } };
 }
 
-function sanitize(candidate) {
-  const out = { ...DEFAULT_AUDIO_PREFERENCES };
+function sanitize(candidate: unknown): AudioPreferences {
+  const out: AudioPreferences = { ...DEFAULT_AUDIO_PREFERENCES };
   if (!candidate || typeof candidate !== 'object') return out;
   // Tipo errado cai no default (ligado), igual a chave ausente: o valor gravado
   // por uma versão futura não pode desligar a supressão por acidente.
-  if (typeof candidate.noiseSuppression === 'boolean') {
-    out.noiseSuppression = candidate.noiseSuppression;
+  const bruto = candidate as { noiseSuppression?: unknown };
+  if (typeof bruto.noiseSuppression === 'boolean') {
+    out.noiseSuppression = bruto.noiseSuppression;
   }
   return out;
 }
@@ -129,7 +159,7 @@ function sanitize(candidate) {
  * lançando (modo privado), JSON inválido, chave inexistente ou tipos errados
  * caem todos no default. Chaves desconhecidas são descartadas.
  */
-export function readAudioPreferences(storage) {
+export function readAudioPreferences(storage?: PreferenceStorage | null): AudioPreferences {
   try {
     const raw = storage?.getItem?.(AUDIO_STORAGE_KEY);
     if (!raw) return { ...DEFAULT_AUDIO_PREFERENCES };
@@ -144,7 +174,10 @@ export function readAudioPreferences(storage) {
  * resultado efetivo. `setItem` lançando (cota, modo privado) é engolido: a
  * preferência simplesmente não persiste e a sessão corrente continua igual.
  */
-export function writeAudioPreferences(storage, patch) {
+export function writeAudioPreferences(
+  storage: PreferenceStorage | null | undefined,
+  patch?: Partial<AudioPreferences> | null,
+): AudioPreferences {
   const next = sanitize({ ...readAudioPreferences(storage), ...(patch || {}) });
   try {
     storage?.setItem?.(AUDIO_STORAGE_KEY, JSON.stringify(next));

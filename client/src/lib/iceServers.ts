@@ -44,7 +44,7 @@
  * de 60s contra um `ttl` de 60s consideraria a credencial "quase vencida" no
  * instante em que ela chega, e o resultado seria um laço de requisições.
  */
-export function renewMarginMs(ttlSeconds) {
+export function renewMarginMs(ttlSeconds: number): number {
   return Math.min(60_000, ttlSeconds * 100); // min(60s, 10% do ttl), em ms
 }
 
@@ -68,7 +68,53 @@ export const DEFAULT_MIN_RETRY_MS = 5_000;
  * indistinguível de uma lista vazia na prática, e distinguí-las na aparência é
  * o que fazia a falha passar por sucesso.
  */
-export function hasTurnServer(iceServers) {
+/** Um item de `RTCConfiguration.iceServers`, como o servidor o entrega. */
+export type IceServer = RTCIceServer & { url?: string };
+
+/** O motivo corrente do provedor — vale como diagnóstico e vai para o log. */
+export type IceStatus = 'idle' | 'ok' | 'stale' | 'unconfigured' | 'upstream' | 'unreachable';
+
+export interface IceServerProviderOptions {
+  endpoint?: string | null;
+  fetchImpl?: typeof fetch | null;
+  now?: () => number;
+  minRetryMs?: number;
+  warn?: (...args: unknown[]) => void;
+}
+
+export interface IceDescription {
+  status: IceStatus;
+  lastFailureKind: IceStatus | null;
+  hasTurn: boolean;
+  ttl: number | null;
+  msUntilRenew: number | null;
+}
+
+export interface IceServerProvider {
+  configure(options: { endpoint?: string | null }): void;
+  get(opts?: { force?: boolean }): Promise<IceServer[]>;
+  status(): IceStatus;
+  describe(): IceDescription;
+  reset(): void;
+}
+
+/** O que fica em cache entre renovações. */
+interface IceCache {
+  iceServers: IceServer[];
+  renewAt: number;
+  expiresAt: number;
+  ttl: number;
+}
+
+/**
+ * A mensagem de um erro capturado. Sob `strict`, o `catch` entrega `unknown` —
+ * e é honesto: nada garante que o que foi lançado seja um `Error`.
+ */
+function mensagemDe(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+export function hasTurnServer(iceServers: unknown): boolean {
   if (!Array.isArray(iceServers)) return false;
   return iceServers.some((server) => {
     const urls = server?.urls ?? server?.url;
@@ -100,20 +146,20 @@ export function createIceServerProvider({
   fetchImpl = null,
   now = () => Date.now(),
   minRetryMs = DEFAULT_MIN_RETRY_MS,
-  warn = (...args) => console.warn(...args),
-} = {}) {
+  warn = (...args: unknown[]) => console.warn(...args),
+}: IceServerProviderOptions = {}): IceServerProvider {
   let url = endpoint;
-  let cache = null; // { iceServers, renewAt, expiresAt, ttl }
-  let status = 'idle';
-  let lastFailureKind = null;
+  let cache: IceCache | null = null;
+  let status: IceStatus = 'idle';
+  let lastFailureKind: IceStatus | null = null;
   let lastFailureAt = -Infinity;
-  let inFlight = null;
+  let inFlight: Promise<IceServer[]> | null = null;
 
   function currentFetch() {
     return fetchImpl || globalThis.fetch;
   }
 
-  function resolveTtl(raw) {
+  function resolveTtl(raw: unknown): number {
     const ttl = Number(raw);
     if (!Number.isFinite(ttl) || ttl <= 0) return FALLBACK_TTL_SECONDS;
     return ttl;
@@ -126,7 +172,7 @@ export function createIceServerProvider({
    * lista vazia, e devolvê-la só adiaria a descoberta do problema em algumas
    * dezenas de segundos de ICE.
    */
-  function fallbackAfterFailure(kind) {
+  function fallbackAfterFailure(kind: IceStatus): IceServer[] {
     lastFailureKind = kind;
     lastFailureAt = now();
     if (cache && now() < cache.expiresAt) {
@@ -145,11 +191,11 @@ export function createIceServerProvider({
       return fallbackAfterFailure('unreachable');
     }
 
-    let res;
+    let res: Response;
     try {
       res = await currentFetch()(url);
     } catch (err) {
-      warn('[ice] servidor de sinalização inacessível:', err?.message || err);
+      warn('[ice] servidor de sinalização inacessível:', mensagemDe(err));
       return fallbackAfterFailure('unreachable');
     }
 
@@ -162,15 +208,15 @@ export function createIceServerProvider({
       return fallbackAfterFailure(kind);
     }
 
-    let body;
+    let body: { iceServers?: unknown; ttl?: unknown } | null;
     try {
-      body = await res.json();
+      body = (await res.json()) as { iceServers?: unknown; ttl?: unknown } | null;
     } catch (err) {
-      warn('[ice] corpo ilegível em /turn-credentials:', err?.message || err);
+      warn('[ice] corpo ilegível em /turn-credentials:', mensagemDe(err));
       return fallbackAfterFailure('unreachable');
     }
 
-    const iceServers = body?.iceServers;
+    const iceServers = body?.iceServers as IceServer[] | undefined;
     if (!Array.isArray(iceServers) || iceServers.length === 0) {
       warn('[ice] /turn-credentials respondeu 200 com lista vazia.');
       return fallbackAfterFailure('unreachable');
@@ -207,7 +253,7 @@ export function createIceServerProvider({
   }
 
   return {
-    configure({ endpoint: next }) {
+    configure({ endpoint: next }: { endpoint?: string | null }) {
       if (next && next !== url) {
         url = next;
         cache = null;
@@ -225,7 +271,7 @@ export function createIceServerProvider({
      * backoff de recuperação viraria uma enxurrada de requisições contra um
      * servidor que já está com problema.
      */
-    async get({ force = false } = {}) {
+    async get({ force = false }: { force?: boolean } = {}): Promise<IceServer[]> {
       // Coalescência: cinco `addPeer` quase simultâneos (a entrada numa sala
       // cheia) compartilham UMA requisição.
       if (inFlight) return inFlight;
@@ -287,19 +333,19 @@ export function createIceServerProvider({
  */
 const provider = createIceServerProvider();
 
-export function configureIceServers({ endpoint }) {
+export function configureIceServers({ endpoint }: { endpoint?: string | null }): void {
   provider.configure({ endpoint });
 }
 
 /** Assinatura combinada com `webrtcMesh.js`: `(opts?) => Promise<Array>`. */
-export function getIceServers(opts) {
+export function getIceServers(opts?: { force?: boolean }): Promise<IceServer[]> {
   return provider.get(opts);
 }
 
-export function getIceServersStatus() {
+export function getIceServersStatus(): IceStatus {
   return provider.status();
 }
 
-export function describeIceServers() {
+export function describeIceServers(): IceDescription {
   return provider.describe();
 }

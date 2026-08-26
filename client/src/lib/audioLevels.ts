@@ -35,7 +35,7 @@ const LEVEL_GAIN = 6;
  * sala e o medidor isolado do preview: duas cópias divergiriam, e o medidor do
  * modal deixaria de dizer a mesma coisa que o anel de fala.
  */
-function rmsOf(buffer) {
+function rmsOf(buffer: Float32Array): number {
   let sum = 0;
   for (let i = 0; i < buffer.length; i += 1) {
     sum += buffer[i] * buffer[i];
@@ -43,10 +43,37 @@ function rmsOf(buffer) {
   return Math.sqrt(sum / buffer.length);
 }
 
-const levelFromRms = (rms) => Math.min(1, rms * LEVEL_GAIN);
+const levelFromRms = (rms: number): number => Math.min(1, rms * LEVEL_GAIN);
 
 /** Quantização do nível emitido — a mesma nos dois caminhos. */
-const quantizeLevel = (level) => Math.round(level / LEVEL_STEP) * LEVEL_STEP;
+const quantizeLevel = (level: number): number => Math.round(level / LEVEL_STEP) * LEVEL_STEP;
+
+/** O que `createLevelMeter` devolve: só `stop`, inclusive no caminho inerte. */
+export interface LevelMeter {
+  stop(): void;
+}
+
+/** Um participante no instantâneo que o monitor emite. */
+export interface LevelSnapshotEntry {
+  level: number;
+  speaking: boolean;
+}
+
+/** `id` → nível e estado de fala. É o que o `Room` recebe a cada emissão. */
+export type LevelSnapshot = Record<string, LevelSnapshotEntry>;
+
+/** Uma fonte monitorada, com tudo que o laço de medição precisa. */
+interface MonitoredSource {
+  stream: MediaStream;
+  source: MediaStreamAudioSourceNode;
+  analyser: AnalyserNode;
+  /** `<ArrayBuffer>` explícito: `getFloatTimeDomainData` recusa o genérico
+   *  `ArrayBufferLike`, que admitiria `SharedArrayBuffer`. */
+  buffer: Float32Array<ArrayBuffer>;
+  speaking: boolean;
+  lastLoudAt: number;
+  level: number;
+}
 
 /**
  * Medidor isolado, para o preview do modal de configurações.
@@ -60,11 +87,19 @@ const quantizeLevel = (level) => Math.round(level / LEVEL_STEP) * LEVEL_STEP;
  * que preserva a invariante de **um `AudioContext` por aba**. Sem contexto
  * injetado (Home), cria o próprio e o fecha no `stop()`.
  */
-export function createLevelMeter({ stream, context = null, onLevel } = {}) {
-  const noop = { stop() {} };
+export function createLevelMeter({
+  stream,
+  context = null,
+  onLevel,
+}: {
+  stream?: MediaStream | null;
+  context?: AudioContext | null;
+  onLevel?: (level: number) => void;
+} = {}): LevelMeter {
+  const noop: LevelMeter = { stop() {} };
   if (!stream || stream.getAudioTracks().length === 0) return noop;
 
-  let ctx = context;
+  let ctx: AudioContext | null = context;
   let ownsContext = false;
   if (!ctx) {
     const Ctor = window.AudioContext || window.webkitAudioContext;
@@ -78,7 +113,7 @@ export function createLevelMeter({ stream, context = null, onLevel } = {}) {
     });
   }
 
-  let source;
+  let source: MediaStreamAudioSourceNode;
   try {
     source = ctx.createMediaStreamSource(stream);
   } catch {
@@ -94,7 +129,7 @@ export function createLevelMeter({ stream, context = null, onLevel } = {}) {
   // devolve o próprio microfone pelos alto-falantes.
 
   const buffer = new Float32Array(analyser.fftSize);
-  let rafId = null;
+  let rafId: number | null = null;
   let stopped = false;
   let lastEmitted = -1;
   let lastEmitAt = 0;
@@ -127,7 +162,7 @@ export function createLevelMeter({ stream, context = null, onLevel } = {}) {
         // já desconectado
       }
       if (ownsContext) {
-        ctx.close().catch(() => {
+        ctx?.close().catch(() => {
           // já fechado
         });
       }
@@ -136,6 +171,17 @@ export function createLevelMeter({ stream, context = null, onLevel } = {}) {
 }
 
 export class AudioLevelMonitor {
+  onUpdate: ((snapshot: LevelSnapshot) => void) | undefined;
+  getContext: (() => AudioContext | null) | null;
+  ownsContext: boolean;
+  ctx: AudioContext | null;
+  sources: Map<string, MonitoredSource>;
+  /** Handle de `requestAnimationFrame` — `number` no browser, e só lá roda. */
+  rafId: number | null;
+  lastEmitAt: number;
+  lastEmitted: Map<string, LevelSnapshotEntry>;
+  closed: boolean;
+
   /**
    * `getContext` injeta o `AudioContext` compartilhado da sala
    * (`lib/audioContext.js`). Quando ele é injetado, o monitor passa a ser
@@ -145,15 +191,21 @@ export class AudioLevelMonitor {
    * Sem injeção o comportamento é o de sempre — o monitor cria e fecha o
    * próprio contexto —, que é o que mantém o módulo utilizável isolado.
    */
-  constructor({ onUpdate, getContext } = {}) {
+  constructor({
+    onUpdate,
+    getContext,
+  }: {
+    onUpdate?: (snapshot: LevelSnapshot) => void;
+    getContext?: (() => AudioContext | null) | null;
+  } = {}) {
     this.onUpdate = onUpdate;
     this.getContext = getContext || null;
     this.ownsContext = !getContext;
     this.ctx = null;
-    this.sources = new Map(); // id -> { source, analyser, buffer, speaking, lastLoudAt, level }
+    this.sources = new Map();
     this.rafId = null;
     this.lastEmitAt = 0;
-    this.lastEmitted = new Map(); // id -> { level, speaking }
+    this.lastEmitted = new Map();
     this.closed = false;
     this._tick = this._tick.bind(this);
   }
@@ -162,7 +214,7 @@ export class AudioLevelMonitor {
    * O AudioContext nasce suspenso até um gesto do usuário (política de
    * autoplay). Chamar depois de um clique — ou deixar `resumeOnGesture` cuidar.
    */
-  ensureContext() {
+  ensureContext(): AudioContext | null {
     if (this.closed) return null;
     if (this.getContext) {
       this.ctx = this.getContext() || null;
@@ -182,7 +234,7 @@ export class AudioLevelMonitor {
   }
 
   /** Retenta o resume no primeiro gesto do usuário. Devolve um desregistrador. */
-  resumeOnGesture() {
+  resumeOnGesture(): () => void {
     const handler = () => {
       this.ensureContext();
     };
@@ -200,7 +252,7 @@ export class AudioLevelMonitor {
    * Passa a monitorar `stream` sob a chave `id`. Idempotente por (id, stream):
    * chamar de novo com o mesmo stream não recria nada.
    */
-  attach(id, stream) {
+  attach(id: string, stream: MediaStream | null | undefined): void {
     if (this.closed || !stream) return;
     if (stream.getAudioTracks().length === 0) return;
 
@@ -211,7 +263,7 @@ export class AudioLevelMonitor {
     const ctx = this.ensureContext();
     if (!ctx) return;
 
-    let source;
+    let source: MediaStreamAudioSourceNode;
     try {
       source = ctx.createMediaStreamSource(stream);
     } catch {
@@ -239,7 +291,7 @@ export class AudioLevelMonitor {
     this._start();
   }
 
-  detach(id) {
+  detach(id: string): void {
     const entry = this.sources.get(id);
     if (!entry) return;
     try {
@@ -254,26 +306,26 @@ export class AudioLevelMonitor {
   }
 
   /** Remove tudo que não esteja em `validIds` (peers que saíram da sala). */
-  retainOnly(validIds) {
+  retainOnly(validIds: ReadonlySet<string>): void {
     for (const id of [...this.sources.keys()]) {
       if (!validIds.has(id)) this.detach(id);
     }
   }
 
-  _start() {
+  _start(): void {
     if (this.rafId == null && !this.closed) {
       this.rafId = requestAnimationFrame(this._tick);
     }
   }
 
-  _stop() {
+  _stop(): void {
     if (this.rafId != null) {
       cancelAnimationFrame(this.rafId);
       this.rafId = null;
     }
   }
 
-  _tick() {
+  _tick(): void {
     this.rafId = null;
     if (this.closed) return;
 
@@ -307,7 +359,7 @@ export class AudioLevelMonitor {
 
     if (dirty && now - this.lastEmitAt >= MIN_EMIT_INTERVAL_MS) {
       this.lastEmitAt = now;
-      const snapshot = {};
+      const snapshot: LevelSnapshot = {};
       this.lastEmitted.clear();
       for (const [id, entry] of this.sources) {
         const quantized = Math.round(entry.level / LEVEL_STEP) * LEVEL_STEP;
@@ -324,7 +376,11 @@ export class AudioLevelMonitor {
    * Bipe curto e discreto para avisos de entrada/saída. Reaproveita o mesmo
    * AudioContext — nenhum <audio> nem arquivo de mídia envolvido.
    */
-  playBeep({ frequency = 660, duration = 0.12, volume = 0.05 } = {}) {
+  playBeep({
+    frequency = 660,
+    duration = 0.12,
+    volume = 0.05,
+  }: { frequency?: number; duration?: number; volume?: number } = {}): void {
     const ctx = this.ensureContext();
     if (!ctx || ctx.state !== 'running') return;
 
@@ -347,7 +403,7 @@ export class AudioLevelMonitor {
     };
   }
 
-  close() {
+  close(): void {
     this.closed = true;
     this._stop();
     for (const id of [...this.sources.keys()]) {

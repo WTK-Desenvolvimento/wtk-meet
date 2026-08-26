@@ -37,7 +37,21 @@ function randomId() {
  * de quem enviou: sem servidor não há relógio autoritativo, e para exibir a
  * hora ao lado do nome isso basta.
  */
-export function createChatMessage({ author, text }) {
+/** Uma linha da conversa, já normalizada. */
+export interface ChatMessage {
+  id: string;
+  author: string;
+  text: string;
+  sentAt: number;
+}
+
+export function createChatMessage({
+  author,
+  text,
+}: {
+  author?: unknown;
+  text?: unknown;
+}): ChatMessage | null {
   const trimmed = String(text ?? '').trim().slice(0, MAX_MESSAGE_LENGTH);
   if (!trimmed) return null;
   return {
@@ -54,31 +68,49 @@ export function createChatMessage({ author, text }) {
  * e o `id` é regerado localmente para um peer não conseguir colidir com o id de
  * outro e sobrescrever uma linha da conversa.
  */
-export function sanitizeIncomingMessage(raw, { fallbackAuthor } = {}) {
+export function sanitizeIncomingMessage(
+  raw: unknown,
+  { fallbackAuthor }: { fallbackAuthor?: string } = {},
+): ChatMessage | null {
   if (!raw || typeof raw !== 'object') return null;
-  const text = typeof raw.text === 'string' ? raw.text.trim().slice(0, MAX_MESSAGE_LENGTH) : '';
+  // O conteúdo vem de outro browser: nem a forma do objeto é confiável, então
+  // ele é lido campo a campo e nada é assumido.
+  const bruto = raw as { text?: unknown; author?: unknown; sentAt?: unknown };
+  const text = typeof bruto.text === 'string' ? bruto.text.trim().slice(0, MAX_MESSAGE_LENGTH) : '';
   if (!text) return null;
   const author =
-    (typeof raw.author === 'string' && raw.author.trim().slice(0, 40)) ||
+    (typeof bruto.author === 'string' && bruto.author.trim().slice(0, 40)) ||
     fallbackAuthor ||
     'Participante';
-  const sentAt = Number.isFinite(raw.sentAt) ? raw.sentAt : Date.now();
+  const sentAt = typeof bruto.sentAt === 'number' && Number.isFinite(bruto.sentAt) ? bruto.sentAt : Date.now();
   return { id: randomId(), author, text, sentAt };
 }
 
+/**
+ * Qualquer mensagem do data channel. O único campo garantido é `type`; quem
+ * consome faz a discriminação — chat, estado de câmera/tela e música compartilham
+ * este canal.
+ */
+export interface ChannelPayload {
+  type: string;
+  [campo: string]: unknown;
+}
+
 /** Desserializa o payload bruto do data channel. Nunca lança. */
-export function parseChannelPayload(raw) {
+export function parseChannelPayload(raw: unknown): ChannelPayload | null {
   if (typeof raw !== 'string') return null;
   try {
-    const payload = JSON.parse(raw);
-    if (!payload || typeof payload !== 'object' || typeof payload.type !== 'string') return null;
-    return payload;
+    const payload: unknown = JSON.parse(raw);
+    if (!payload || typeof payload !== 'object' || typeof (payload as { type?: unknown }).type !== 'string') {
+      return null;
+    }
+    return payload as ChannelPayload;
   } catch {
     return null;
   }
 }
 
-export function formatTime(timestamp) {
+export function formatTime(timestamp: number): string {
   try {
     return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   } catch {
@@ -87,7 +119,7 @@ export function formatTime(timestamp) {
 }
 
 /** Acrescenta ao histórico respeitando o teto de memória. */
-export function appendMessage(history, message) {
+export function appendMessage(history: ChatMessage[], message: ChatMessage): ChatMessage[] {
   const next = [...history, message];
   return next.length > MAX_HISTORY ? next.slice(next.length - MAX_HISTORY) : next;
 }
