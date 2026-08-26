@@ -1,6 +1,21 @@
 import { useEffect, useRef } from 'react';
 import { useAudibleMedia } from '../lib/audibleMedia.js';
 
+import type { AudibleMediaOptions } from '../lib/audibleMedia.js';
+
+/** A música de um peer: o stream do quarto canal, com dono. */
+export interface RemoteMusicStream {
+  peerId: string;
+  stream?: MediaStream | null;
+}
+
+export interface RemoteMusicAudioProps extends Omit<AudibleMediaOptions, 'stream'> {
+  streams?: RemoteMusicStream[];
+  /** Volume do player da sala, 0–1. */
+  volume?: number;
+  muted?: boolean;
+}
+
 /**
  * Os `<audio>` ocultos que fazem a música do mesh virar som — um por peer,
  * ligados ao `musicStream` daquele peer (o quarto canal de mídia, dedicado a
@@ -37,7 +52,7 @@ export default function RemoteMusicAudio({
   sinkId = '',
   onSinkError,
   unlockNonce = 0,
-}) {
+}: RemoteMusicAudioProps) {
   return (
     <div className="remote-music-audio" aria-hidden="true">
       {streams.map(({ peerId, stream }) => (
@@ -56,8 +71,16 @@ export default function RemoteMusicAudio({
   );
 }
 
-function PeerMusicAudio({ stream, volume, muted, onBlocked, sinkId, onSinkError, unlockNonce }) {
-  const ref = useRef(null);
+function PeerMusicAudio({
+  stream,
+  volume = 1,
+  muted = false,
+  onBlocked,
+  sinkId,
+  onSinkError,
+  unlockNonce,
+}: AudibleMediaOptions & { volume?: number; muted?: boolean }) {
+  const ref = useRef<HTMLAudioElement | null>(null);
 
   // Fonte, saída e reprodução — os três com o mesmo tratamento de rejeição do
   // `PeerAudio`. Os callbacks mudam de identidade a cada render do `Room`; é o

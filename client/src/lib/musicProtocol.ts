@@ -89,7 +89,22 @@ export type SanitizedMusicMessage =
       positionSec: number | null;
       byId: string;
     }
-  | { type: 'music-snapshot'; fromPeerId: string; snapshot: unknown };
+  | { type: 'music-snapshot'; fromPeerId: string; snapshot: SanitizedSnapshot };
+
+/**
+ * O estado da sessão como ele **chega** de outro peer: já podado (200 entradas,
+ * 400 lápides) mas ainda não validado item a item — quem faz isso é
+ * `musicSession.sanitizeEntry`, e é por isso que `entries` e `playback` seguem
+ * como `unknown`. Prometer `QueueEntry[]` aqui seria mentir sobre o que este
+ * módulo conferiu.
+ */
+export interface SanitizedSnapshot {
+  enabled: boolean;
+  lamport: number;
+  entries: unknown[];
+  tombstones: string[];
+  playback: object | null;
+}
 
 export function isMusicMessage(payload: unknown): payload is MusicMessage {
   return (

@@ -305,7 +305,9 @@ export function writePreferences(
 
 /** Feature detection de roteamento de saída de áudio. */
 export function isSinkIdSupported(
-  proto: Partial<HTMLMediaElement> | undefined = globalThis.HTMLMediaElement?.prototype,
+  // `null` entra no tipo porque o `?.` abaixo já o trata e porque é o que o
+  // chamador tem em mãos: um `prototype` que pode simplesmente não existir.
+  proto: Partial<HTMLMediaElement> | null | undefined = globalThis.HTMLMediaElement?.prototype,
 ): boolean {
   return typeof proto?.setSinkId === 'function';
 }

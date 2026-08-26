@@ -1,6 +1,22 @@
 import { useRef } from 'react';
 import { useAudibleMedia } from '../lib/audibleMedia.js';
 
+import type { AudibleMediaOptions } from '../lib/audibleMedia.js';
+
+/**
+ * O que o `PeerAudio` precisa de cada participante: o stream, quando ele já
+ * existe. É de propósito mais frouxo que o `Participant` do `Room` — este
+ * componente não lê mais nada, e amarrá-lo à forma inteira criaria acoplamento
+ * que o teste teria de reproduzir sem motivo.
+ */
+export interface PeerAudioParticipant {
+  stream?: MediaStream | null;
+}
+
+export interface PeerAudioProps extends Omit<AudibleMediaOptions, 'stream'> {
+  participants: Map<string, PeerAudioParticipant>;
+}
+
 /**
  * Sink de áudio dos participantes remotos — invisível, e deliberadamente **fora
  * do palco**.
@@ -27,30 +43,28 @@ import { useAudibleMedia } from '../lib/audibleMedia.js';
  * Não confundir com `lib/audioLevels.js`: aquele analisa o stream para o anel de
  * fala e não reproduz nada. Este reproduz e não analisa.
  */
-function PeerAudioElement({ stream, sinkId, onSinkError, onBlocked, unlockNonce }) {
-  const ref = useRef(null);
+function PeerAudioElement({
+  stream,
+  sinkId,
+  onSinkError,
+  onBlocked,
+  unlockNonce,
+}: AudibleMediaOptions) {
+  const ref = useRef<HTMLAudioElement | null>(null);
   useAudibleMedia(ref, { stream, sinkId, onSinkError, onBlocked, unlockNonce });
 
   // `playsInline` não existe em `<audio>` (é atributo de vídeo em iOS).
   return <audio ref={ref} autoPlay />;
 }
 
-/**
- * @param {object} props
- * @param {Map<string, {stream?: MediaStream}>} props.participants
- * @param {string} [props.sinkId] Saída de áudio escolhida (`''` = padrão do sistema).
- * @param {(err: Error) => void} [props.onSinkError] Rejeição de `setSinkId`.
- * @param {() => void} [props.onBlocked] O navegador barrou a reprodução.
- * @param {number} [props.unlockNonce] Muda quando o usuário pede para destravar o som.
- */
 export default function PeerAudio({
   participants,
   sinkId = '',
   onSinkError,
   onBlocked,
   unlockNonce = 0,
-}) {
-  const entries = [];
+}: PeerAudioProps) {
+  const entries: [string, MediaStream][] = [];
   for (const [peerId, info] of participants) {
     if (info?.stream) entries.push([peerId, info.stream]);
   }
