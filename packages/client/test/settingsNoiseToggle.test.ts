@@ -37,11 +37,11 @@ import type { PendingPreferences } from '../src/components/SettingsModal.js';
  */
 const internals = (
   React.default as unknown as {
-    __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED: {
-      ReactCurrentDispatcher: { current: unknown };
+    __CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE: {
+      H: unknown;
     };
   }
-).__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
+).__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
 
 /** Um elemento da árvore, do ponto de vista de quem só a percorre. */
 interface NoDaArvore {
@@ -101,12 +101,12 @@ function shallowRender<P>(Component: (props: P) => unknown, props: P) {
 
   function render() {
     cursor = 0;
-    const previous = internals.ReactCurrentDispatcher.current;
-    internals.ReactCurrentDispatcher.current = dispatcher;
+    const previous = internals.H;
+    internals.H = dispatcher;
     try {
       tree = Component(props);
     } finally {
-      internals.ReactCurrentDispatcher.current = previous;
+      internals.H = previous;
     }
   }
 

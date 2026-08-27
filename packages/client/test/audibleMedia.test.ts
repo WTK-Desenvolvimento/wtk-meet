@@ -32,11 +32,11 @@ import type { AudibleMediaOptions } from '../src/lib/audibleMedia.js';
  */
 const internals = (
   React.default as unknown as {
-    __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED: {
-      ReactCurrentDispatcher: { current: unknown };
+    __CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE: {
+      H: unknown;
     };
   }
-).__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
+).__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
 
 /**
  * Renderiza um componente de função e **executa** seus efeitos, com comparação
@@ -120,12 +120,12 @@ function renderWithEffects<P>(Component: (props: P) => unknown, initialProps: P)
 
   function render(props: P) {
     cursor = 0;
-    const previous = internals.ReactCurrentDispatcher.current;
-    internals.ReactCurrentDispatcher.current = dispatcher;
+    const previous = internals.H;
+    internals.H = dispatcher;
     try {
       Component(props);
     } finally {
-      internals.ReactCurrentDispatcher.current = previous;
+      internals.H = previous;
     }
     flush();
   }
