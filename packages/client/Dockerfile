@@ -21,6 +21,11 @@ WORKDIR /repo/packages/client
 
 ARG VITE_SIGNALING_URL
 ENV VITE_SIGNALING_URL=$VITE_SIGNALING_URL
+# `import.meta.env` é substituído aqui, no build — não no runtime do nginx do
+# estágio 2. Sem este par ARG/ENV, `VITE_TELEMETRY_ENABLED=false` no compose
+# não desligaria nada, e a variável pareceria configurada.
+ARG VITE_TELEMETRY_ENABLED=true
+ENV VITE_TELEMETRY_ENABLED=$VITE_TELEMETRY_ENABLED
 RUN npm run build
 
 # ── Stage 2: serve ───────────────────────────────────────────

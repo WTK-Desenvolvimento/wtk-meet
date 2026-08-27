@@ -15,6 +15,12 @@ interface ImportMetaEnv {
    * dois casos desde antes desta migração.
    */
   readonly VITE_ENABLE_YOUTUBE?: string | boolean;
+  /**
+   * `'false'` (a **string**) desliga a telemetria antes de qualquer efeito.
+   * Ausente ⇒ ligada. Ver o comentário em `config.ts` sobre por que a
+   * comparação é com string, e por que ela precisa ser build arg no Docker.
+   */
+  readonly VITE_TELEMETRY_ENABLED?: string | boolean;
 }
 
 interface ImportMeta {
