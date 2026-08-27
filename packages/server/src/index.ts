@@ -150,7 +150,7 @@ let rateWindowOverflowed = false;
  * é preferível a ler `X-Forwarded-For`, que é falsificável e que
  * reintroduziria o IP real do usuário num caminho de código novo.
  */
-export function truncateIp(ip: string | undefined): string {
+function truncateIp(ip: string | undefined): string {
   if (!ip) return 'unknown';
   // `::ffff:1.2.3.4` é como o Node entrega um IPv4 num socket dual-stack.
   const bare = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
