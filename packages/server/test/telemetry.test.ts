@@ -15,7 +15,7 @@
  *    concorda consigo mesma.
  */
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { after, before } from 'node:test';
 
 import { AggregationTemporality, InMemoryMetricExporter } from '@opentelemetry/sdk-metrics';
 
@@ -30,6 +30,7 @@ import { startFakeCollector, startServer } from './fixtures/telemetryHarness.js'
 
 import type { PushMetricExporter, ResourceMetrics } from '@opentelemetry/sdk-metrics';
 import type { Telemetry } from '../src/telemetry.js';
+import type { RunningServer } from './fixtures/telemetryHarness.js';
 
 /** O catálogo do DoD, verbatim. Nove nomes, nem um a mais. */
 const CATALOGO = [
@@ -372,16 +373,23 @@ test('metricsUrl acrescenta o caminho do sinal uma vez só', () => {
 });
 
 // ───────────────────────────────────────── 5. a rota, no servidor de verdade
+//
+// Um servidor **compartilhado** para os casos que não dependem de configuração,
+// e um servidor próprio só para os três que dependem. A economia não é
+// estética: os arquivos de teste rodam em paralelo, cada `startServer` custa
+// ~2s de boot, e uma dezena deles no mesmo arquivo satura a máquina a ponto de
+// os testes de temporização dos **outros** arquivos ficarem vermelhos.
 
-test('POST /telemetry: 204 no caminho feliz, com o Content-Type do sendBeacon', async (t) => {
-  const collector = await startFakeCollector();
-  t.after(() => collector.close());
-  const server = await startServer({
-    env: { OTEL_EXPORTER_OTLP_ENDPOINT: collector.endpoint, OTEL_METRIC_EXPORT_INTERVAL_MS: '300' },
-  });
-  t.after(() => server.stop());
+let padrao: RunningServer;
 
-  const res = await fetch(`${server.base}/telemetry`, {
+before(async () => {
+  padrao = await startServer();
+});
+
+after(() => padrao?.stop());
+
+test('POST /telemetry: 204 no caminho feliz, com o Content-Type do sendBeacon', async () => {
+  const res = await fetch(`${padrao.base}/telemetry`, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
     body: JSON.stringify({ event: 'page_view', route: 'home' }),
@@ -390,14 +398,11 @@ test('POST /telemetry: 204 no caminho feliz, com o Content-Type do sendBeacon', 
   assert.equal(await res.text(), '', 'sem corpo');
 });
 
-test('a receita do DoD — curl -d sem header de Content-Type — responde 204', async (t) => {
+test('a receita do DoD — curl -d sem header de Content-Type — responde 204', async () => {
   // Item 10 do DoD, verbatim. `curl -d` sem `-H` manda
   // `application/x-www-form-urlencoded`: com o parser default do Express o
   // corpo chegaria vazio e a receita do README nasceria respondendo 400.
-  const server = await startServer();
-  t.after(() => server.stop());
-
-  const res = await fetch(`${server.base}/telemetry`, {
+  const res = await fetch(`${padrao.base}/telemetry`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: '{"event":"page_view","route":"home"}',
@@ -405,10 +410,7 @@ test('a receita do DoD — curl -d sem header de Content-Type — responde 204',
   assert.equal(res.status, 204);
 });
 
-test('POST /telemetry: 400 para corpo inválido, sem eco do que foi enviado', async (t) => {
-  const server = await startServer();
-  t.after(() => server.stop());
-
+test('POST /telemetry: 400 para corpo inválido, sem eco do que foi enviado', async () => {
   const invalidos = [
     '{"event":"page_view","route":"settings"}',
     '{"event":"desconhecido"}',
@@ -421,7 +423,7 @@ test('POST /telemetry: 400 para corpo inválido, sem eco do que foi enviado', as
     '',
   ];
   for (const body of invalidos) {
-    const res = await fetch(`${server.base}/telemetry`, { method: 'POST', body });
+    const res = await fetch(`${padrao.base}/telemetry`, { method: 'POST', body });
     assert.equal(res.status, 400, `corpo: ${body}`);
     const texto = await res.text();
     assert.equal(texto, '{"error":"invalid-beacon"}');
@@ -429,16 +431,67 @@ test('POST /telemetry: 400 para corpo inválido, sem eco do que foi enviado', as
   }
 });
 
-test('POST /telemetry: corpo acima de 1 kB responde 413', async (t) => {
-  const server = await startServer();
-  t.after(() => server.stop());
-
-  const res = await fetch(`${server.base}/telemetry`, {
+test('POST /telemetry: corpo acima de 1 kB responde 413', async () => {
+  const res = await fetch(`${padrao.base}/telemetry`, {
     method: 'POST',
     body: JSON.stringify({ event: 'page_view', route: 'home', lixo: 'x'.repeat(2000) }),
   });
   assert.equal(res.status, 413);
   assert.deepEqual(await res.json(), { error: 'payload-too-large' });
+});
+
+test('sem endpoint o servidor sobe, avisa uma vez e continua servindo tudo', async () => {
+  const avisos = padrao
+    .saida()
+    .split('\n')
+    .filter((l) => l.includes('OTEL_EXPORTER_OTLP_ENDPOINT'));
+  assert.equal(avisos.length, 1, 'um aviso de boot, e só um');
+
+  // O caminho desligado continua servindo: é o que prova que a telemetria é
+  // aditiva, e não um requisito novo de deploy.
+  assert.equal((await fetch(`${padrao.base}/health`)).status, 200);
+  assert.deepEqual(await (await fetch(`${padrao.base}/health`)).json(), {
+    ok: true,
+    turn: { configured: false },
+    telemetry: { enabled: false },
+  });
+  assert.equal((await fetch(`${padrao.base}/turn-credentials`)).status, 503);
+  assert.deepEqual(await (await fetch(`${padrao.base}/rooms/x/occupancy`)).json(), {
+    occupied: false,
+  });
+  assert.equal(
+    (
+      await fetch(`${padrao.base}/telemetry`, {
+        method: 'POST',
+        body: '{"event":"page_view","route":"home"}',
+      })
+    ).status,
+    204,
+    'o beacon continua respondendo 204 mesmo sem para onde exportar',
+  );
+});
+
+test('nada do que foi enviado a /telemetry aparece no log do processo', async () => {
+  // O handler de erro do body-parser é montado **na rota** justamente por isto:
+  // a mensagem do `SyntaxError` inclui um trecho do corpo recebido, e sem
+  // handler próprio ela iria para o stderr. É o caminho de erro — o que
+  // ninguém olha.
+  const marcador = 'CANARIO-DE-LOG-XYZ';
+  await fetch(`${padrao.base}/telemetry`, { method: 'POST', body: `{lixo: ${marcador}}` });
+  await fetch(`${padrao.base}/telemetry`, {
+    method: 'POST',
+    headers: { 'User-Agent': `Mozilla/5.0 ${marcador}` },
+    body: JSON.stringify({ event: 'page_view', route: 'home', extra: marcador }),
+  });
+  await fetch(`${padrao.base}/telemetry`, {
+    method: 'POST',
+    body: JSON.stringify({ event: 'page_view', route: 'home', lixo: `${marcador}`.repeat(200) }),
+  });
+
+  // Um tique para o stderr do filho chegar até aqui.
+  await new Promise((r) => setTimeout(r, 200));
+  assert.doesNotMatch(padrao.saida(), /CANARIO-DE-LOG-XYZ/, 'nem corpo, nem User-Agent');
+  assert.doesNotMatch(padrao.saida(), /127\.0\.0\.1|::1|::ffff:/, 'e nenhum IP');
 });
 
 test('POST /telemetry: acima do limite da janela responde 429 sem corpo', async (t) => {
@@ -457,61 +510,25 @@ test('POST /telemetry: acima do limite da janela responde 429 sem corpo', async 
   assert.equal(await barrado.text(), '', '429 sem corpo');
 });
 
-test('/health reporta telemetry.enabled, e nunca o endpoint nem os headers', async (t) => {
-  const desligado = await startServer();
-  t.after(() => desligado.stop());
-  assert.deepEqual(await (await fetch(`${desligado.base}/health`)).json(), {
-    ok: true,
-    turn: { configured: false },
-    telemetry: { enabled: false },
-  });
-
+test('/health com telemetria ligada reporta o booleano, nunca o endpoint nem os headers', async (t) => {
   const collector = await startFakeCollector();
   t.after(() => collector.close());
-  const ligado = await startServer({
+  const server = await startServer({
     env: {
       OTEL_EXPORTER_OTLP_ENDPOINT: collector.endpoint,
       OTEL_EXPORTER_OTLP_HEADERS: 'authorization=Bearer SEGREDO-XYZ',
     },
   });
-  t.after(() => ligado.stop());
+  t.after(() => server.stop());
 
-  const corpo = await (await fetch(`${ligado.base}/health`)).text();
+  const corpo = await (await fetch(`${server.base}/health`)).text();
   assert.deepEqual(JSON.parse(corpo), {
     ok: true,
     turn: { configured: false },
     telemetry: { enabled: true },
   });
   assert.doesNotMatch(corpo, /SEGREDO-XYZ|127\.0\.0\.1|Bearer/, 'booleano puro, e só');
-});
-
-test('sem endpoint o servidor sobe, avisa uma vez e continua servindo tudo', async (t) => {
-  const server = await startServer();
-  t.after(() => server.stop());
-
-  const avisos = server
-    .saida()
-    .split('\n')
-    .filter((l) => l.includes('OTEL_EXPORTER_OTLP_ENDPOINT'));
-  assert.equal(avisos.length, 1, 'um aviso de boot, e só um');
-
-  // O caminho desligado continua servindo: é o que prova que a telemetria é
-  // aditiva e não um novo requisito de deploy.
-  assert.equal((await fetch(`${server.base}/health`)).status, 200);
-  assert.equal((await fetch(`${server.base}/turn-credentials`)).status, 503);
-  assert.deepEqual(await (await fetch(`${server.base}/rooms/x/occupancy`)).json(), {
-    occupied: false,
-  });
-  assert.equal(
-    (
-      await fetch(`${server.base}/telemetry`, {
-        method: 'POST',
-        body: '{"event":"page_view","route":"home"}',
-      })
-    ).status,
-    204,
-    'o beacon continua respondendo 204 mesmo sem para onde exportar',
-  );
+  assert.doesNotMatch(server.saida(), /SEGREDO-XYZ/, 'a credencial do collector não vai para log');
 });
 
 test('collector fora do ar não contamina o produto', async (t) => {

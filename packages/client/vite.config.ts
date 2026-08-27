@@ -123,12 +123,19 @@ export default defineConfig({
   plugins: [resolveJsToTs(), transpilarUrlTypeScript(), react()],
   server: {
     port: 5173,
-    // TODO(WTK-MEET-21): `'all'` não é um valor aceito. O Vite libera qualquer
-    // host só com `true`; para qualquer outro valor ele **itera** o que
-    // recebeu — e iterar uma string percorre 'a', 'l', 'l', que não casa com
-    // hostname nenhum. Ou seja, hoje isto não libera nada. Preservado
-    // exatamente como estava: esta entrega migra tipos e não corrige
-    // comportamento (a correção é uma linha: `allowedHosts: true`).
+    // `'all'` não é um valor aceito. O Vite libera qualquer host só com `true`;
+    // para qualquer outro valor ele **itera** o que recebeu — e iterar uma
+    // string percorre 'a', 'l', 'l', que não casa com hostname nenhum. Ou
+    // seja, isto não libera nada, e o servidor de desenvolvimento segue com a
+    // proteção contra DNS rebinding de pé.
+    //
+    // Decidido na WTK-MEET-21 (que herdou o TODO por causa do identificador,
+    // não do assunto): **mantido como está, de propósito**. A "correção" de uma
+    // linha — `allowedHosts: true` — é um afrouxamento de proteção, não um
+    // conserto, e ninguém pediu acesso remoto ao dev server. Quem precisar
+    // disso deve listar os hosts explicitamente (`allowedHosts: ['meu.host']`),
+    // em commit próprio, revertível sozinho. O registro está em
+    // `docs/progress/WTK-MEET-21.md`.
     allowedHosts: 'all' as unknown as true,
   },
 });

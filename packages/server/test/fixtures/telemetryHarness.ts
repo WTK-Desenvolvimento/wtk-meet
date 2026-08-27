@@ -15,6 +15,7 @@
  * Não é dublê de OTel: o exporter é o OTLP/HTTP real, e o que ele fala é JSON.
  */
 import http from 'node:http';
+import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -158,10 +159,31 @@ export interface RunningServer {
  * Sobe `src/index.ts` de verdade, num processo filho, com o `.env` do
  * desenvolvedor neutralizado — nem TURN nem telemetria podem vir de fora.
  */
+/**
+ * Porta livre escolhida pelo **SO**, e não sorteada.
+ *
+ * Um `21000 + random(9000)` colide: os arquivos de teste rodam em paralelo
+ * (`--test-isolation=process`), cada um sobe vários servidores, e duas escolhas
+ * iguais fazem o segundo `listen` falhar em silêncio — o sintoma é o
+ * `startServer` esperando o `/health` de um processo que já morreu, quinze
+ * segundos por vez, num teste que parecia estável. Mesmo mecanismo de
+ * `signaling.test.ts`.
+ */
+function freePort(): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const probe = net.createServer();
+    probe.on('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address() as AddressInfo;
+      probe.close(() => resolve(port));
+    });
+  });
+}
+
 export async function startServer({
   env = {},
 }: { env?: Record<string, string> } = {}): Promise<RunningServer> {
-  const port = 22000 + Math.floor(Math.random() * 8000);
+  const port = await freePort();
   const child: ChildProcess = spawn(process.execPath, ['--import', TS_HOOK, 'src/index.ts'], {
     cwd: SERVER_ROOT,
     env: {
