@@ -3,7 +3,7 @@
   // que sobe no container e no E2E. Por isso `moduleResolution: NodeNext` e por
   // isso nenhum import pode apontar para `.ts` — `allowImportingTsExtensions` é
   // proibido quando há emissão.
-  "extends": "../tsconfig.base.json",
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "module": "NodeNext",
     "moduleResolution": "NodeNext",

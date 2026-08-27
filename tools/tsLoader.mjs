@@ -33,18 +33,16 @@ const SUBSTITUTOS = {
 };
 
 /**
- * O esbuild vive em `client/node_modules` — `tools/` fica na raiz, onde não há
- * `node_modules` nenhum. A resolução é **preguiçosa** (só na primeira vez que um
- * `.tsx` for carregado) e ancorada no client, para que `server` e `e2e`, que
- * nunca carregam `.tsx`, possam usar este mesmo arquivo sem ter esbuild
- * instalado.
+ * O esbuild é devDependency da raiz (workspace root) e fica no `node_modules/`
+ * raiz após hoisting. A resolução é **preguiçosa** (só na primeira vez que um
+ * `.tsx` for carregado), para que `server` e `e2e`, que nunca carregam `.tsx`,
+ * possam usar este mesmo arquivo sem exercitar a dependência.
  */
 let transformar = null;
 
 async function esbuildTransform() {
   if (transformar) return transformar;
-  const ancora = new URL('../client/package.json', import.meta.url);
-  const { transform } = await import(new URL('./node_modules/esbuild/lib/main.js', new URL('.', ancora)));
+  const { transform } = await import('esbuild');
   transformar = transform;
   return transformar;
 }

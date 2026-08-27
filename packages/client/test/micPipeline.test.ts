@@ -22,7 +22,7 @@ import assert from 'node:assert/strict';
 import { register } from 'node:module';
 import test from 'node:test';
 
-register('../../tools/viteUrlLoader.mjs', import.meta.url);
+register('../../../tools/viteUrlLoader.mjs', import.meta.url);
 
 const { createMicPipeline, detectNoiseMode } = await import('../src/lib/micPipeline.js');
 const { MODE, PROCESSOR_NAME } = await import('../src/lib/noiseSuppression.js');

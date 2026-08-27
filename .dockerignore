@@ -10,7 +10,7 @@
 .gitignore
 
 # Não entram em imagem nenhuma.
-e2e
+packages/e2e
 docs
 infra
 *.md

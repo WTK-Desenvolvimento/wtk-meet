@@ -3,7 +3,7 @@
   // tem JSX e não é importado por ninguém. Roda com o type stripping nativo do
   // Node, e por isso importa `'./harness.ts'` com a extensão real —
   // `allowImportingTsExtensions` é o que torna isso legal para o `tsc`.
-  "extends": "../tsconfig.base.json",
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
     "moduleResolution": "Bundler",

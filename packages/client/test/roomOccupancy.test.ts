@@ -25,7 +25,7 @@ import type { Socket } from 'socket.io-client';
 
 const SERVER_ENTRY = fileURLToPath(new URL('../../server/src/index.ts', import.meta.url));
 /** `spawn` cria um processo Node novo: o hook de módulo do pai não atravessa. */
-const TS_HOOK = fileURLToPath(new URL('../../tools/registerTs.mjs', import.meta.url));
+const TS_HOOK = fileURLToPath(new URL('../../../tools/registerTs.mjs', import.meta.url));
 
 let server: ChildProcess;
 let port: number;

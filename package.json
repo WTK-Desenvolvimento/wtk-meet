@@ -1,0 +1,22 @@
+{
+  "name": "wtk-meet",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/client", "packages/server", "packages/e2e"],
+  "engines": { "node": ">=22.18" },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  },
+  "scripts": {
+    "dev:server": "npm -w wtk-meet-server run dev",
+    "dev:client": "npm -w wtk-meet-client run dev",
+    "build": "npm -w wtk-meet-client -w wtk-meet-server run build",
+    "build:server": "npm -w wtk-meet-server run build",
+    "build:client": "npm -w wtk-meet-client run build",
+    "test": "npm -w wtk-meet-client -w wtk-meet-server run test",
+    "test:e2e": "npm -w wtk-meet-e2e run test",
+    "typecheck": "npm -w wtk-meet-client -w wtk-meet-server -w wtk-meet-e2e run typecheck",
+    "lint": "npm -w wtk-meet-client -w wtk-meet-server run lint"
+  }
+}

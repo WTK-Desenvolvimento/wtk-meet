@@ -10,7 +10,7 @@
   // mesmo programa, `setTimeout`/`setInterval` resolvem para a sobrecarga do
   // Node (`NodeJS.Timeout`), não para `number`. **Regra do projeto: todo handle
   // de timer é `ReturnType<typeof setTimeout>`, nunca `number`.**
-  "extends": "../tsconfig.base.json",
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     // O Vite constrói; o `tsc` só confere.
     "noEmit": true,

@@ -231,7 +231,7 @@ async function startServer({ env = {}, stub = 'ok' } = {}) {
     [
       // O hook de resolução tem que entrar **antes** do stub: `index.ts`
       // importa `'./rooms.js'`, que não existe em disco.
-      '--import', '../tools/registerTs.mjs',
+      '--import', '../../tools/registerTs.mjs',
       '--import', './test/fixtures/stubCloudflare.ts',
       'src/index.ts',
     ],
