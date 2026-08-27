@@ -1,0 +1,37 @@
+name: Feature request
+description: Sugerir uma funcionalidade ou melhoria
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Descreva sua ideia para que possamos avaliar. Para dúvidas gerais, use [Discussions](https://github.com/WTK-Desenvolvimento/wtk-meet/discussions).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problema ou motivação
+      description: Qual problema essa funcionalidade resolveria?
+      placeholder: "Fico frustrado quando..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Solução proposta
+      description: Como você imagina essa funcionalidade funcionando?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternativas consideradas
+      description: Você considerou outras formas de resolver o problema?
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Contexto adicional
+      description: Screenshots, links, ou qualquer informação extra.

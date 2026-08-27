@@ -2,6 +2,7 @@
   "name": "wtk-meet-e2e",
   "version": "1.0.0",
   "private": true,
+  "license": "Apache-2.0",
   "description": "Teste ponta a ponta com 3 participantes Chromium e TURN local",
   "type": "module",
   "scripts": {

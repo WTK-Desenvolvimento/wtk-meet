@@ -1,7 +1,7 @@
 {
   "name": "wtk-meet-server",
   "version": "1.0.0",
-  "private": true,
+  "license": "Apache-2.0",
   "description": "Ephemeral WebRTC signaling server for wtk-meet (no persistence, in-memory rooms only)",
   "type": "module",
   "main": "dist/index.js",

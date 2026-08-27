@@ -1,5 +1,9 @@
 # wtk-meet
 
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![CI](https://github.com/WTK-Desenvolvimento/wtk-meet/actions/workflows/ci.yml/badge.svg)](https://github.com/WTK-Desenvolvimento/wtk-meet/actions/workflows/ci.yml)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.18-brightgreen.svg)](https://nodejs.org/)
+
 Videochamadas em grupo (até 6 pessoas) em mesh P2P via WebRTC, com uma camada extra de
 E2EE por cima do DTLS-SRTP nativo. Nada do que acontece numa chamada é gravado — a
 única preferência que sobrevive à aba é qual câmera/microfone/saída você escolheu usar
@@ -19,10 +23,11 @@ no server, `vite build` no client) — e aí qualquer Node 20+ roda o `dist/`.
 ### 1. Servidor de sinalização
 
 ```bash
-cd server
+cd packages/server
 cp .env.example .env
+cd ../..
 npm install
-npm run dev            # roda src/index.ts direto, com --watch
+npm run dev:server     # roda src/index.ts direto, com --watch
 ```
 
 Sobe em `http://localhost:4000`. Estado 100% em memória — reiniciar o processo apaga
@@ -31,18 +36,17 @@ todas as salas.
 Para rodar como em produção — que é o que o container e o E2E fazem:
 
 ```bash
-cd server
-npm run build          # tsc → dist/
-npm start              # node dist/index.js
+npm run build:server   # tsc → dist/
+npm -w wtk-meet-server start
 ```
 
 ### 2. Client
 
 ```bash
-cd client
+cd packages/client
 cp .env.example .env
-npm install
-npm run dev
+cd ../..
+npm run dev:client
 ```
 
 Abre em `http://localhost:5173`.
@@ -60,7 +64,7 @@ Cloudflare TURN API e as entrega em `GET /turn-credentials`. Nenhuma credencial 
 baked no bundle do client.
 
 ```bash
-# server/.env
+# packages/server/.env
 CF_TURN_TOKEN_ID=...      # obrigatório
 CF_TURN_API_TOKEN=...     # obrigatório — nunca aparece em log nem em resposta
 CF_TURN_TTL=3600          # opcional: validade da credencial, em segundos
@@ -304,21 +308,13 @@ da sessão. Se a promessa de privacidade for absoluta na sua instalação, desli
 ## Testes
 
 ```bash
-cd client && npm test       # unitários (node:test): histerese do indicador, modelo de chat,
-                            # grade de vídeos, seleção de dispositivos, o estado do player
-                            # de música, as fases da sala e o contrato do mesh
-cd client && npm run typecheck   # tsc --noEmit: 0 erros é o portão
-cd client && npm run lint        # eslint 9 flat config + typescript-eslint, .ts/.tsx
+# tudo pela raiz (npm workspaces):
+npm test                    # unitários de client + server (node:test)
+npm run typecheck           # tsc --noEmit nos três pacotes
+npm run lint                # eslint 9 flat config + typescript-eslint
 
-cd server && npm test       # unitários (node:test): resolução de CF_TURN_TTL e do timeout,
-                            # os três desfechos de /turn-credentials (200 / 503 / 502),
-                            # o RoomStore e os handlers de sinalização (socket.io-client)
-cd server && npm run typecheck   # inclui src/ e test/
-cd server && npm run lint
-
-cd e2e && npm install       # uma vez
-cd e2e && npm run typecheck
-node e2e/run.ts             # ponta a ponta: 3 participantes Chromium + TURN local
+# E2E (ponta a ponta: 3 participantes Chromium + TURN local):
+npm run test:e2e
 ```
 
 O typecheck é portão **separado** do build: `npm run build` no client não roda `tsc`,
@@ -341,17 +337,33 @@ câmera" seria inexecutável no navegador.
 ## Estrutura
 
 ```
-tsconfig.base.json  o rigor de tipos comum aos três pacotes (strict: true)
-tools/         hooks de módulo que fazem o `node --test` enxergar TypeScript
-server/        sinalização (Express + Socket.IO), estado em memória, credenciais TURN efêmeras
-server/dist/   artefato compilado (`npm run build`) — é o que o container roda
-client/        app React (Vite) — UI, mesh WebRTC, E2EE via insertable streams
-client/test/   testes unitários
-e2e/           teste ponta a ponta com 3 participantes
-infra/coturn/  config de referência para STUN/TURN self-hosted
+tsconfig.base.json       o rigor de tipos comum aos três pacotes (strict: true)
+tools/                   hooks de módulo que fazem o `node --test` enxergar TypeScript
+packages/server/         sinalização (Express + Socket.IO), estado em memória, credenciais TURN efêmeras
+packages/server/dist/    artefato compilado (`npm run build`) — é o que o container roda
+packages/client/         app React (Vite) — UI, mesh WebRTC, E2EE via insertable streams
+packages/client/test/    testes unitários
+packages/e2e/            teste ponta a ponta com 3 participantes
+infra/coturn/            config de referência para STUN/TURN self-hosted
 ```
 
-Os três pacotes são independentes: cada um tem seu `package.json`, seu `node_modules` e
-seu `tsconfig.json` — não há workspace na raiz. `npm install` roda **três vezes**, uma
-em cada. Só o `tsconfig.base.json` é compartilhado, e é por isso que o
+O repositório usa **npm workspaces**: `npm install` na raiz instala tudo de uma vez.
+Comandos comuns pela raiz: `npm test`, `npm run build`, `npm run lint`, `npm run typecheck`.
+Só o `tsconfig.base.json` é compartilhado, e é por isso que o
 `docker compose build` tem a raiz como contexto (ver `docker-compose.yml`).
+
+## Contribuindo
+
+Veja [CONTRIBUTING.md](CONTRIBUTING.md) para o guia completo de como contribuir
+([English version](CONTRIBUTING.en.md)).
+
+## Segurança
+
+Para relatar vulnerabilidades, **não abra issues públicas**. Siga as instruções em
+[SECURITY.md](SECURITY.md).
+
+## Licença
+
+Este projeto é licenciado sob a [Apache License 2.0](LICENSE).
+
+Copyright 2024-2026 WTK Desenvolvimento.

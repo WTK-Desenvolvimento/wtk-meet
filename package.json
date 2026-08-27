@@ -1,7 +1,7 @@
 {
   "name": "wtk-meet",
   "version": "1.0.0",
-  "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "workspaces": ["packages/client", "packages/server", "packages/e2e"],
   "engines": { "node": ">=22.18" },

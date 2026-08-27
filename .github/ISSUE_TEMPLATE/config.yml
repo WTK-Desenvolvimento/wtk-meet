@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Dúvidas e discussões
+    url: https://github.com/WTK-Desenvolvimento/wtk-meet/discussions
+    about: Para perguntas, ideias e conversas gerais, use Discussions em vez de abrir uma issue.
+  - name: Vulnerabilidade de segurança
+    url: https://github.com/WTK-Desenvolvimento/wtk-meet/security/advisories/new
+    about: Para relatar vulnerabilidades de segurança, use o canal privado de Security Advisories.

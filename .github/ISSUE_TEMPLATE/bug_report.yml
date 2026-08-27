@@ -1,0 +1,70 @@
+name: Bug report
+description: Reportar um problema encontrado no wtk-meet
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Obrigado por reportar! Preencha o formulário abaixo para nos ajudar a reproduzir o problema.
+        Para vulnerabilidades de segurança, **não abra uma issue** — siga as instruções em [SECURITY.md](../../SECURITY.md).
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Descrição
+      description: Descreva o bug de forma clara e objetiva.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Passos para reproduzir
+      description: Lista de passos para reproduzir o problema.
+      placeholder: |
+        1. Entrar na sala '...'
+        2. Clicar em '...'
+        3. Observar que '...'
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Comportamento esperado
+      description: O que deveria ter acontecido?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Comportamento atual
+      description: O que aconteceu de fato?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Navegador
+      options:
+        - Chrome / Chromium
+        - Edge
+        - Firefox
+        - Safari
+        - Outro
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Sistema operacional
+      placeholder: "ex: Windows 11, macOS 15, Ubuntu 24.04"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Screenshots
+      description: Cole aqui logs do console do navegador ou capturas de tela, se disponíveis.
