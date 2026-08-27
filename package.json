@@ -1,6 +1,6 @@
 {
   "name": "wtk-meet",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "license": "Apache-2.0",
   "type": "module",
   "workspaces": ["packages/client", "packages/server", "packages/e2e"],

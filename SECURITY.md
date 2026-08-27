@@ -4,7 +4,7 @@
 
 | Versao  | Suporte          |
 | ------- | ---------------- |
-| 0.1.x   | Suporte ativo    |
+| 1.1.x   | Suporte ativo    |
 
 ## Como relatar uma vulnerabilidade
 
