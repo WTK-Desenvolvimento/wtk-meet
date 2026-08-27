@@ -456,11 +456,11 @@ const React = await import('react');
  */
 const internals = (
   React.default as unknown as {
-    __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED: {
-      ReactCurrentDispatcher: { current: unknown };
+    __CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE: {
+      H: unknown;
     };
   }
-).__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
+).__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
 const { default: Room } = await import('../src/pages/Room.js');
 
 // ------------------------------------------------------------ render de hook
@@ -541,12 +541,12 @@ function renderComponent(Component: () => unknown) {
 
   function renderOnce() {
     cursor = 0;
-    const previous = internals.ReactCurrentDispatcher.current;
-    internals.ReactCurrentDispatcher.current = dispatcherCompleto;
+    const previous = internals.H;
+    internals.H = dispatcherCompleto;
     try {
       result = Component();
     } finally {
-      internals.ReactCurrentDispatcher.current = previous;
+      internals.H = previous;
     }
   }
 

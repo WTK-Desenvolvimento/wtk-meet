@@ -7,7 +7,7 @@ e o projeto adere ao [Versionamento Semantico](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-08-27
+## [1.1.0] - 2026-08-27
 
 ### Adicionado
 
@@ -22,5 +22,5 @@ e o projeto adere ao [Versionamento Semantico](https://semver.org/lang/pt-BR/).
 - Servidor de sinalizacao efemero (sem persistencia).
 - Credenciais TURN efemeras via Cloudflare.
 
-[Unreleased]: https://github.com/WTK-Desenvolvimento/wtk-meet/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/WTK-Desenvolvimento/wtk-meet/releases/tag/v0.1.0
+[Unreleased]: https://github.com/WTK-Desenvolvimento/wtk-meet/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/WTK-Desenvolvimento/wtk-meet/releases/tag/v1.1.0

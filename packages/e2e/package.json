@@ -1,6 +1,6 @@
 {
   "name": "wtk-meet-e2e",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "license": "Apache-2.0",
   "description": "Teste ponta a ponta com 3 participantes Chromium e TURN local",
@@ -15,9 +15,9 @@
   },
   "devDependencies": {
     "@types/node": "^26.3.0",
-    "typescript": "^5.9.3"
+    "typescript": "^6.0.3"
   },
   "engines": {
-    "node": ">=22.18"
+    "node": ">=26"
   }
 }

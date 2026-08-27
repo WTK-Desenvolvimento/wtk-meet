@@ -4,6 +4,8 @@
 [![CI](https://github.com/WTK-Desenvolvimento/wtk-meet/actions/workflows/ci.yml/badge.svg)](https://github.com/WTK-Desenvolvimento/wtk-meet/actions/workflows/ci.yml)
 [![Node](https://img.shields.io/badge/node-%3E%3D22.18-brightgreen.svg)](https://nodejs.org/)
 
+> 🌐 [English version](README.en.md)
+
 Videochamadas em grupo (até 6 pessoas) em mesh P2P via WebRTC, com uma camada extra de
 E2EE por cima do DTLS-SRTP nativo. Nada do que acontece numa chamada é gravado — a
 única preferência que sobrevive à aba é qual câmera/microfone/saída você escolheu usar

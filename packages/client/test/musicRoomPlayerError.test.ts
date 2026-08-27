@@ -174,11 +174,11 @@ const React = await import('react');
  */
 const internals = (
   React.default as unknown as {
-    __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED: {
-      ReactCurrentDispatcher: { current: unknown };
+    __CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE: {
+      H: unknown;
     };
   }
-).__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
+).__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
 const { useMusicRoom } = await import('../src/lib/useMusicRoom.js');
 
 import type { QueueEntry } from '../src/lib/musicSession.js';
@@ -262,12 +262,12 @@ function renderHook<P, R>(hook: (props: P) => R, props: P) {
 
   function renderOnce() {
     cursor = 0;
-    const previous = internals.ReactCurrentDispatcher.current;
-    internals.ReactCurrentDispatcher.current = dispatcherCompleto;
+    const previous = internals.H;
+    internals.H = dispatcherCompleto;
     try {
       result = hook(props);
     } finally {
-      internals.ReactCurrentDispatcher.current = previous;
+      internals.H = previous;
     }
   }
 

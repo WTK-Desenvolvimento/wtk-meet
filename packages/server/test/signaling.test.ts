@@ -65,7 +65,13 @@ function freePort(): Promise<number> {
 
 function startServer(chosenPort: number): Promise<ChildProcess> {
   const child = spawn(process.execPath, ['--import', TS_HOOK, SERVER_ENTRY], {
-    env: { ...process.env, PORT: String(chosenPort) },
+    env: {
+      ...process.env,
+      PORT: String(chosenPort),
+      // Garante que o teste roda sem TURN, mesmo com .env local configurado.
+      CF_TURN_TOKEN_ID: '',
+      CF_TURN_API_TOKEN: '',
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   return new Promise<ChildProcess>((resolve, reject) => {

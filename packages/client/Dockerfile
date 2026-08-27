@@ -7,7 +7,7 @@
 # `npm ci --workspace=packages/client` instala apenas as deps deste workspace.
 
 # ── Stage 1: build ───────────────────────────────────────────
-FROM node:22-alpine AS builder
+FROM node:26-alpine AS builder
 WORKDIR /repo
 
 COPY package.json package-lock.json ./

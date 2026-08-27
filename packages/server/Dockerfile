@@ -10,7 +10,7 @@
 # `npm ci --workspace=packages/server` instala apenas as deps deste workspace.
 
 # ── Stage 1: build ───────────────────────────────────────────
-FROM node:22-alpine AS builder
+FROM node:26-alpine AS builder
 WORKDIR /repo
 
 COPY package.json package-lock.json ./
@@ -24,7 +24,7 @@ WORKDIR /repo/packages/server
 RUN npm run build
 
 # ── Stage 2: runtime ─────────────────────────────────────────
-FROM node:22-alpine
+FROM node:26-alpine
 WORKDIR /repo
 
 COPY package.json package-lock.json ./
