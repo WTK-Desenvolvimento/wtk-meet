@@ -121,6 +121,34 @@ function transpilarUrlTypeScript(): Plugin {
 
 export default defineConfig({
   plugins: [resolveJsToTs(), transpilarUrlTypeScript(), react()],
+  /**
+   * Uma cópia de React, e só uma. Sem esta linha o app **não renderiza nada**.
+   *
+   * O bump da PR #26 (`6973768`, "React para 19, react-router-dom para 7",
+   * mergeado em `b9fb31f`) deixou o lockfile com **duas** cópias de React:
+   *
+   *   node_modules/react                  18.3.1   ← içado para satisfazer o
+   *   node_modules/react-router-dom        7.18.2     peer `react >=18` do router
+   *   packages/client/node_modules/react  19.2.8   ← o que o app declara
+   *
+   * O bundle carrega React 19 (resolvido a partir de `packages/client`) e o
+   * `react-router-dom` carrega o 18 do topo. Duas cópias, dois dispatchers, e o
+   * primeiro hook que o router chama estoura com
+   * `Cannot read properties of null (reading 'useRef')` — a árvore inteira
+   * morre, `#root` fica vazio e a página fica branca, sem nada no servidor que
+   * indique problema.
+   *
+   * `dedupe` faz o Vite resolver todo `react`/`react-dom` a partir da raiz do
+   * projeto (`packages/client`), ou seja, sempre o 19.2.8. É a remediação
+   * documentada do Vite para exatamente este caso em monorepo.
+   *
+   * **Conserto mais fundo, para quem cuidar das dependências:** um bloco
+   * `overrides` no `package.json` da raiz fixando `react`/`react-dom` em
+   * `^19.2.8` faria o npm parar de instalar a segunda cópia — resolve na origem,
+   * e não só no build do client. Ficou de fora aqui de propósito: mexe na
+   * resolução de dependências do repositório inteiro e pede um install limpo.
+   */
+  resolve: { dedupe: ['react', 'react-dom'] },
   server: {
     port: 5173,
     // `'all'` não é um valor aceito. O Vite libera qualquer host só com `true`;
