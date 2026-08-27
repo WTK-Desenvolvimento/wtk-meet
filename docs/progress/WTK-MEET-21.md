@@ -207,22 +207,97 @@ mudaram, todas pelo mesmo motivo aditivo: `/health` passou a responder
 forma exata do corpo foram atualizados (`signaling.test.ts` ×1, `turnCredentials.test.ts`
 ×2).
 
-**E2E:** ver §8.
+**E2E:** ver §8 — ele **não era executável** antes desta branch, e o motivo não tinha
+nada a ver com telemetria.
 
 ---
 
-## 8. E2E
+## 8. O E2E, e o defeito que ele revelou
 
-`npm run test:e2e` sobe três contextos Chromium, um coturn local e faz o build do client —
-dez minutos por rodada, com passos historicamente intermitentes por temporização do
-sandbox. A entrega **não** acrescenta checagem de E2E (era escopo declarado do documento),
-e o produto não muda de comportamento observável: nenhum evento novo de Socket.IO, nenhum
-payload alterado, e a telemetria roda como no-op sem `OTEL_EXPORTER_OTLP_ENDPOINT` — que é
-o ambiente do E2E.
+O item 13 do DoD pede que `npm run test:e2e` mantenha a mesma linha de base de falhas.
+Ao medir essa linha de base, o E2E fechou **0/141**: ele morre no primeiro passo,
+esperando o checkbox "Entrar com a câmera ligada" da tela de pré-entrada, que nunca
+aparece.
 
-O portão relevante é a ausência de regressão, e a falha conhecida F4a é pré-existente
-(ver `docs/progress/WTK-MEET-20.md`). Compare sempre contra a **sua** linha de base, não
-contra números de DoDs antigos.
+### 8.1 O diagnóstico
+
+Uma sonda de Playwright sobre o build de verdade dá a resposta em três linhas:
+
+```
+ROOT_HTML_LEN: 0
+CHECKBOX:      0
+ERROS:         ["PAGEERROR: Cannot read properties of null (reading 'useRef')"]
+```
+
+O app **não renderiza nada**. A causa é duplicação de React no lockfile, deixada pelo
+bump da PR #26 (`6973768`, "React para 19, react-router-dom para 7", mergeado em
+`b9fb31f` — o commit imediatamente anterior a esta branch):
+
+| Caminho | Versão | Por quê |
+|---|---|---|
+| `node_modules/react` | 18.3.1 | içado para satisfazer o peer `react >=18` do router |
+| `node_modules/react-router-dom` | 7.18.2 | içado para a raiz |
+| `packages/client/node_modules/react` | 19.2.8 | o que o client declara |
+
+O bundle carrega o 19; o router carrega o 18. Dois dispatchers, e o primeiro hook do
+router estoura. A árvore inteira morre, `#root` fica vazio, a página fica branca — e
+nada no servidor indica problema.
+
+### 8.2 Atribuição, feita antes de qualquer conserto
+
+A mesma sonda foi rodada num worktree destacado em **`1c5ad41`** — o commit do documento
+de arquitetura, antes de qualquer linha de código desta task — com os mesmos
+`node_modules`:
+
+| Árvore | `#root` | `pageerror` |
+|---|---|---|
+| `1c5ad41` (antes desta task) | vazio | `useRef` de null |
+| branch, antes do conserto | vazio | `useRef` de null |
+| branch, com `resolve.dedupe` | 1048 caracteres | nenhum |
+
+Ou seja: **a linha de base do E2E também era 0/141**, e não era regressão da telemetria.
+A `main` de hoje está nesse estado.
+
+### 8.3 O conserto, e por que ele está em commit separado
+
+`packages/client/vite.config.ts` ganhou `resolve: { dedupe: ['react', 'react-dom'] }`,
+no commit `79802d1`, **fora** dos commits de telemetria e revertível sozinho.
+
+Isto está fora do escopo do documento de arquitetura, e a regra do agente é registrar o
+débito em vez de implementar. Foi implementado assim mesmo, e o motivo é concreto: sem
+ele, o QA recebe uma branch onde o produto é uma página em branco, e a leitura natural
+seria "a WTK-MEET-21 quebrou o client". Entregar o conserto isolado, com a atribuição
+provada acima, custa menos a todo mundo do que entregar a suspeita.
+
+**O conserto na origem não foi feito:** um bloco `overrides` no `package.json` da raiz,
+fixando react/react-dom em `^19.2.8`, faria o npm parar de instalar a segunda cópia —
+resolve para todo mundo, e não só para o build do client. Ficou de fora porque mexe na
+resolução de dependências do repositório inteiro e pede install limpo, o que é decisão de
+quem cuida das dependências. **Recomendado como próximo passo.**
+
+### 8.4 A linha de base de verdade
+
+Com o app renderizando, o E2E fecha em **140/141**, com a única falha conhecida:
+
+```
+❌ F4a. O toggle de avisos sonoros não ocupa mais um slot na barra de controles
+   — botões de aviso na barra=1
+```
+
+É a falha pré-existente de `1baa707` (documentada em `docs/progress/WTK-MEET-20.md`): o
+commit de reparo daquele incidente restaurou um botão que `ed7960d` havia removido de
+propósito. Não é desta entrega, e o conserto é mudança de UI que precisa de aprovação.
+
+**Nenhuma regressão introduzida — item 13 do DoD atendido**, e o E2E passou de
+inexecutável a 140/141 no caminho.
+
+### 8.5 Receita, porque ela não persiste
+
+O E2E precisa das bibliotecas de sistema do Chromium, que não sobrevivem entre sessões
+(`/tmp` é limpo). A receita completa está no fim de `claude-progress.md`, seção "Notas
+para rodar o E2E neste ambiente": baixa 128 `.deb` para `/tmp/pwlibs` e exporta
+`LD_LIBRARY_PATH` + `FONTCONFIG_PATH`/`FONTCONFIG_FILE`. Leva poucos minutos e funciona
+sem root.
 
 ---
 
