@@ -1,0 +1,113 @@
+/* Painel de chat — irmão do `.video-stage` dentro do `.stage`.
+
+   Essa fraternidade é contrato: o E2E mede `chat.top >= stage.bottom` no
+   empilhamento de ≤720px. Não mova o painel para dentro do palco. */
+
+@layer components {
+  .chat-panel {
+    width: 320px;
+    max-width: 100%;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-1);
+    overflow: hidden;
+  }
+
+  .chat-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-raised);
+  }
+
+  .chat-header h2 {
+    margin: 0;
+    font-size: var(--text-md);
+  }
+
+  .chat-subtitle {
+    display: block;
+    color: var(--muted-text);
+    font-size: var(--text-xs);
+    margin-top: 0.15rem;
+  }
+
+  .chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    padding: var(--space-3) var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .chat-empty {
+    color: var(--muted-text);
+    font-size: var(--text-sm);
+    margin: 0;
+  }
+
+  .chat-message {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .chat-meta {
+    display: flex;
+    gap: var(--space-2);
+    align-items: baseline;
+    font-size: var(--text-xs);
+  }
+
+  .chat-author {
+    font-weight: 600;
+  }
+
+  .chat-message.mine .chat-author {
+    color: var(--accent);
+  }
+
+  .chat-time {
+    color: var(--muted-text);
+  }
+
+  .chat-text {
+    font-size: var(--text-md);
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .chat-composer {
+    display: flex;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    border-top: 1px solid var(--border);
+    background: var(--surface-raised);
+  }
+
+  .chat-composer input {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* Empilhamento (≤720px de viewport): o painel deixa de ser coluna lateral e
+     vira faixa sob o vídeo. `flex` em vez de `max-height: 45vh` — com o palco de
+     altura fixa, uma altura em vh estouraria a coluna e ressuscitaria o scroll. */
+  @media (max-width: 720px) {
+    .chat-panel {
+      width: 100%;
+      flex: 0 1 45%;
+      min-height: 0;
+    }
+  }
+}

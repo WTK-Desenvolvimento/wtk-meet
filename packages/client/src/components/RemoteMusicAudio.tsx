@@ -3,6 +3,8 @@ import { useAudibleMedia } from '../lib/audibleMedia.js';
 
 import type { AudibleMediaOptions } from '../lib/audibleMedia.js';
 
+import './RemoteMusicAudio.css';
+
 /** A música de um peer: o stream do quarto canal, com dono. */
 export interface RemoteMusicStream {
   peerId: string;

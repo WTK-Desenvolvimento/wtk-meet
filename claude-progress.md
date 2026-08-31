@@ -1,3 +1,416 @@
+# WTK-MEET-22 — Design tokens, tema claro/escuro alternável e CSS por componente
+
+**Status: implementação concluída e validada.** Branch
+`agent/wtk-meet-22-quero-ajustar-o-design-do-site`. Três commits:
+`1fbdcd6` (pré-requisito: dedupe de React), `c97b51f` (a reforma) e `4cde7c2`
+(fechamento de contraste + documentação).
+
+Documento de arquitetura seguido:
+`docs/agents/arch-temp-design-tokens-tema-claro-css-por-componente.md`.
+
+---
+
+## O problema
+
+`packages/client/src/styles.css` tinha **1371 linhas** e era o único arquivo de
+estilo do produto. O `:root` tinha **8 variáveis**, todas de cor: nenhuma escala
+de espaçamento, de raio, de sombra ou de tipografia — cada regra escolhia
+`0.35rem`, `0.6rem`, `0.85rem` por conta própria, e havia seis raios diferentes
+sem critério registrado. `color-scheme: dark` fixo, um único breakpoint em
+720px, cor crua espalhada fora do `:root` (`rgba(202,165,61,·)`,
+`rgba(79,124,255,·)`, `rgba(0,0,0,0.55)`), um `var(--card-bg, #23272e)` cujo
+token **não existia** e um `var(--accent, #5b8def)` cujo fallback **não era** o
+`--accent` real. Quatro pares reprovavam AA, e foco visível existia em um lugar
+só (`button.thumb-item:focus-visible`).
+
+---
+
+## O que foi entregue
+
+### A base de tokens (`src/styles/tokens.css`)
+
+O único arquivo do produto onde uma cor literal pode aparecer, com **três
+famílias** — e a separação entre elas é o que faz o tema claro não quebrar:
+
+1. **Tema** — viram com claro/escuro: superfície, traço, texto, marca, estado,
+   cromo. Declaradas duas vezes, uma por bloco.
+2. **Sobre mídia** (`--media-*`, `--on-media-*`) — **fixas nos dois temas**.
+   Tudo que fica por cima de um `<video>`: fundo do tile, scrim do rótulo, chip
+   de conexão, letterbox, painel de participantes. O tile é uma janela para
+   conteúdo que o produto não controla; um rótulo claro sobre uma câmera clara
+   some, e um letterbox branco em volta de um compartilhamento de tela ofusca.
+3. **Escalas** — espaçamento, raio, tipografia e alvo de toque (`--control-min:
+   44px`). Constantes.
+
+Os **oito nomes semânticos que já existiam** continuam com o mesmo nome. As
+variáveis de runtime (`--grid-cols`, `--tile-w`, `--grid-gap`, `--spot-w`,
+`--spot-h`, `--rail-w`, `--thumb-w`, `--thumb-h`, `--speak-level`,
+`--mic-level`) **não** foram declaradas ali: elas vêm de `lib/gridLayout.ts` e
+`lib/spotlightLayout.ts`, que têm teste unitário próprio, e declará-las criaria
+uma segunda fonte de verdade para a conta que o E2E mede.
+
+### CSS por componente, com a cascata presa por camadas
+
+`styles.css` deixou de ter regra: virou barril de duas linhas. `src/styles/`
+guarda **só** `tokens.css` e `base.css`; todo o resto vive ao lado do `.tsx` que
+o renderiza e é importado por ele.
+
+Isso levantou um risco real: todo o CSS deste produto é de especificidade 1, e
+com CSS co-localizado a ordem de emissão passa a ser a do grafo de módulos do
+bundler — que muda quando alguém reordena um `import` em `Room.tsx`, e a quebra
+apareceria como "o botão do chat ficou com borda" três PRs depois. A resposta
+são as camadas `@layer tokens, base, components, overlays`, declaradas num
+`<style>` do `<head>` do `index.html`. Ali, e não no barril: a ordem de uma
+camada é fixada no seu **primeiro aparecimento**, e um `.css` de componente pode
+ser emitido antes de `styles.css`. O `<head>` é a única posição garantidamente
+anterior a toda folha do bundle. `test/themeInlineScript.test.ts` prende essa
+declaração.
+
+Os 16 arquivos e o que cada um cobre:
+
+| Arquivo | Camada | Cobre |
+|---|---|---|
+| `styles/tokens.css` | tokens | primitivos, semânticos por tema, escalas, `color-scheme` |
+| `styles/base.css` | base | reset, `button`/`input`/`select`/`code`, `:focus-visible`, `.icon-button`, `.primary`/`.secondary`, `.badge`, `.warning`, `.hint`, `.error`, e a casca `.home`/`.field`/`.actions`/`.join-block` que Home e PreJoin dividem |
+| `pages/Home.css` | components | `.field .hint`, `[aria-invalid]`, `.occupied-room`, `.occupied-actions` |
+| `pages/Room.css` | components | `.room`, `.phase-content`, `.local-preview`, `button.warning.audio-blocked`, `.stage`, `.controls`, `.invite-hint`, `.music-button*`, `.now-playing-*`, `.music-youtube-host` |
+| `components/PreJoin.css` | components | `.prejoin-preview`, `.prejoin-toggle` |
+| `components/VideoGrid.css` | components | `.video-stage`, `.video-grid` |
+| `components/SpotlightStage.css` | components | `.spotlight-layout`, `.spotlight-main`, `.participants-toggle`, `.participants-panel` |
+| `components/ThumbnailRail.css` | components | `.thumb-rail`, `.thumb-item` |
+| `components/VideoTile.css` | components | `.video-tile` e tudo que fica **sobre** ele |
+| `components/ChatPanel.css` | components | `.chat-*` |
+| `components/MusicPanel.css` | components | `.music-*` do painel |
+| `components/PeerAudio.css` | components | `.peer-audio-sinks` — três linhas e um contrato |
+| `components/RemoteMusicAudio.css` | components | `.remote-music-audio` |
+| `components/modal.css` | overlays | casca dos dois modais e **o mapa de camadas z, num lugar só** |
+| `components/JoinRequestModal.css` | overlays | `.join-request-*` |
+| `components/SettingsModal.css` | overlays | `.settings-*`, `.mic-meter`, o grupo de rádio de tema |
+| `components/MusicVoteCard.css` | overlays | `.music-vote-*` |
+| `components/Toasts.css` | overlays | `.toasts`, `.toast-*` |
+
+### O motor de tema
+
+- `src/lib/theme.ts` — módulo **puro**, padrão de `devices.ts`: recebe o
+  storage-like e um booleano, devolve estruturas, nunca lança. `applyTheme` é a
+  única função que toca o DOM, e recebe o elemento por parâmetro.
+- Chave própria `wtk-meet:theme`, valor cru (`system` | `light` | `dark`).
+  **Não** um sexto campo em `wtk-meet:devices` — o E2E S7 exige exatamente cinco
+  chaves lá. Valor cru e não JSON porque quem o lê primeiro é o script inline,
+  que precisa ser minúsculo e não pode lançar.
+- Script **inline e síncrono** no `<head>` resolve e escreve
+  `data-theme="light|dark"` (nunca `"system"`) **antes do primeiro paint**. O
+  bundle é `type="module"`, portanto adiado: aplicar o tema num `useEffect`
+  piscaria o tema errado a cada navegação.
+- `main.tsx` assina `matchMedia`: com a preferência em Sistema, trocar o tema do
+  SO com a aba aberta troca o tema sem recarregar.
+- Grupo de **rádio** no `SettingsModal` (Sistema/Claro/Escuro), aplicado e
+  persistido no clique, fora do contrato Salvar/Cancelar. **Nunca um quarto
+  `<select>`**: `harness.ts:494` bloqueia em `selects.length === 3` e `run.ts`
+  endereça por índice — um `<select>` a mais trava `openSettings` em timeout e
+  derruba quase toda a suíte.
+
+---
+
+## Tabela de contraste — os dois temas, medidos
+
+Método: WCAG 2.x, `(L_claro + 0.05) / (L_escuro + 0.05)` sobre luminância
+relativa. As lavagens com alfa foram **compostas** sobre o fundo real antes de
+medir; os pares "sobre mídia" foram medidos no **pior caso**, que é vídeo branco
+sob o scrim. Exige-se 4.5:1 em texto e 3:1 em limite de controle e em elemento
+gráfico que carrega informação.
+
+**81 pares medidos, 81 aprovados, nos dois temas.** Os quatro pares que
+reprovavam antes desta entrega — branco sobre `--accent` (3.71), branco sobre
+`--danger` (3.91) e `--border` contra `--surface` (1.24) e contra `--bg` (1.39) —
+deixaram de existir: os papéis foram separados em `--accent`/`--accent-strong`,
+`--danger`/`--danger-strong` e `--border`/`--border-strong`, e são os tokens
+**-strong** que aparecem na tabela carregando texto e limite de controle.
+
+| Papel | Onde | Tema | Frente | Fundo | Razão | Exige | |
+|---|---|---|---|---|---:|---:|:-:|
+| texto | corpo / página (.room, body) | dark | `#e8e9ed` | `#0f1115` | **15.58** | 4.5 | ✅ |
+| texto | corpo / painel (.chat-panel, .music-panel, .video-tile) | dark | `#e8e9ed` | `#1a1d24` | **13.90** | 4.5 | ✅ |
+| texto | corpo / elevado (modal, toast, .music-vote-card) | dark | `#e8e9ed` | `#232733` | **12.28** | 4.5 | ✅ |
+| texto | corpo / rebaixado (.join-request, select) | dark | `#e8e9ed` | `#0f1115` | **15.58** | 4.5 | ✅ |
+| texto | .hint .chat-time .music-*-meta / página | dark | `#9a9fac` | `#0f1115` | **7.13** | 4.5 | ✅ |
+| texto | .hint .chat-time .music-*-meta / painel | dark | `#9a9fac` | `#1a1d24` | **6.37** | 4.5 | ✅ |
+| texto | .music-queue-kind .chat-subtitle / elevado | dark | `#9a9fac` | `#232733` | **5.63** | 4.5 | ✅ |
+| texto | .chat-message.mine .chat-author / painel | dark | `#6b93ff` | `#1a1d24` | **5.82** | 4.5 | ✅ |
+| texto | .now-playing-label / elevado | dark | `#6b93ff` | `#232733` | **5.14** | 4.5 | ✅ |
+| texto | button.secondary (texto) / página | dark | `#6b93ff` | `#0f1115` | **6.52** | 4.5 | ✅ |
+| texto | button.primary .badge .tile-badge (texto) | dark | `#ffffff` | `#4069e8` | **4.77** | 4.5 | ✅ |
+| texto | button.leave "Sair" (texto) | dark | `#ffffff` | `#c2333a` | **5.49** | 4.5 | ✅ |
+| texto | .error / página | dark | `#f2686c` | `#0f1115` | **6.27** | 4.5 | ✅ |
+| texto | .music-vote-result / elevado | dark | `#f2686c` | `#232733` | **4.95** | 4.5 | ✅ |
+| texto | .music-vote-result.approved / elevado | dark | `#6b93ff` | `#232733` | **5.14** | 4.5 | ✅ |
+| texto | .warning (texto) / lavagem sobre página | dark | `#e0bd5e` | `#2b271b` | **8.24** | 4.5 | ✅ |
+| texto | .warning (texto) / lavagem sobre painel | dark | `#e0bd5e` | `#343128` | **7.18** | 4.5 | ✅ |
+| texto | .music-notice (texto) / lavagem sobre painel | dark | `#e8e9ed` | `#343128` | **10.71** | 4.5 | ✅ |
+| texto | .music-queue-item.current / lavagem sobre painel | dark | `#e8e9ed` | `#273047` | **10.82** | 4.5 | ✅ |
+| texto | .music-vote-actions .chosen / lavagem sobre elevado | dark | `#e8e9ed` | `#2f3854` | **9.54** | 4.5 | ✅ |
+| texto | button.secondary:hover (texto) / lavagem | dark | `#6b93ff` | `#273047` | **4.53** | 4.5 | ✅ |
+| texto | .icon-button (repouso) / painel | dark | `#9a9fac` | `#1a1d24` | **6.37** | 4.5 | ✅ |
+| traço | button / input / select — borda sobre painel | dark | `#69738c` | `#1a1d24` | **3.56** | 3 | ✅ |
+| traço | button / input — borda sobre página | dark | `#69738c` | `#0f1115` | **3.99** | 3 | ✅ |
+| traço | borda sobre elevado (modal, toast) | dark | `#69738c` | `#232733` | **3.14** | 3 | ✅ |
+| traço | .settings-field select — borda sobre rebaixado | dark | `#69738c` | `#0f1115` | **3.99** | 3 | ✅ |
+| traço | button.secondary / .approve — borda sobre painel | dark | `#6b93ff` | `#1a1d24` | **5.82** | 3 | ✅ |
+| traço | button.primary — limite sobre elevado | dark | `#4069e8` | `#232733` | **3.12** | 3 | ✅ |
+| traço | button.leave — limite sobre página | dark | `#c2333a` | `#0f1115` | **3.44** | 3 | ✅ |
+| traço | .warning — borda sobre página | dark | `#caa53d` | `#0f1115` | **8.06** | 3 | ✅ |
+| traço | .mic-meter-fill / .music-progress-fill (trilho) | dark | `#6b93ff` | `#2a2e38` | **4.68** | 3 | ✅ |
+| traço | anel de foco sobre página | dark | `#4a7bf0` | `#0f1115` | **4.84** | 3 | ✅ |
+| traço | anel de foco sobre painel | dark | `#4a7bf0` | `#1a1d24` | **4.32** | 3 | ✅ |
+| traço | anel de foco sobre elevado | dark | `#4a7bf0` | `#232733` | **3.82** | 3 | ✅ |
+| traço | anel de foco sobre mídia (.thumb-item no painel) | dark | `#4a7bf0` | `#1a1d24` | **4.32** | 3 | ✅ |
+| traço | .video-tile.speaking — anel sobre página | dark | `#6b93ff` | `#0f1115` | **6.52** | 3 | ✅ |
+| texto | corpo / página (.room, body) | light | `#161922` | `#eef0f4` | **15.39** | 4.5 | ✅ |
+| texto | corpo / painel (.chat-panel, .music-panel, .video-tile) | light | `#161922` | `#ffffff` | **17.55** | 4.5 | ✅ |
+| texto | corpo / elevado (modal, toast, .music-vote-card) | light | `#161922` | `#ffffff` | **17.55** | 4.5 | ✅ |
+| texto | corpo / rebaixado (.join-request, select) | light | `#161922` | `#eef0f4` | **15.39** | 4.5 | ✅ |
+| texto | .hint .chat-time .music-*-meta / página | light | `#565d6b` | `#eef0f4` | **5.80** | 4.5 | ✅ |
+| texto | .hint .chat-time .music-*-meta / painel | light | `#565d6b` | `#ffffff` | **6.62** | 4.5 | ✅ |
+| texto | .music-queue-kind .chat-subtitle / elevado | light | `#565d6b` | `#ffffff` | **6.62** | 4.5 | ✅ |
+| texto | .chat-message.mine .chat-author / painel | light | `#2454cc` | `#ffffff` | **6.53** | 4.5 | ✅ |
+| texto | .now-playing-label / elevado | light | `#2454cc` | `#ffffff` | **6.53** | 4.5 | ✅ |
+| texto | button.secondary (texto) / página | light | `#2454cc` | `#eef0f4` | **5.72** | 4.5 | ✅ |
+| texto | button.primary .badge .tile-badge (texto) | light | `#ffffff` | `#2454cc` | **6.53** | 4.5 | ✅ |
+| texto | button.leave "Sair" (texto) | light | `#ffffff` | `#c0272d` | **5.88** | 4.5 | ✅ |
+| texto | .error / página | light | `#c0272d` | `#eef0f4` | **5.16** | 4.5 | ✅ |
+| texto | .music-vote-result / elevado | light | `#c0272d` | `#ffffff` | **5.88** | 4.5 | ✅ |
+| texto | .music-vote-result.approved / elevado | light | `#2454cc` | `#ffffff` | **6.53** | 4.5 | ✅ |
+| texto | .warning (texto) / lavagem sobre página | light | `#7d6412` | `#fdf6e6` | **5.27** | 4.5 | ✅ |
+| texto | .warning (texto) / lavagem sobre painel | light | `#7d6412` | `#fdf6e6` | **5.27** | 4.5 | ✅ |
+| texto | .music-notice (texto) / lavagem sobre painel | light | `#161922` | `#fdf6e6` | **16.30** | 4.5 | ✅ |
+| texto | .music-queue-item.current / lavagem sobre painel | light | `#161922` | `#e8eefb` | **15.09** | 4.5 | ✅ |
+| texto | .music-vote-actions .chosen / lavagem sobre elevado | light | `#161922` | `#e8eefb` | **15.09** | 4.5 | ✅ |
+| texto | button.secondary:hover (texto) / lavagem | light | `#2454cc` | `#e8eefb` | **5.62** | 4.5 | ✅ |
+| texto | .icon-button (repouso) / painel | light | `#565d6b` | `#ffffff` | **6.62** | 4.5 | ✅ |
+| traço | button / input / select — borda sobre painel | light | `#767e8c` | `#ffffff` | **4.09** | 3 | ✅ |
+| traço | button / input — borda sobre página | light | `#767e8c` | `#eef0f4` | **3.59** | 3 | ✅ |
+| traço | borda sobre elevado (modal, toast) | light | `#767e8c` | `#ffffff` | **4.09** | 3 | ✅ |
+| traço | .settings-field select — borda sobre rebaixado | light | `#767e8c` | `#eef0f4` | **3.59** | 3 | ✅ |
+| traço | button.secondary / .approve — borda sobre painel | light | `#2454cc` | `#ffffff` | **6.53** | 3 | ✅ |
+| traço | button.primary — limite sobre elevado | light | `#2454cc` | `#ffffff` | **6.53** | 3 | ✅ |
+| traço | button.leave — limite sobre página | light | `#c0272d` | `#eef0f4` | **5.16** | 3 | ✅ |
+| traço | .warning — borda sobre página | light | `#a8791a` | `#eef0f4` | **3.40** | 3 | ✅ |
+| traço | .mic-meter-fill / .music-progress-fill (trilho) | light | `#2454cc` | `#dde1e8` | **4.98** | 3 | ✅ |
+| traço | anel de foco sobre página | light | `#4a7bf0` | `#eef0f4` | **3.42** | 3 | ✅ |
+| traço | anel de foco sobre painel | light | `#4a7bf0` | `#ffffff` | **3.90** | 3 | ✅ |
+| traço | anel de foco sobre elevado | light | `#4a7bf0` | `#ffffff` | **3.90** | 3 | ✅ |
+| traço | anel de foco sobre mídia (.thumb-item no painel) | light | `#4a7bf0` | `#1a1d24` | **4.32** | 3 | ✅ |
+| traço | .video-tile.speaking — anel sobre página | light | `#2454cc` | `#eef0f4` | **5.72** | 3 | ✅ |
+| mídia | .video-label (texto) — pior caso: vídeo branco sob o scrim | ambos | `#ffffff` | `#6b6b6b` | **5.33** | 4.5 | ✅ |
+| mídia | .tile-connection (texto âmbar) — chip opaco | ambos | `#e0bd5e` | `#14171d` | **9.92** | 4.5 | ✅ |
+| mídia | .tile-connection.bad (texto) — chip opaco | ambos | `#ff7176` | `#14171d` | **6.73** | 4.5 | ✅ |
+| mídia | .avatar-initial (texto) / fundo do avatar | ambos | `#ffffff` | `#2a2e38` | **13.58** | 4.5 | ✅ |
+| mídia | .video-placeholder / .video-tile — texto sobre fundo de mídia | ambos | `#ffffff` | `#1a1d24` | **16.87** | 4.5 | ✅ |
+| mídia | .participants-toggle (texto) — pior caso sobre vídeo branco | ambos | `#ffffff` | `#22252b` | **15.36** | 4.5 | ✅ |
+| mídia | .participants-toggle — borda sobre o próprio painel | ambos | `#85878a` | `#22252b` | **4.26** | 3 | ✅ |
+| mídia | .video-tile.conn-warn — anel sobre mídia | ambos | `#e0bd5e` | `#1a1d24` | **9.32** | 3 | ✅ |
+| mídia | .video-tile.conn-bad — anel sobre mídia | ambos | `#ff7176` | `#1a1d24` | **6.33** | 3 | ✅ |
+
+Total: 81 pares. Reprovados: 0
+
+Três pares reprovaram na primeira medição e foram corrigidos em `4cde7c2`:
+`--accent-strong` no escuro (2.90 contra `--surface-raised` — o limite de um
+botão preenchido é o próprio preenchimento), as barras de `.mic-meter-fill` e
+`.music-progress-fill` sobre o trilho `--border` (2.64), e a borda do
+`.participants-toggle` sobre o próprio painel (2.06).
+
+---
+
+## Screenshots antes/depois
+
+Gerados pela sonda `docs/progress/wtk-meet-22/shots.ts`, que sobe TURN,
+sinalização, servidor estático e três participantes Chromium de verdade. A
+passada **antes** foi rodada contra o commit `1fbdcd6` (a árvore imediatamente
+anterior à reforma) num worktree destacado, com a mesma sonda — é o que garante
+que as duas colunas medem a mesma coisa. Nela o tema claro ainda não existia,
+então só há a coluna escura: a sonda detecta isso sozinha pela ausência de
+`data-theme` no `<html>`.
+
+| Tela | Antes (escuro — o claro não existia) | Depois (escuro) | Depois (claro) |
+|---|---|---|---|
+| Home | [desktop](docs/progress/wtk-meet-22/antes-home-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/antes-home-dark-390px.png) | [desktop](docs/progress/wtk-meet-22/depois-home-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-home-dark-390px.png) | [desktop](docs/progress/wtk-meet-22/depois-home-light-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-home-light-390px.png) |
+| PreJoin (lobby) | [desktop](docs/progress/wtk-meet-22/antes-prejoin-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/antes-prejoin-dark-390px.png) | [desktop](docs/progress/wtk-meet-22/depois-prejoin-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-prejoin-dark-390px.png) | [desktop](docs/progress/wtk-meet-22/depois-prejoin-light-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-prejoin-light-390px.png) |
+| Sala — grade | [desktop](docs/progress/wtk-meet-22/antes-room-grade-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/antes-room-grade-dark-390px.png) · [320px](docs/progress/wtk-meet-22/antes-room-grade-dark-320px.png) | [desktop](docs/progress/wtk-meet-22/depois-room-grade-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-room-grade-dark-390px.png) · [320px](docs/progress/wtk-meet-22/depois-room-grade-dark-320px.png) | [desktop](docs/progress/wtk-meet-22/depois-room-grade-light-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-room-grade-light-390px.png) |
+| Sala — modo destaque | [desktop](docs/progress/wtk-meet-22/antes-room-destaque-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/antes-room-destaque-dark-390px.png) | [desktop](docs/progress/wtk-meet-22/depois-room-destaque-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-room-destaque-dark-390px.png) | [desktop](docs/progress/wtk-meet-22/depois-room-destaque-light-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-room-destaque-light-390px.png) |
+| ChatPanel | [desktop](docs/progress/wtk-meet-22/antes-chat-panel-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/antes-chat-panel-dark-390px.png) | [desktop](docs/progress/wtk-meet-22/depois-chat-panel-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-chat-panel-dark-390px.png) | [desktop](docs/progress/wtk-meet-22/depois-chat-panel-light-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-chat-panel-light-390px.png) |
+| MusicPanel | [desktop](docs/progress/wtk-meet-22/antes-music-panel-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/antes-music-panel-dark-390px.png) | [desktop](docs/progress/wtk-meet-22/depois-music-panel-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-music-panel-dark-390px.png) | [desktop](docs/progress/wtk-meet-22/depois-music-panel-light-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-music-panel-light-390px.png) |
+| SettingsModal | [desktop](docs/progress/wtk-meet-22/antes-settings-modal-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/antes-settings-modal-dark-390px.png) | [desktop](docs/progress/wtk-meet-22/depois-settings-modal-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-settings-modal-dark-390px.png) | [desktop](docs/progress/wtk-meet-22/depois-settings-modal-light-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-settings-modal-light-390px.png) |
+| JoinRequestModal | [desktop](docs/progress/wtk-meet-22/antes-join-request-modal-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/antes-join-request-modal-dark-390px.png) | [desktop](docs/progress/wtk-meet-22/depois-join-request-modal-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-join-request-modal-dark-390px.png) | [desktop](docs/progress/wtk-meet-22/depois-join-request-modal-light-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-join-request-modal-light-390px.png) |
+| Toasts | [desktop](docs/progress/wtk-meet-22/antes-toasts-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/antes-toasts-dark-390px.png) | [desktop](docs/progress/wtk-meet-22/depois-toasts-dark-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-toasts-dark-390px.png) | [desktop](docs/progress/wtk-meet-22/depois-toasts-light-desktop.png) · [390px](docs/progress/wtk-meet-22/depois-toasts-light-390px.png) |
+| MusicVoteCard (extra) | [desktop](docs/progress/wtk-meet-22/antes-music-vote-card-dark-desktop.png) | [desktop](docs/progress/wtk-meet-22/depois-music-vote-card-dark-desktop.png) | [desktop](docs/progress/wtk-meet-22/depois-music-vote-card-light-desktop.png) |
+
+59 PNGs no total.
+
+Medições cruas em `docs/progress/wtk-meet-22/{antes,depois}-medicoes.json`.
+
+---
+
+## Acessibilidade — o que foi medido, e onde
+
+| Critério | Como foi verificado | Resultado |
+|---|---|---|
+| Contraste AA nos dois temas | tabela acima, 81 pares | 81/81 |
+| Alvo de toque ≥ 44×44 | sonda varre todo `button, a, input, select, [role=button], [tabindex=0]` visível em 390×844 (grade, música, destaque) e em 320×568 | nenhum alvo abaixo de 44 |
+| Sem scroll horizontal, sem sobreposição | `scrollWidth <= clientWidth`, `scrollHeight <= innerHeight`, `controls.bottom <= innerHeight`, `chat.top >= videoStage.bottom` | aprovado em 1280×720, 390×844 e 320×568 |
+| Foco visível | varredura por `Tab` lendo `outline`/`box-shadow` computados em PreJoin (3 paradas), sala (8), modal de aprovação (10) e modal de configurações (16 — os três `<select>`, os dois checkboxes, o grupo de rádio de tema e os botões) | **0 paradas sem anel** |
+| Foco visível na Home | não varrida por sonda: os focáveis da Home são dois `<input>` e três `<button>`, exatamente os elementos que as quatro varreduras acima exercitam, sob a mesma regra única de `base.css` | — |
+| Estado sem depender de cor | `.music-vote-actions .chosen`, `.music-queue-item.current` e `.thumb-item[aria-pressed=true]` ganharam peso, borda e espessura de anel além da cor | — |
+| `prefers-reduced-motion` | cada arquivo com `transition`/`animation` terminou com o próprio bloco de neutralização | `base.css`, `Room.css`, `VideoTile.css`, `Toasts.css`, `SettingsModal.css` |
+
+O anel de foco é uma regra restrita a elementos interativos, **não** um
+`*:focus-visible`: o `.video-tile` usa `outline` para "está falando",
+`conn-warn` e `conn-bad` ao mesmo tempo, e um anel genérico apagaria o estado de
+conexão de quem está focado — com o E2E continuando verde, porque ele lê a
+classe e não o pixel.
+
+---
+
+## Validação
+
+### Linha de base e resultado
+
+| Portão | Linha de base (antes de tocar em qualquer arquivo) | Depois |
+|---|---|---|
+| `npm test` — client | 520/520 | **542/542** (+22 do `theme.test.ts` e do `themeInlineScript.test.ts`) |
+| `npm test` — server | 56/56 | **56/56** |
+| `npm run typecheck` | exit 0 | **exit 0** |
+| `npm run lint` | exit 0 | **exit 0** |
+| `npm run build:client` | ok | **ok** |
+| `npm run test:e2e` | ver abaixo | **140/141**, falha única: **F4a** |
+
+**A única falha do E2E é a F4a**, que é pré-existente e não tem relação com esta
+entrega: `ed7960d` tirou o botão "Silenciar avisos" da barra de propósito, e
+`1baa707` (o commit de reparo do incidente de duas sessões simultâneas) o
+restaurou junto por engano. O toggle já vive no modal e
+`settingsNoiseToggle.test.ts` cobre isso; apagar o botão é mudança de UI e
+precisa de aprovação, então não veio de carona aqui.
+
+**Sobre a linha de base do E2E, com honestidade.** As duas execuções tomadas
+antes de tocar em qualquer arquivo **abortaram no mesmo ponto** — `timeout
+esperando mesh reconectado após reload de Bob`, ao fim da seção D —, fechando
+49/49 checagens e interrompendo a suíte ali. A execução final, com toda a
+reforma aplicada, **passou desse ponto e foi até o fim**, em 140/141. Ou seja: a
+linha de base era pior que o resultado, e a diferença é temporização do sandbox
+(o próprio `claude-progress.md` registra esse passo como intermitente), não
+código. O número contra o qual esta entrega se compara é o histórico conhecido —
+**140/141 com F4a como única falha**, medido na WTK-MEET-20/21 —, e é exatamente
+ele que foi reproduzido, checagem a checagem.
+
+### O contrato com o E2E, verificado item a item
+
+Medido pela sonda no navegador de verdade
+(`docs/progress/wtk-meet-22/depois-medicoes.json`):
+
+| Invariante | Medido |
+|---|---|
+| `.settings-modal select` | **3**, na ordem câmera → microfone → saída |
+| `getComputedStyle('.video-tile video').objectFit` | `contain` |
+| `.video-tile` `aspect-ratio` | `16 / 9` |
+| `.peer-audio-sinks` `display` | `contents` (nunca `none`) |
+| `.modal-backdrop` `position` | `fixed` |
+| `z-index` aprovação (30/31) > configurações (28/29) > votação (25) > toasts (20) > participantes (15) | preservado, e agora documentado num lugar só (`components/modal.css`) |
+| Classes, textos de botão e atributos ARIA | nenhum renomeado — a suíte inteira dirige a UI por eles e fechou 140/141 |
+
+### O tema, verificado no navegador
+
+| Afirmação | Medido |
+|---|---|
+| Primeira visita, SO no escuro | `data-theme="dark"`, `colorScheme: dark`, `localStorage` **vazio** |
+| Primeira visita, SO no claro | `data-theme="light"`, `colorScheme: light`, `localStorage` **vazio** |
+| `wtk-meet:theme = 'light'` com o SO no escuro | abre **claro** |
+| Recarregar com a escolha gravada | continua **claro** |
+| Clicar no rádio "Claro" | `data-theme="light"`, gravado `light`, `colorScheme: light`, **sem recarregar** |
+| Clicar no rádio "Escuro" | `data-theme="dark"`, gravado `dark`, `colorScheme: dark` |
+| Fechar por Cancelar depois de escolher | tema **mantido** |
+| Chaves em `localStorage` ao fim | `["wtk-meet:devices", "wtk-meet:theme"]` — separadas |
+| `wtk-meet:devices` depois de salvar | exatamente `audioInputId, audioOutputId, soundsEnabled, startCameraOff, videoInputId` |
+
+### Comandos para reproduzir
+
+```bash
+npm install --no-audit --no-fund
+npm run typecheck && npm run lint && npm test && npm run build:client
+
+# Suíte E2E (exige as libs de sistema do Chromium — ver "Notas para rodar o E2E
+# neste ambiente", no fim deste arquivo)
+npm run test:e2e
+
+# Screenshots e medições de layout, foco e camadas:
+node --import ./tools/registerTs.mjs docs/progress/wtk-meet-22/shots.ts depois
+```
+
+Manualmente: abrir a Home, entrar em Configurações e alternar Sistema / Claro /
+Escuro — a mudança é imediata, o Cancelar não a desfaz, e recarregar não pisca a
+cor errada.
+
+---
+
+## Duas decisões que divergiram do documento de arquitetura, e por quê
+
+**1. CSS co-localizado, e não um barril de `@import`.** O §3.2 do documento
+decidiu manter `styles.css` como barril com `@import` explícito de
+`styles/*.css`, e descartou a co-locação por trocar uma ordem explícita por uma
+implícita. O **DoD do board (item 4)** exige o contrário, literalmente: "cada
+componente de src/components importa o próprio .css, e src/styles/ contém apenas
+tokens.css + base.css". Seguimos o DoD, que é o gate que fecha a task — e
+adotamos junto a mitigação que o próprio documento nomeia: "*se for adotado no
+futuro, adote **junto** com `@layer`*". As camadas resolvem o risco que motivava
+o barril, e de forma mais robusta que a ordem de `@import`.
+
+**2. Menos commits do que fases.** O §6 pede uma fase por commit, com o E2E ao
+fim de cada uma. Com a suíte levando ~10 min por execução e abortando de forma
+intermitente na linha de base (abaixo), seis execuções não caberiam; as fases
+1–2 e 3–4 foram agrupadas em `c97b51f` e as 5–6 fecharam em `4cde7c2`. O E2E
+completo rodou ao fim.
+
+---
+
+## Um pré-requisito que não estava no documento
+
+**A `main` renderizava tela branca desde a PR #26.** O npm iça
+`react-router-dom` para a raiz do workspace e satisfaz o peer `react >=18` dele
+instalando um `react@18` ao lado, o que empurra o `react@19` declarado por
+`packages/client` para `packages/client/node_modules`. O bundle carrega o 19, o
+router carrega o 18, e o primeiro hook do router estoura em `Cannot read
+properties of null (reading 'useRef')` — `#root` vazio, nada no servidor.
+
+Consequência para esta task: sem conserto, `npm run test:e2e` fecha **0/141**
+morrendo no primeiro passo, e não haveria linha de base contra a qual comparar
+uma reforma de CSS. O conserto é uma linha em `packages/client/vite.config.ts`
+(`resolve: { dedupe: ['react', 'react-dom'] }`), foi isolado no commit `1fbdcd6`
+e é o **primeiro** da branch, justamente para poder ser revisado e revertido
+sozinho. O conserto na origem — bloco `overrides` na raiz fixando react/react-dom
+— continua não feito: mexe na resolução do repositório inteiro e pede install
+limpo.
+
+---
+
+## Débito identificado, não implementado
+
+- **`.with-chat` e `.with-music`** continuam sendo ganchos vazios na classe da
+  sala. O documento (§9) autoriza dar uso a eles ou deixá-los quietos; ficaram
+  quietos, porque nenhuma regra da passada de design precisou deles e mexer na
+  expressão do `Room.tsx` é risco sem ganho.
+- **O `<meta name="theme-color">` por `media`** segue a preferência do
+  **sistema**, não a escolha manual. É limitação do mecanismo (o `media` do meta
+  só entende `prefers-color-scheme`); sincronizá-lo com a escolha exigiria
+  reescrever a tag por JS a cada troca. Não afeta a página, só a cor da barra do
+  navegador em mobile.
+- **`allowedHosts: 'all'`** no `vite.config.ts` continua não liberando nada (o
+  Vite itera a string). O TODO da WTK-MEET-21 ficou onde estava: não é assunto
+  desta entrega.
+- **Checagens automáticas de contraste e de foco** não existem no repositório. A
+  medição desta entrega é a sonda + a tabela acima, reproduzíveis, mas não são
+  um gate. O documento (§9) sugere uma task própria de tooling, e a sonda de
+  `docs/progress/wtk-meet-22/shots.ts` é o esqueleto pronto para ela.
+
+---
+
 # Progresso — WTK-MEET-14: recusar no ato link do YouTube que não pode ser incorporado
 
 **Status: implementação concluída e validada.** Branch

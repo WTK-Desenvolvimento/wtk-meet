@@ -4,6 +4,66 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>wtk-meet</title>
+
+    <!-- A barra do navegador em mobile acompanha o tema. Dois `<meta>` por
+         `media` é a única forma que funciona sem JavaScript; quando a pessoa
+         escolhe manualmente, o navegador continua no valor do sistema — é uma
+         imprecisão conhecida e sem correção barata, e ela não afeta a página. -->
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#eef0f4" />
+
+    <!-- Ordem da cascata, declarada antes de qualquer folha do bundle.
+         Todo o CSS deste produto é de especificidade 1, e o CSS vive
+         co-localizado com os componentes: sem camadas, quem ganha passaria a
+         depender do grafo de módulos do bundler. A ordem de uma camada é fixada
+         no seu **primeiro aparecimento**, e um `.css` de componente pode ser
+         emitido antes de `src/styles.css` — este `<style>` é a única posição
+         garantidamente anterior a todos eles. -->
+    <style>
+      @layer tokens, base, components, overlays;
+    </style>
+
+    <!--
+      Tema, aplicado **antes do primeiro paint**.
+
+      Inline e síncrono de propósito. O bundle é `type="module"`, portanto
+      adiado; um tema aplicado no `useEffect` do React pisca escuro→claro em
+      toda navegação, e a Home é a primeira tela de quem recebe o link.
+
+      O literal 'wtk-meet:theme' existe também em `src/lib/theme.ts` e não há
+      como não existir — este script roda antes de qualquer módulo. Quem prende
+      os dois lados é `test/themeInlineScript.test.ts`; renomear só um deles dá
+      "o tema não persiste", silencioso e só em produção.
+
+      Escreve o valor já **resolvido** (`light`/`dark`), nunca `system`: é isso
+      que permite ao CSS ter só dois blocos de token, em vez da terceira
+      combinação (`@media prefers-color-scheme` + `:not([data-theme])`) onde
+      mora a maioria dos bugs de "escolhi claro e voltou pro escuro ao
+      recarregar".
+
+      Não lança, aconteça o que acontecer: `localStorage` pode lançar em modo
+      privado, e uma exceção aqui deixaria a página sem tema nenhum.
+    -->
+    <script>
+      (function () {
+        try {
+          var pref = null;
+          try {
+            pref = localStorage.getItem('wtk-meet:theme');
+          } catch (e) {
+            pref = null;
+          }
+          if (pref !== 'light' && pref !== 'dark') pref = 'system';
+          var escuro =
+            pref === 'dark' ||
+            (pref === 'system' &&
+              !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches));
+          document.documentElement.dataset.theme = escuro ? 'dark' : 'light';
+        } catch (e) {
+          document.documentElement.dataset.theme = 'dark';
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

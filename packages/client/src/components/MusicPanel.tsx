@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'r
 import { formatDuration } from '../lib/musicSources.js';
 import type { Playback, QueueEntry } from '../lib/musicSession.js';
 
+import './MusicPanel.css';
+
 /**
  * Painel do player colaborativo — faixa atual, fila e o formulário de adicionar.
  *

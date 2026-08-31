@@ -1,0 +1,197 @@
+/* Modal de configurações de dispositivos e de tema.
+
+   **Restrição dura:** este modal tem, e continua tendo, exatamente três
+   `<select>` — câmera, microfone, saída de áudio, nessa ordem. O harness do E2E
+   bloqueia em `selects.length === 3` e o roteiro endereça por índice; um quarto
+   `<select>` trava a abertura do modal em timeout e derruba quase toda a suíte,
+   porque quase todo cenário passa por aqui. É por isso que o seletor de tema é
+   um grupo de rádio: é a única forma de tri-estado que não toca nessa contagem.
+   A casca e o mapa de camadas estão em `modal.css`. */
+
+@layer overlays {
+  .settings-modal {
+    z-index: 29;
+    width: min(28rem, 100%);
+    gap: var(--space-4);
+  }
+
+  /* Mesma proporção e mesmo letterbox do tile da grade: o preview precisa parecer
+     com o que os outros vão ver, não com um recorte diferente. Fundo de mídia,
+     não de tema — é um `<video>`, e vale a regra de `VideoTile.css`. */
+  .settings-preview {
+    position: relative;
+    /* `flex: 0 0 auto` é obrigatório: o modal é uma coluna flex com
+       `max-height: 100%`, e sem isto o preview é o primeiro a ser esmagado
+       quando o conteúdo passa da altura da janela — vira uma faixa de 30px e
+       deixa de servir para o que existe. Quem rola é o modal. */
+    flex: 0 0 auto;
+    aspect-ratio: 16 / 9;
+    background: var(--media-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  .settings-preview video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+
+  .settings-preview-off {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: var(--space-4);
+    color: var(--on-media-text);
+    font-size: var(--text-sm);
+  }
+
+  /* Barra dirigida por custom property, como `--speak-level` no tile. */
+  .mic-meter {
+    flex: 0 0 auto;
+    height: 6px;
+    border-radius: var(--radius-pill);
+    background: var(--border);
+    overflow: hidden;
+  }
+
+  /* `--accent`, e não `--accent-strong`: o trilho é `--border`, e o fundo
+     sólido de marca não alcança 3:1 contra ele no tema escuro. Aqui não há
+     texto por cima, então o token de traço é o certo. */
+  .mic-meter-fill {
+    display: block;
+    height: 100%;
+    width: calc(var(--mic-level, 0) * 100%);
+    background: var(--accent);
+    transition: width 80ms linear;
+  }
+
+  .settings-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    font-size: var(--text-md);
+    font-weight: 600;
+  }
+
+  .settings-field select {
+    font: inherit;
+    font-weight: 400;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-strong);
+    background: var(--surface-sunken);
+    color: var(--text);
+    padding: var(--space-3);
+  }
+
+  .settings-field select:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .settings-hint {
+    color: var(--muted-text);
+    font-size: var(--text-sm);
+    line-height: 1.45;
+    margin: calc(var(--space-2) * -1) 0 0;
+  }
+
+  .settings-check {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    font-size: var(--text-md);
+    min-height: var(--control-min);
+    cursor: pointer;
+  }
+
+  .settings-check input {
+    width: 1.1rem;
+    height: 1.1rem;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+  }
+
+  /* ------------------------------------------------------------------ tema
+
+     Grupo de rádio, nunca um `<select>` — ver o cabeçalho. As três opções ficam
+     lado a lado como segmentos; em 390px elas empilham antes de encolher abaixo
+     do alvo de toque. */
+  .settings-theme {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    border: 0;
+    margin: 0;
+    padding: 0;
+    min-inline-size: 0;
+  }
+
+  .settings-theme legend {
+    padding: 0;
+    font-size: var(--text-md);
+    font-weight: 600;
+  }
+
+  .settings-theme-options {
+    display: flex;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  .settings-theme-option {
+    flex: 1 1 6rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    min-height: var(--control-min);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    font-size: var(--text-sm);
+    cursor: pointer;
+  }
+
+  /* Selecionado: lavagem de marca **e** peso — a cor sozinha não serve como
+     único sinal de estado. O rádio nativo continua ali e é ele quem carrega o
+     estado para leitor de tela e para o anel de foco. */
+  .settings-theme-option:has(input:checked) {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    font-weight: 600;
+  }
+
+  .settings-theme-option input {
+    width: 1rem;
+    height: 1rem;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+  }
+
+  .settings-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    margin-top: var(--space-1);
+  }
+
+  @media (max-width: 480px) {
+    .settings-actions button {
+      flex: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .mic-meter-fill {
+      transition: none;
+    }
+  }
+}

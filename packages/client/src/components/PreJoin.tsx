@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import VideoTile from './VideoTile.js';
 import { DEFAULT_PREFERENCES, buildConstraints, type DevicePreferences } from '../lib/devices.js';
 
+import './PreJoin.css';
+
 const PREVIEW_ERROR =
   'Não foi possível abrir a câmera para o preview. Você ainda pode entrar na sala — ' +
   'dá para ligar a câmera lá dentro.';

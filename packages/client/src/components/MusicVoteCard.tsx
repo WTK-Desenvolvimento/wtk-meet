@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { remainingMs, tally, type Vote, type VoteChoice } from '../lib/musicVote.js';
 
+import './MusicVoteCard.css';
+
 /**
  * Card de votação da sala — ligar o player, ou pular a faixa corrente.
  *

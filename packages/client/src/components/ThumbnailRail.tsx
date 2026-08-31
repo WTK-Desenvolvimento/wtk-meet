@@ -3,6 +3,8 @@ import VideoTile, { type Tile } from './VideoTile.js';
 import type { LevelSnapshot } from '../lib/audioLevels.js';
 import { orderRailItems } from '../lib/spotlightLayout.js';
 
+import './ThumbnailRail.css';
+
 /**
  * A coluna de miniaturas do modo destaque: câmeras de todo mundo e as telas
  * compartilhadas. A tela em destaque nunca aparece aqui **com stream** —

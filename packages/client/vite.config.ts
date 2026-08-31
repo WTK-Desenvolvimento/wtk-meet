@@ -121,6 +121,14 @@ function transpilarUrlTypeScript(): Plugin {
 
 export default defineConfig({
   plugins: [resolveJsToTs(), transpilarUrlTypeScript(), react()],
+  // Duas cópias de React no grafo é tela branca: o npm iça `react-router-dom`
+  // para a raiz do workspace e satisfaz o peer `react >=18` dele com um
+  // `react@18` ao lado, empurrando o `react@19` que este pacote declara para
+  // `packages/client/node_modules`. O bundle carrega o 19, o router carrega o
+  // 18, e o primeiro hook do router estoura em
+  // `Cannot read properties of null (reading 'useRef')` — com `#root` vazio e
+  // nenhum sinal no servidor. Verificado na WTK-MEET-21.
+  resolve: { dedupe: ['react', 'react-dom'] },
   server: {
     port: 5173,
     // TODO(WTK-MEET-21): `'all'` não é um valor aceito. O Vite libera qualquer

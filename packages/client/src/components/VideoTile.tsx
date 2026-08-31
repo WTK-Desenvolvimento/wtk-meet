@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ConnectionDescription } from '../lib/peerConnectionStatus.js';
 
+import './VideoTile.css';
+
 /**
  * Um tile de vídeo. Serve tanto para câmera quanto para compartilhamento de
  * tela, tanto para o participante local quanto para os remotos, e tanto na

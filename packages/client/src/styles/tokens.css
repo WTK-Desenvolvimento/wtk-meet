@@ -1,0 +1,241 @@
+/* Design tokens — a única camada do produto onde uma cor literal pode aparecer.
+   ==========================================================================
+
+   Três famílias, e a diferença entre elas é o que faz o tema claro não quebrar:
+
+   1. TEMA        — viram com claro/escuro. Superfície, traço, texto, marca,
+                    estado, cromo. Declaradas duas vezes: uma por bloco de tema.
+   2. SOBRE MÍDIA — **não** viram. Tudo que fica por cima de um `<video>`: o
+                    scrim do rótulo, o chip de conexão, o letterbox, o fundo do
+                    painel de participantes. O tile é uma janela para conteúdo
+                    que o produto não controla — um rótulo de fundo claro sobre
+                    uma câmera clara some, e o letterbox branco em volta de um
+                    compartilhamento de tela ofusca. O que está sobre mídia
+                    segue a mídia, não o tema.
+   3. ESCALAS     — espaçamento, raio, tipografia, alvo de toque. Constantes.
+
+   **O que NÃO mora aqui**, e é erro de revisão se aparecer: `--grid-cols`,
+   `--tile-w`, `--grid-gap`, `--spot-w`, `--spot-h`, `--rail-w`, `--thumb-w`,
+   `--thumb-h`, `--speak-level`, `--mic-level`. Essas são escritas por JS
+   (`VideoGrid`, `SpotlightStage`, `VideoTile`, `SettingsModal`) a partir de
+   `lib/gridLayout.ts` e `lib/spotlightLayout.ts`. Declará-las aqui "para
+   organizar" cria uma segunda fonte de verdade para números que já têm teste
+   unitário — e o sintoma seria `tileFitsStage: false` no E2E, que se lê como
+   bug de grade e não é.
+
+   **Breakpoints do produto** (repetidos nos arquivos que os usam, porque
+   `@media` não aceita `var()`):
+     ≤ 480px  compacto   — a barra de controles e os painéis apertam
+     ≤ 720px  empilhado  — o palco vira coluna e o chat/música vai para baixo
+     ≥ 1200px folga      — respiro maior na Home e nos modais
+   Cuidado: `NARROW_STAGE_WIDTH = 720` em `lib/spotlightLayout.ts` é **outro**
+   720. Ele mede a largura do palco, não do viewport. Coincidência de número,
+   não relação — não unifique os dois.
+
+   A tabela de contraste medida dos dois temas está em `claude-progress.md`
+   (WTK-MEET-22). Ao mexer em qualquer cor abaixo, remeça: um par que passa por
+   0,05 hoje reprova no próximo ajuste.
+*/
+
+@layer tokens {
+  :root {
+    /* ---------------------------------------------------------- primitivos
+       A paleta crua, sem significado. Ninguém consome estes nomes fora deste
+       arquivo: eles existem para que os semânticos abaixo se apoiem em algo
+       nomeado, e para que "o azul da marca" seja um lugar só quando mudar. */
+    --slate-950: #0f1115;
+    --slate-900: #1a1d24;
+    --slate-880: #14171d;
+    --slate-850: #232733;
+    --slate-800: #2a2e38;
+    --slate-600: #69738c;
+    --slate-500: #767e8c;
+    --slate-450: #565d6b;
+    --slate-400: #9a9fac;
+    --slate-200: #dde1e8;
+    --slate-100: #eef0f4;
+    --slate-ink: #161922;
+    --white: #ffffff;
+    --black: #000000;
+
+    --blue-700: #2454cc;
+    /* O fundo sólido de marca no escuro. Não é o #3b64e0 “natural” da escala:
+       ele fica em 2.90:1 contra `--surface-raised`, e o limite de um controle
+       preenchido é o próprio preenchimento (WCAG 1.4.11 pede 3:1). Este clareia
+       o suficiente sem derrubar o branco por cima abaixo de 4.5:1 — a margem
+       nos dois lados é de duas casas decimais, então remeça antes de mexer. */
+    --blue-600: #4069e8;
+    --blue-550: #4a7bf0;
+    --blue-400: #6b93ff;
+    --blue-050: #e8eefb;
+
+    --red-600: #c0272d;
+    --red-550: #c2333a;
+    --red-400: #f2686c;
+    --red-300: #ff7176;
+    --red-050: #fdecec;
+
+    --amber-700: #7d6412;
+    --amber-600: #a8791a;
+    --amber-500: #caa53d;
+    --amber-400: #e0bd5e;
+    --amber-050: #fdf6e6;
+
+    /* -------------------------------------------------------- sobre mídia
+       Fixos nos dois temas — ver o cabeçalho. O pior caso de cada par foi
+       medido contra vídeo **branco** sob o scrim, que é o fundo mais claro que
+       pode aparecer atrás deles. */
+    --media-surface: var(--slate-900);
+    --media-letterbox: var(--black);
+    --media-avatar: var(--slate-800);
+    --on-media-text: var(--white);
+    /* 0.58 e não 0.55: com vídeo branco atrás, é o alfa a partir do qual o
+       texto branco do rótulo mantém 4.5:1 com folga. */
+    --on-media-scrim: rgba(0, 0, 0, 0.58);
+    /* Opaco de propósito. Translúcido, o chip de conexão sobre um vídeo claro
+       levava o âmbar a 3.2:1 — reprovado para 0.7rem. */
+    --on-media-chip: var(--slate-880);
+    --on-media-warning: var(--amber-400);
+    --on-media-danger: var(--red-300);
+    /* Traço de algo que está sobre mídia: branco a baixa opacidade, porque o
+       que está atrás é escuro nos dois temas por decisão, não por acaso. */
+    --on-media-border: rgba(255, 255, 255, 0.45);
+    --panel-over-media: rgba(15, 17, 21, 0.94);
+    --panel-over-media-control: rgba(20, 23, 29, 0.94);
+    --panel-over-media-border: rgba(255, 255, 255, 0.14);
+
+    /* ------------------------------------------------------------ escalas */
+    --font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+    --text-xs: 0.72rem;
+    --text-sm: 0.82rem;
+    --text-md: 0.9rem;
+    --text-lg: 1.05rem;
+    --text-xl: 1.4rem;
+
+    --space-1: 0.25rem;
+    --space-2: 0.4rem;
+    --space-3: 0.6rem;
+    --space-4: 0.85rem;
+    --space-5: 1.25rem;
+    --space-6: 1.75rem;
+
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --radius-pill: 999px;
+
+    /* Alvo de toque mínimo (WCAG 2.5.5 / diretriz de plataforma). Usado como
+       `min-height`/`min-width` nos controles, não como altura fixa: um botão
+       que já é maior continua maior. */
+    --control-min: 44px;
+
+    /* Duração única para as transições de estado do produto. Neutralizada por
+       `prefers-reduced-motion` no arquivo de cada componente. */
+    --motion-fast: 120ms;
+  }
+
+  /* ================================================================ ESCURO
+     O tema de origem do produto. Os oito nomes que já existiam
+     (`--bg`, `--surface`, `--border`, `--text`, `--muted-text`, `--accent`,
+     `--danger`, `--warning`) continuam com o mesmo nome — só os valores de
+     `--accent` e `--danger` subiram para passar em AA sobre `--surface`. */
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+
+    --bg: var(--slate-950);
+    --surface: var(--slate-900);
+    /* No escuro, elevar é clarear. No claro é o oposto — lá este token vale o
+       mesmo que `--surface`, e quem separa os planos é a sombra. */
+    --surface-raised: var(--slate-850);
+    /* Rebaixado: campos e itens dentro de um painel (o `<select>` do modal, o
+       cartão de cada pedido de entrada). */
+    --surface-sunken: var(--slate-950);
+
+    /* Separador decorativo. **Não** serve de limite de controle — para isso é
+       `--border-strong`, que é o que carrega os 3:1 da WCAG 1.4.11. */
+    --border: var(--slate-800);
+    --border-strong: var(--slate-600);
+
+    --text: #e8e9ed;
+    --muted-text: var(--slate-400);
+
+    /* Marca em três papéis: traço/texto (`--accent`), fundo sólido
+       (`--accent-strong`, que carrega texto por cima) e lavagem
+       (`--accent-soft`, fundo de item selecionado). */
+    --accent: var(--blue-400);
+    --accent-strong: var(--blue-600);
+    --accent-soft: rgba(107, 147, 255, 0.16);
+    --text-on-accent: var(--white);
+
+    --danger: var(--red-400);
+    --danger-strong: var(--red-550);
+    --danger-soft: rgba(242, 104, 108, 0.14);
+    --text-on-danger: var(--white);
+
+    /* Dois tokens de propósito: o âmbar que serve de borda no escuro tem 2.2:1
+       sobre branco e não pode ser texto no claro. Aqui os dois papéis existem
+       para que o arquivo de componente não precise saber em que tema está. */
+    --warning: var(--amber-500);
+    --warning-text: var(--amber-400);
+    --warning-soft: rgba(202, 165, 61, 0.15);
+
+    /* O mesmo azul nos dois temas: é o único valor que mantém ≥3:1 contra
+       **todos** os fundos onde um anel de foco pode cair neste produto —
+       incluindo o `--media-surface`, que não vira com o tema. */
+    --focus-ring: var(--blue-550);
+    --speak-halo: rgba(107, 147, 255, 0.75);
+
+    --overlay-backdrop: rgba(0, 0, 0, 0.62);
+    --shadow-1: 0 6px 20px rgba(0, 0, 0, 0.35);
+    --shadow-2: 0 10px 30px rgba(0, 0, 0, 0.45);
+    --shadow-3: 0 18px 50px rgba(0, 0, 0, 0.5);
+  }
+
+  /* ================================================================= CLARO */
+  :root[data-theme='light'] {
+    color-scheme: light;
+
+    --bg: var(--slate-100);
+    --surface: var(--white);
+    /* Igual a `--surface` de propósito: no claro não há para onde clarear.
+       A elevação é lida pela sombra e pelo traço, não pelo valor. */
+    --surface-raised: var(--white);
+    --surface-sunken: var(--slate-100);
+
+    --border: var(--slate-200);
+    --border-strong: var(--slate-500);
+
+    --text: var(--slate-ink);
+    --muted-text: var(--slate-450);
+
+    --accent: var(--blue-700);
+    --accent-strong: var(--blue-700);
+    /* Sólido, e não `rgba`: no claro toda superfície onde esta lavagem cai é
+       branca ou quase, então compor com alfa só adicionaria imprecisão à
+       medição de contraste. */
+    --accent-soft: var(--blue-050);
+    --text-on-accent: var(--white);
+
+    --danger: var(--red-600);
+    --danger-strong: var(--red-600);
+    --danger-soft: var(--red-050);
+    --text-on-danger: var(--white);
+
+    --warning: var(--amber-600);
+    --warning-text: var(--amber-700);
+    --warning-soft: var(--amber-050);
+
+    --focus-ring: var(--blue-550);
+    --speak-halo: rgba(36, 84, 204, 0.45);
+
+    --overlay-backdrop: rgba(22, 25, 34, 0.45);
+    /* Sombras próprias: as do escuro são pretos densos calibrados para separar
+       superfícies escuras. Sobre branco elas viram borrão cinza — no claro o
+       limite quem faz é `--border`/`--border-strong`, e a sombra só sugere
+       altura. */
+    --shadow-1: 0 2px 8px rgba(22, 25, 34, 0.1);
+    --shadow-2: 0 8px 24px rgba(22, 25, 34, 0.12);
+    --shadow-3: 0 20px 48px rgba(22, 25, 34, 0.18);
+  }
+}

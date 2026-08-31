@@ -1,0 +1,43 @@
+/* Pré-entrada (lobby).
+
+   O lobby reusa `.home` (cartão, coluna, gaps — em `styles/base.css`) e
+   `.local-preview` (o tile de 320px, em `pages/Room.css`). Só o que é dele mora
+   aqui. `PreJoin` renderiza `className="home prejoin"` e **precisa** continuar
+   assim: o E2E reconhece o lobby por `main.home`. */
+
+@layer components {
+  .prejoin-preview {
+    /* `.local-preview` tem largura fixa; dentro da coluna da `.home` isso
+       deixaria o tile encostado à esquerda. */
+    margin: 0 auto;
+    width: 100%;
+  }
+
+  /* Rótulo e caixa na mesma linha, e o clique no texto alterna o toggle. */
+  .prejoin-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    cursor: pointer;
+    /* Alvo de toque: a linha inteira é clicável, então é ela que precisa ter a
+       altura mínima — não a caixinha de 1.1rem. */
+    min-height: var(--control-min);
+  }
+
+  /* `input` global tem padding e borda de campo de texto — nada disso serve
+     para uma caixa de marcação. */
+  .prejoin-toggle input {
+    width: 1.1rem;
+    height: 1.1rem;
+    padding: 0;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+
+  /* A dica do toggle cola no rótulo: o `gap` da `.home` a jogaria longe dele, e
+     ela deixaria de ser lida como explicação da escolha. */
+  .prejoin-toggle + .hint {
+    margin: calc(var(--space-5) * -1) 0 0;
+  }
+}

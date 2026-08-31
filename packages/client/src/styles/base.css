@@ -1,0 +1,313 @@
+/* Base: reset, elementos, foco e as poucas classes que mais de um componente usa.
+   ============================================================================
+
+   Só entra aqui o que é genuinamente compartilhado. Um seletor usado por um
+   componente só mora no `.css` ao lado do `.tsx` dele.
+
+   Tudo neste arquivo vive na camada `base`, que a ordem declarada em
+   `styles.css` coloca **abaixo** de `components` e `overlays`. É isso que faz a
+   quebra do CSS antigo em vários arquivos ser segura: todo o CSS deste produto
+   é de especificidade 1, então antes a ordem de emissão decidia quem ganhava —
+   e ela passaria a depender do grafo de módulos do bundler, que muda quando
+   alguém reordena um `import` em `Room.tsx`. Com camadas, a ordem é o que está
+   escrito no barril e nada mais.
+*/
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    /* O tema resolvido é escrito em `data-theme` pelo script inline do
+       `index.html`, antes do primeiro paint. Este seletor de atributo é a única
+       coisa que o CSS precisa saber sobre tema — ver `styles/tokens.css`. */
+    font-family: var(--font-family);
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-family);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.015em;
+  }
+
+  /* ------------------------------------------------------------------ foco
+
+     Uma regra só, restrita a elementos interativos — e **não** um
+     `*:focus-visible`. O `.video-tile` usa `outline` para três estados ao mesmo
+     tempo (falando, `conn-warn`, `conn-bad`); um anel genérico que o alcançasse
+     apagaria o estado de conexão de quem está focado, e o E2E continuaria verde
+     porque ele lê a classe, não o pixel.
+
+     `--focus-ring` é o mesmo azul nos dois temas: é o único valor que mantém
+     ≥3:1 contra todos os fundos onde um anel pode cair aqui, incluindo o
+     `--media-surface`, que não vira com o tema (uma miniatura focada no painel
+     de participantes fica sobre fundo escuro mesmo no tema claro). */
+  :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+    /* O halo interno separa o anel do próprio controle quando ele é escuro e o
+       fundo também — sem ele, `outline-offset` sozinho some em fundo uniforme. */
+    box-shadow: 0 0 0 1px var(--bg);
+  }
+
+  /* --------------------------------------------------------------- controles */
+
+  button {
+    font: inherit;
+    cursor: pointer;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--text);
+    padding: var(--space-3) var(--space-5);
+    /* Alvo de toque: mínimo, nunca altura fixa — um botão que já é maior
+       continua maior, e a barra de controles em 390px passa a ter alvos de
+       44px sem ganhar linha (o palco é quem cede a altura). */
+    min-height: var(--control-min);
+    min-width: var(--control-min);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    transition:
+      border-color var(--motion-fast) ease-out,
+      background-color var(--motion-fast) ease-out;
+  }
+
+  button:hover:not(:disabled) {
+    border-color: var(--accent);
+    background: var(--surface-raised);
+  }
+
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* Ação destrutiva. `--danger-strong` é o vermelho de **fundo** (o que carrega
+     texto por cima); `--danger` é o de texto/traço. Separar os dois é o que
+     resolve o branco-sobre-vermelho reprovado em AA. */
+  button.leave {
+    background: var(--danger-strong);
+    border-color: var(--danger-strong);
+    color: var(--text-on-danger);
+  }
+
+  button.leave:hover:not(:disabled) {
+    background: var(--danger);
+    border-color: var(--danger);
+    color: var(--text-on-danger);
+  }
+
+  button.primary {
+    background: var(--accent-strong);
+    border-color: var(--accent-strong);
+    color: var(--text-on-accent);
+    font-weight: 600;
+  }
+
+  button.primary:hover:not(:disabled) {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  button.secondary {
+    background: transparent;
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  button.secondary:hover:not(:disabled) {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+  }
+
+  /* Botão de ícone (fechar painel, remover faixa). Sem caixa em repouso, mas
+     com o mesmo alvo de toque dos outros — ele é o único caminho de fechar em
+     telas estreitas. */
+  .icon-button {
+    background: transparent;
+    border-color: transparent;
+    padding: var(--space-1) var(--space-2);
+    line-height: 1;
+    min-height: var(--control-min);
+    min-width: var(--control-min);
+    color: var(--muted-text);
+  }
+
+  .icon-button:hover:not(:disabled) {
+    background: var(--surface-raised);
+    border-color: var(--border-strong);
+    color: var(--text);
+  }
+
+  /* O `:where()` não soma especificidade: a regra continua valendo 0,0,1, como
+     o seletor de elemento cru que ela substitui. A exclusão é obrigatória —
+     `min-height: 44px` num `input[type=checkbox]` passa por cima do
+     `height: 1.1rem` do toggle do lobby (mínimo vence altura declarada), e num
+     `input[type=range]` estica a barra de volume. */
+  input:where(:not([type='checkbox'], [type='radio'], [type='range'], [type='file'])),
+  select,
+  textarea {
+    font: inherit;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--text);
+    padding: var(--space-3) var(--space-4);
+    min-height: var(--control-min);
+  }
+
+  input:where([type='checkbox'], [type='radio']) {
+    accent-color: var(--accent);
+  }
+
+  input::placeholder {
+    color: var(--muted-text);
+  }
+
+  code {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    padding: 0.15rem 0.4rem;
+    border-radius: var(--radius-sm);
+    word-break: break-all;
+    font-size: 0.92em;
+  }
+
+  /* ------------------------------------------------------ avisos e microcópia
+
+     Usadas por Home, PreJoin, sala e modal de configurações — daí morarem aqui.
+     `--warning` é a **borda** e `--warning-text` é o **texto**: no tema claro o
+     âmbar que serve de traço tem ~2.2:1 sobre branco e não pode ser texto. */
+  .warning {
+    background: var(--warning-soft);
+    border: 1px solid var(--warning);
+    color: var(--warning-text);
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-md);
+    margin: 0;
+    flex: 0 0 auto;
+    font-size: var(--text-md);
+  }
+
+  .hint {
+    color: var(--muted-text);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+  }
+
+  .error {
+    color: var(--danger);
+    margin: 0;
+  }
+
+  .optional {
+    color: var(--muted-text);
+    font-weight: normal;
+  }
+
+  /* Contador sobre o botão de chat e sobre o de participantes. Fundo sólido de
+     marca com o texto que lhe pertence — nunca `white` cru, que é justamente o
+     par reprovado em AA no `--accent` antigo. */
+  .badge {
+    display: inline-block;
+    margin-left: var(--space-2);
+    min-width: 1.3rem;
+    padding: 0 var(--space-1);
+    border-radius: var(--radius-pill);
+    background: var(--accent-strong);
+    color: var(--text-on-accent);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    line-height: 1.3rem;
+    text-align: center;
+  }
+
+  /* ------------------------------------------- casca das telas de formulário
+
+     `.home` é compartilhada de verdade: `PreJoin` renderiza
+     `className="home prejoin"`, e o E2E usa `main.home` para reconhecer o
+     lobby. O que é só de uma das duas mora no `.css` da respectiva tela. */
+  .home {
+    max-width: 30rem;
+    margin: var(--space-6) auto;
+    padding: var(--space-6);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-2);
+  }
+
+  .home h1 {
+    margin: 0;
+    font-size: var(--text-xl);
+  }
+
+  .tagline {
+    color: var(--muted-text);
+    margin: calc(var(--space-4) * -1) 0 0;
+    font-size: var(--text-md);
+    line-height: 1.5;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    font-size: var(--text-md);
+    font-weight: 600;
+  }
+
+  .field input {
+    font-weight: 400;
+  }
+
+  .actions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .join-block {
+    display: flex;
+    gap: var(--space-2);
+  }
+
+  .join-block input {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* Em telas estreitas a coluna encosta nas bordas: o cartão perde a margem
+     lateral e vira a própria tela, que é o que sobra de espaço útil. */
+  @media (max-width: 480px) {
+    .home {
+      margin: var(--space-3) var(--space-2);
+      padding: var(--space-5) var(--space-4);
+      gap: var(--space-4);
+    }
+
+    .join-block {
+      flex-direction: column;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    button {
+      transition: none;
+    }
+  }
+}

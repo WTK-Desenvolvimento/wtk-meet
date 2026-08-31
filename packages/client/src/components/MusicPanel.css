@@ -1,0 +1,224 @@
+/* Player de música.
+
+   O painel é irmão do chat: `aside` dentro do palco, com a fila em
+   `overflow-y: auto` e `min-height: 0` na cadeia flex. Uma lista com altura de
+   conteúdo aqui ressuscitaria o scroll de página, que esta aplicação não tem. */
+
+@layer components {
+  .music-panel {
+    width: 340px;
+    max-width: 100%;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-1);
+    overflow: hidden;
+  }
+
+  .music-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-raised);
+    flex: 0 0 auto;
+  }
+
+  .music-header h2 {
+    margin: 0;
+    font-size: var(--text-md);
+  }
+
+  .music-subtitle {
+    display: block;
+    color: var(--muted-text);
+    font-size: var(--text-xs);
+    margin-top: 0.15rem;
+  }
+
+  .music-unlock {
+    margin: var(--space-3) var(--space-4) 0;
+    border-color: var(--warning);
+    color: var(--warning-text);
+    background: var(--warning-soft);
+    flex: 0 0 auto;
+  }
+
+  .music-notice {
+    margin: var(--space-3) var(--space-4) 0;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-md);
+    background: var(--warning-soft);
+    border: 1px solid var(--warning);
+    color: var(--text);
+    font-size: var(--text-sm);
+    flex: 0 0 auto;
+  }
+
+  .music-now {
+    padding: var(--space-4);
+    border-bottom: 1px solid var(--border);
+    flex: 0 0 auto;
+  }
+
+  .music-now-title {
+    margin: 0;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .music-now-meta,
+  .music-time {
+    margin: var(--space-1) 0 0;
+    color: var(--muted-text);
+    font-size: var(--text-xs);
+  }
+
+  .music-progress {
+    height: 4px;
+    margin-top: var(--space-3);
+    border-radius: var(--radius-pill);
+    background: var(--border);
+    overflow: hidden;
+  }
+
+  /* Mesmo motivo do `.mic-meter-fill`: o trilho é `--border`, e o que precisa
+     de 3:1 contra ele é o token de traço, não o de fundo sólido. */
+  .music-progress-fill {
+    height: 100%;
+    background: var(--accent);
+  }
+
+  .music-actions {
+    display: flex;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+  }
+
+  .music-actions button {
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--text-sm);
+  }
+
+  .music-volume {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+    color: var(--muted-text);
+    font-size: var(--text-xs);
+  }
+
+  .music-volume input {
+    flex: 1;
+    padding: 0;
+    /* A barra de volume é um alvo de arraste: em toque, uma faixa de 4px é
+       inalcançável. A altura vem do próprio controle nativo, respeitando o
+       `color-scheme` do tema em vigor. */
+    min-height: var(--control-min);
+  }
+
+  .music-empty {
+    color: var(--muted-text);
+    font-size: var(--text-sm);
+    margin: 0;
+  }
+
+  .music-queue {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    list-style: none;
+    margin: 0;
+    padding: var(--space-2) var(--space-3);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .music-queue-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    border-radius: var(--radius-md);
+    font-size: var(--text-sm);
+    /* A borda existe sempre, transparente: o item corrente ganha cor sem
+       empurrar os vizinhos meio pixel para o lado. */
+    border-left: 3px solid transparent;
+  }
+
+  /* Corrente. A lavagem é a pista rápida; a borda e o peso são o sinal **não
+     cromático**, exigido para quem não distingue o azul do fundo. */
+  .music-queue-item.current {
+    background: var(--accent-soft);
+    border-left-color: var(--accent);
+    font-weight: 600;
+  }
+
+  .music-queue-kind {
+    flex: 0 0 auto;
+    font-size: 0.62rem;
+    letter-spacing: 0.03em;
+    padding: 0.1rem var(--space-1);
+    border-radius: var(--radius-sm);
+    background: var(--surface-raised);
+    border: 1px solid var(--border-strong);
+    color: var(--muted-text);
+    font-weight: 400;
+  }
+
+  .music-queue-title {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .music-queue-by,
+  .music-queue-duration {
+    flex: 0 0 auto;
+    color: var(--muted-text);
+    font-size: var(--text-xs);
+    font-weight: 400;
+  }
+
+  .music-composer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    border-top: 1px solid var(--border);
+    background: var(--surface-raised);
+    flex: 0 0 auto;
+  }
+
+  .music-composer input {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .music-composer button {
+    flex: 1;
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--text-sm);
+  }
+
+  /* Mesmo empilhamento do chat: ≤720px de viewport, o painel desce. */
+  @media (max-width: 720px) {
+    .music-panel {
+      width: 100%;
+      flex: 0 1 45%;
+      min-height: 0;
+    }
+  }
+}

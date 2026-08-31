@@ -1,0 +1,45 @@
+/* Grade uniforme e a caixa medida do palco.
+
+   As dimensões vêm de `lib/gridLayout.ts` por custom property
+   (`--grid-cols`, `--tile-w`, `--grid-gap`) — **nenhuma delas é token de
+   design** e nenhuma pode ser declarada em `styles/tokens.css`. O `12px` de
+   fallback abaixo é o `GRID_GAP` do módulo puro, que tem teste unitário e
+   alimenta a conta que o E2E mede; trocá-lo por `var(--space-*)` faria a conta
+   e o desenho discordarem, e o sintoma seria `tileFitsStage: false`. */
+
+@layer components {
+  /* O elemento medido pelo ResizeObserver. O tamanho vem do pai, nunca do
+     conteúdo: a grade lá dentro é absoluta justamente para não ter como empurrar
+     a caixa que está sendo medida (seria o clássico "ResizeObserver loop"). */
+  .video-stage {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    position: relative;
+  }
+
+  /* Colunas e largura do tile são escritas pelo `VideoGrid` como custom
+     properties (ver `lib/gridLayout.ts`); os tiles não recebem estilo inline. */
+  .video-grid {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-template-columns: repeat(var(--grid-cols, 1), var(--tile-w, 1fr));
+    gap: var(--grid-gap, 12px);
+    justify-content: center;
+    align-content: center;
+  }
+
+  /* Primeiro render, antes da medição: os tiles ficam montados (o <video> é o que
+     reproduz o áudio do peer) mas não são pintados com um tamanho errado. */
+  .video-grid.unmeasured {
+    visibility: hidden;
+  }
+
+  /* Escape de estouro: quando nem no menor tile legível o conjunto cabe, quem
+     rola é a grade — a página continua parada e os controles, visíveis. */
+  .video-grid.overflowing {
+    overflow-y: auto;
+    align-content: start;
+  }
+}

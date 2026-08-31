@@ -1,0 +1,87 @@
+/* Card de votação de música. Camada 25 — acima dos toasts (20) e **abaixo** do
+   modal de entrada (30). Controle de acesso nunca fica atrás de música.
+   Mapa completo em `modal.css`. */
+
+@layer overlays {
+  .music-vote-card {
+    position: fixed;
+    right: var(--space-4);
+    bottom: var(--space-4);
+    z-index: 25;
+    width: 280px;
+    max-width: calc(100vw - var(--space-4) * 2);
+    padding: var(--space-4);
+    border-radius: var(--radius-lg);
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    box-shadow: var(--shadow-2);
+  }
+
+  .music-vote-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+
+  .music-vote-header > div {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+  }
+
+  .music-vote-header h2 {
+    margin: 0;
+    font-size: var(--text-md);
+  }
+
+  .music-vote-question {
+    color: var(--muted-text);
+    font-size: var(--text-sm);
+  }
+
+  .music-vote-tally {
+    margin: var(--space-2) 0 0;
+    font-size: var(--text-sm);
+  }
+
+  .music-vote-quorum {
+    color: var(--muted-text);
+  }
+
+  .music-vote-actions {
+    display: flex;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+  }
+
+  .music-vote-actions button {
+    flex: 1;
+    padding: var(--space-2) var(--space-3);
+  }
+
+  /* O voto escolhido. Lavagem **e** peso: cor sozinha não distingue estado. */
+  .music-vote-actions button.chosen {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    font-weight: 600;
+  }
+
+  .music-vote-timer {
+    margin: var(--space-2) 0 0;
+    color: var(--muted-text);
+    font-size: var(--text-xs);
+  }
+
+  .music-vote-result {
+    margin: var(--space-2) 0 0;
+    font-size: var(--text-sm);
+    color: var(--danger);
+  }
+
+  .music-vote-result.approved {
+    color: var(--accent);
+  }
+}

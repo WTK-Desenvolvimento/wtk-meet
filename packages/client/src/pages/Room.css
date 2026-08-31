@@ -1,0 +1,253 @@
+/* Sala: a casca de viewport fixo, o palco, o rodapé de controles e a barra de
+   "tocando agora". Os painéis e os tiles têm arquivo próprio. */
+
+@layer components {
+  /* A sala ocupa exatamente o viewport e nunca rola: os controles e o modal de
+     aprovação precisam estar sempre alcançáveis. `dvh` vem depois de `vh` de
+     propósito — em mobile, `vh` ignora a barra de endereço retrátil e esconderia
+     o rodapé debaixo dela; onde `dvh` é suportado, a segunda declaração vence. */
+  .room {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: var(--space-5);
+    gap: var(--space-4);
+  }
+
+  .room.waiting,
+  .room.denied {
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+
+  /* Nas fases textuais o scroll é interno ao bloco, nunca da página: sem isto,
+     uma mensagem longa em janela baixa sumiria atrás do `overflow: hidden`. */
+  .phase-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-5);
+    max-width: 34rem;
+    max-height: 100%;
+    overflow-y: auto;
+    padding: var(--space-6);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-2);
+  }
+
+  .phase-content h1,
+  .phase-content h2 {
+    margin: 0;
+    font-size: var(--text-lg);
+  }
+
+  .local-preview {
+    width: 320px;
+    max-width: 90vw;
+    flex: 0 0 auto;
+  }
+
+  /* O aviso de som bloqueado é um `<button>` (o clique é a única forma de
+     destravar o áudio, e isso precisa existir para teclado e leitor de tela), mas
+     se parece com o `<p class="warning">` que fica logo acima: o botão herda
+     fonte e alinhamento em vez do padrão do agente de usuário. */
+  button.warning.audio-blocked {
+    display: block;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+    /* A casca de `button` centraliza e impõe alvo de toque; aqui o conteúdo é
+       um parágrafo, e a altura vem do texto. */
+    min-height: 0;
+  }
+
+  button.warning.audio-blocked:hover:not(:disabled) {
+    background: var(--warning-soft);
+    border-color: var(--warning);
+    filter: brightness(1.08);
+  }
+
+  /* Palco: a faixa elástica entre o banner e o rodapé. `min-height: 0` aqui e no
+     filho é o que impede o conteúdo de empurrar a coluna — basta um nível sem ele
+     para o scroll de página voltar, agora invisível atrás do `overflow: hidden`. */
+  .stage {
+    flex: 1;
+    display: flex;
+    gap: var(--space-3);
+    min-height: 0;
+  }
+
+  /* Faixa de fluxo, não `position: fixed`: o palco cede a altura que o rodapé
+     precisa e a grade se recalcula sozinha (o ResizeObserver vê a mudança). Um
+     rodapé fixo exigiria um padding mágico sincronizado à mão com a altura real
+     da barra, que muda quando os botões quebram linha. */
+  .controls {
+    display: flex;
+    gap: var(--space-3);
+    justify-content: center;
+    flex-wrap: wrap;
+    flex: 0 0 auto;
+  }
+
+  /* Botão de música com título da faixa */
+  .music-button {
+    position: relative;
+  }
+
+  .music-button.has-track {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .music-button-track {
+    display: block;
+    max-width: 10rem;
+    font-size: var(--text-xs);
+    color: var(--muted-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Indicador flutuante de "tocando agora". É um `div role="button"
+     tabIndex={0}`, então o anel de foco de `base.css` não o alcança pelo
+     seletor de elemento — o `[tabindex]` da regra é justamente o que o cobre. */
+  .now-playing-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    justify-content: center;
+    padding: var(--space-2) var(--space-4);
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    cursor: pointer;
+    align-self: center;
+    max-width: 28rem;
+    min-height: var(--control-min);
+    overflow: hidden;
+    transition: border-color var(--motion-fast) ease-out;
+  }
+
+  .now-playing-bar:hover {
+    border-color: var(--accent);
+  }
+
+  .now-playing-label {
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+
+  .now-playing-title {
+    font-size: var(--text-sm);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .now-playing-pulse {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+    animation: pulse-dot 1.5s ease-in-out infinite;
+  }
+
+  @keyframes pulse-dot {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
+
+  /* Linha única de altura previsível: com a URL quebrando em 3–4 linhas, esta
+     faixa roubava altura do palco a cada resize. A URL inteira continua acessível
+     pelo `title` do parágrafo. */
+  .invite-hint {
+    text-align: center;
+    color: var(--muted-text);
+    font-size: var(--text-sm);
+    margin: 0;
+    flex: 0 0 auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .invite-hint code {
+    word-break: normal;
+  }
+
+  /* O host do player do YouTube existe sempre, mas não ocupa espaço: só o áudio
+     interessa, e um iframe de 0px não renderiza vídeo à toa. Não pode ser
+     `display: none` — nesse caso o player não toca. */
+  .music-youtube-host {
+    position: fixed;
+    width: 1px;
+    height: 1px;
+    left: -9999px;
+    top: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  /* Empilhamento: o palco vira coluna e os painéis descem para baixo do vídeo.
+     Este 720 é o do **viewport** — não confundir com `NARROW_STAGE_WIDTH = 720`
+     de `lib/spotlightLayout.ts`, que mede a largura do palco. */
+  @media (max-width: 720px) {
+    .room {
+      padding: var(--space-4);
+      gap: var(--space-3);
+    }
+
+    .stage {
+      flex-direction: column;
+    }
+  }
+
+  /* Compacto: os controles apertam o gap antes de apertar o alvo de toque —
+     44px de altura é requisito, o respiro entre botões não é. */
+  @media (max-width: 480px) {
+    .room {
+      padding: var(--space-3);
+    }
+
+    .controls {
+      gap: var(--space-2);
+    }
+
+    .controls button {
+      padding: var(--space-2) var(--space-3);
+      font-size: var(--text-sm);
+    }
+
+    .invite-hint {
+      font-size: var(--text-xs);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .now-playing-bar {
+      transition: none;
+    }
+
+    .now-playing-pulse {
+      animation: none;
+    }
+  }
+}

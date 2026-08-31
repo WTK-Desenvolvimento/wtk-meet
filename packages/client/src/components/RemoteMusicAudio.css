@@ -1,0 +1,11 @@
+/* Envelope dos `<audio>` da música remota: sem caixa de layout.
+
+   `display: none` aqui é o comportamento de sempre — preservado tal e qual.
+   Não copie esta regra para `.peer-audio-sinks`: lá o comentário do próprio
+   arquivo diz por que `display: contents` é obrigatório. */
+
+@layer components {
+  .remote-music-audio {
+    display: none;
+  }
+}

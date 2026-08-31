@@ -1,0 +1,201 @@
+/* O tile e tudo o que fica **sobre** ele.
+
+   Regra que organiza este arquivo inteiro: o tile é uma **janela para conteúdo
+   que o produto não controla**. Nada aqui usa cor de tema — nem no claro nem no
+   escuro. O fundo, o scrim do rótulo, o chip de conexão e o letterbox vêm da
+   família `--media-*`/`--on-media-*`, que é fixa nos dois temas. Um rótulo de
+   fundo claro sobre uma câmera clara desaparece, e um letterbox branco em volta
+   de um compartilhamento de tela ofusca — os dois defeitos são invisíveis em
+   revisão de código e óbvios em uso.
+
+   As duas exceções são deliberadas: o anel de "está falando" e o de foco usam
+   cor de tema, porque eles ficam na **borda** do tile, contra o fundo da sala. */
+
+@layer components {
+  .video-tile {
+    position: relative;
+    background: var(--media-surface);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    aspect-ratio: 16 / 9;
+    /* Anel de "está falando": a borda existe sempre (transparente) para não
+       empurrar o layout quando acende. É também o `outline` que carrega
+       `conn-warn` e `conn-bad` — por isso nenhuma regra de foco pode mirá-lo. */
+    outline: 3px solid transparent;
+    outline-offset: -3px;
+    transition:
+      outline-color var(--motion-fast) ease-out,
+      box-shadow var(--motion-fast) ease-out;
+  }
+
+  .video-tile.speaking {
+    outline-color: var(--accent);
+    /* O halo cresce com o volume medido localmente (--speak-level: 0 → 1). */
+    box-shadow: 0 0 calc(4px + var(--speak-level, 0) * 18px) var(--speak-halo);
+  }
+
+  /* Letterbox, nunca corte nem deformação: `cover` cortava rosto de câmeras cuja
+     proporção não bate com a do tile, e `fill` esticaria a imagem. A barra
+     resultante é o preço aceito pelo requisito. */
+  .video-tile video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: var(--media-surface);
+  }
+
+  /* `contain` já é o padrão acima; a classe permanece só pelo fundo preto, que
+     fica melhor nas bordas de um compartilhamento de tela. */
+  .video-tile.contain video {
+    background: var(--media-letterbox);
+  }
+
+  .video-tile video.mirrored {
+    transform: scaleX(-1);
+  }
+
+  .video-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--media-surface);
+  }
+
+  .avatar-initial {
+    width: 4.5rem;
+    height: 4.5rem;
+    border-radius: 50%;
+    background: var(--media-avatar);
+    color: var(--on-media-text);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.9rem;
+    font-weight: 600;
+  }
+
+  .video-label {
+    position: absolute;
+    left: var(--space-3);
+    bottom: var(--space-2);
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    background: var(--on-media-scrim);
+    color: var(--on-media-text);
+    padding: 0.15rem var(--space-3);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+  }
+
+  .mic-off {
+    font-size: var(--text-sm);
+    line-height: 1;
+  }
+
+  /* Estado da conexão daquele peer. Irmão do `.video-label`, nunca dentro dele:
+     vários roteiros do e2e comparam o `textContent` do rótulo, e o nome do
+     participante não é lugar para "Sem conexão". Fica no canto oposto ao badge de
+     tela, que já ocupa o topo esquerdo.
+
+     Fundo **opaco**: com o scrim translúcido de antes, o âmbar sobre um vídeo
+     claro caía a 3.2:1 — reprovado para 0.7rem de texto. */
+  .tile-connection {
+    position: absolute;
+    top: var(--space-2);
+    right: var(--space-3);
+    font-size: var(--text-xs);
+    letter-spacing: 0.02em;
+    padding: 0.1rem var(--space-2);
+    border-radius: var(--radius-sm);
+    background: var(--on-media-chip);
+    border: 1px solid currentcolor;
+    color: var(--on-media-warning);
+  }
+
+  .tile-connection.bad {
+    color: var(--on-media-danger);
+  }
+
+  /* A borda do tile inteiro acompanha: num palco com muita gente, um chip de
+     0.7rem é fácil de não ver, e `failed` precisa ser legível sem procurar. */
+  .video-tile.conn-warn {
+    outline: 2px solid var(--on-media-warning);
+    outline-offset: -2px;
+  }
+
+  .video-tile.conn-bad {
+    outline: 2px solid var(--on-media-danger);
+    outline-offset: -2px;
+  }
+
+  .tile-badge {
+    position: absolute;
+    top: var(--space-2);
+    left: var(--space-3);
+    background: var(--accent-strong);
+    color: var(--text-on-accent);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    padding: 0.1rem var(--space-2);
+    border-radius: var(--radius-sm);
+  }
+
+  /* Variante compacta (miniaturas da coluna, ~150px de largura): os mesmos
+     elementos, em escala que ainda cabe. Em tamanho cheio o rótulo cobriria
+     metade da miniatura e o halo de fala vazaria por cima da vizinha. */
+  .video-tile.compact {
+    border-radius: var(--radius-md);
+    outline-width: 2px;
+    outline-offset: -2px;
+  }
+
+  .video-tile.compact.speaking {
+    box-shadow: 0 0 calc(2px + var(--speak-level, 0) * 8px) var(--speak-halo);
+  }
+
+  .video-tile.compact .video-label {
+    left: var(--space-1);
+    bottom: var(--space-1);
+    font-size: var(--text-xs);
+    padding: 0.05rem 0.35rem;
+    max-width: calc(100% - 0.6rem);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .video-tile.compact .tile-badge {
+    top: var(--space-1);
+    left: var(--space-1);
+    font-size: 0.6rem;
+    padding: 0.05rem 0.3rem;
+  }
+
+  .video-tile.compact .tile-connection {
+    top: var(--space-1);
+    right: var(--space-1);
+    font-size: 0.6rem;
+    padding: 0.05rem 0.3rem;
+    max-width: calc(100% - 0.6rem);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .video-tile.compact .avatar-initial {
+    width: 2.4rem;
+    height: 2.4rem;
+    font-size: 1.05rem;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .video-tile {
+      transition: none;
+    }
+  }
+}

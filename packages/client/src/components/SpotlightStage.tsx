@@ -5,6 +5,8 @@ import ThumbnailRail from './ThumbnailRail.js';
 import { computeSpotlightLayout } from '../lib/spotlightLayout.js';
 import { GRID_GAP } from '../lib/gridLayout.js';
 
+import './SpotlightStage.css';
+
 /**
  * O palco em modo destaque: uma tela compartilhada ocupando ~80% da área útil e
  * uma coluna rolável com todo o resto nos ~20% restantes.
