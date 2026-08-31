@@ -6,6 +6,7 @@ tema alternável nesta passada: não (só dark)
 📸 antes-join-request-modal-dark-desktop.png
 📸 antes-join-request-modal-dark-390px.png
 📸 antes-toasts-dark-desktop.png
+📸 antes-toasts-dark-390px.png
 📸 antes-room-grade-dark-desktop.png
 📸 antes-room-grade-dark-390px.png
 📸 antes-chat-panel-dark-desktop.png

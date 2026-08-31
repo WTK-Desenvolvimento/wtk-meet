@@ -1,7 +1,81 @@
 {
   "focoPreJoin": [
     {
-      "alvo": "button.secondary «Configurações»",
+      "alvo": "input[checkbox]",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "input[Como te chamam]",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button.secondary[button] «Configurações»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    }
+  ],
+  "focoJoinRequest": [
+    {
+      "alvo": "button.approve[button] «Aprovar»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button[button] «Negar»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Silenciar»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Desligar câmera»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Compartilhar tela»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Chat»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button.music-button «Música»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Silenciar avisos»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Configurações»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button.leave «Sair»",
       "outline": "1px auto rgb(16, 16, 16)",
       "boxShadow": "",
       "visivel": true
@@ -315,6 +389,36 @@
   },
   "focoSala": [
     {
+      "alvo": "button «Silenciar»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Desligar câmera»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Compartilhar tela»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Chat»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button.music-button «Música»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
       "alvo": "button «Silenciar avisos»",
       "outline": "1px auto rgb(16, 16, 16)",
       "boxShadow": "",
@@ -351,6 +455,12 @@
   },
   "focoSettings": [
     {
+      "alvo": "select «Padrão do sistemaCâmera »",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
       "alvo": "select «Padrão do sistemaMicrofo»",
       "outline": "1px auto rgb(16, 16, 16)",
       "boxShadow": "",
@@ -363,25 +473,25 @@
       "visivel": true
     },
     {
-      "alvo": "input",
+      "alvo": "input[checkbox]",
       "outline": "1px auto rgb(16, 16, 16)",
       "boxShadow": "",
       "visivel": true
     },
     {
-      "alvo": "input",
+      "alvo": "input[checkbox]",
       "outline": "1px auto rgb(16, 16, 16)",
       "boxShadow": "",
       "visivel": true
     },
     {
-      "alvo": "button «Cancelar»",
+      "alvo": "button[button] «Cancelar»",
       "outline": "1px auto rgb(16, 16, 16)",
       "boxShadow": "",
       "visivel": true
     },
     {
-      "alvo": "button.primary «Salvar»",
+      "alvo": "button.primary[button] «Salvar»",
       "outline": "1px auto rgb(16, 16, 16)",
       "boxShadow": "",
       "visivel": true

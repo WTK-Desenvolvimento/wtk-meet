@@ -1,7 +1,19 @@
 {
   "focoPreJoin": [
     {
-      "alvo": "button.secondary «Configurações»",
+      "alvo": "input[checkbox]",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "input[Como te chamam]",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button.secondary[button] «Configurações»",
       "outline": "2px solid rgb(74, 123, 240)",
       "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
       "visivel": true
@@ -9,7 +21,13 @@
   ],
   "focoJoinRequest": [
     {
-      "alvo": "button «Negar»",
+      "alvo": "button.approve[button] «Aprovar»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button[button] «Negar»",
       "outline": "2px solid rgb(74, 123, 240)",
       "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
       "visivel": true
@@ -188,6 +206,36 @@
   },
   "focoSala": [
     {
+      "alvo": "button «Silenciar»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Desligar câmera»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Compartilhar tela»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Chat»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button.music-button «Música»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
       "alvo": "button «Silenciar avisos»",
       "outline": "2px solid rgb(74, 123, 240)",
       "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
@@ -224,6 +272,12 @@
   },
   "focoSettings": [
     {
+      "alvo": "select «Padrão do sistemaCâmera »",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
       "alvo": "select «Padrão do sistemaMicrofo»",
       "outline": "2px solid rgb(74, 123, 240)",
       "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
@@ -236,31 +290,31 @@
       "visivel": true
     },
     {
-      "alvo": "input",
+      "alvo": "input[checkbox]",
       "outline": "2px solid rgb(74, 123, 240)",
       "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
       "visivel": true
     },
     {
-      "alvo": "input",
+      "alvo": "input[checkbox]",
       "outline": "2px solid rgb(74, 123, 240)",
       "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
       "visivel": true
     },
     {
-      "alvo": "input",
+      "alvo": "input[radio|wtk-theme]",
       "outline": "2px solid rgb(74, 123, 240)",
       "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
       "visivel": true
     },
     {
-      "alvo": "button «Cancelar»",
+      "alvo": "button[button] «Cancelar»",
       "outline": "2px solid rgb(74, 123, 240)",
       "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
       "visivel": true
     },
     {
-      "alvo": "button.primary «Salvar»",
+      "alvo": "button.primary[button] «Salvar»",
       "outline": "2px solid rgb(74, 123, 240)",
       "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
       "visivel": true

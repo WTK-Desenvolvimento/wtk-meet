@@ -108,7 +108,19 @@ async function varrerFoco(page: Page, limite = 30) {
           ? `${cs.outlineWidth} ${cs.outlineStyle} ${cs.outlineColor}`
           : '';
       const boxShadow = cs.boxShadow === 'none' ? '' : cs.boxShadow;
-      const alvo = `${el.tagName.toLowerCase()}${el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\s+/).join('.') : ''}`;
+      // A identidade precisa distinguir dois `<input>` sem classe e sem texto —
+      // o campo de nome e a caixa de "entrar com a câmera ligada" do lobby são
+      // exatamente isso, e sem `type`/`aria-label`/`placeholder` a varredura
+      // achava que tinha dado a volta na segunda parada.
+      const detalhe = [
+        el.getAttribute('type'),
+        el.getAttribute('aria-label'),
+        el.getAttribute('placeholder'),
+        el.getAttribute('name'),
+      ]
+        .filter(Boolean)
+        .join('|');
+      const alvo = `${el.tagName.toLowerCase()}${el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\s+/).join('.') : ''}${detalhe ? `[${detalhe}]` : ''}`;
       return {
         alvo: `${alvo}${el.textContent ? ` «${el.textContent.trim().slice(0, 24)}»` : ''}`,
         outline,
@@ -289,7 +301,27 @@ async function main() {
     }
 
     await bob.page.getByRole('button', { name: /^Chat/ }).waitFor({ timeout: 30000 });
+
+    // O toast é efêmero (~4s), então o de 390px precisa de uma entrada nova —
+    // daí o viewport ser trocado **antes** de aprovar a Carol, e não depois.
+    await setTheme(alice.page, 'dark');
+    await alice.page.setViewportSize(MOBILE);
+    await sleep(500);
     const carol = await openParticipant(browser, { roomUrl, name: 'Carol', cameraOn: true });
+    await alice.page.locator('.join-request-modal').waitFor({ timeout: 30000 }).catch(() => {});
+    await approveAll(alice.page);
+    await alice.page
+      .locator('.toast')
+      .first()
+      .waitFor({ timeout: 15000 })
+      .catch(() => log('⚠️  toast de 390px não apareceu a tempo'));
+    for (const tema of temas) {
+      await setTheme(alice.page, tema);
+      await shot(alice.page, 'toasts', tema, '390px');
+    }
+    await alice.page.setViewportSize(DESKTOP);
+    await sleep(400);
+
     await waitFor(
       async () => {
         await approveAll(alice.page);

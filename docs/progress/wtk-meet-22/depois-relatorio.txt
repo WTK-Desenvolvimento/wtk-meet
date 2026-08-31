@@ -13,6 +13,8 @@ tema alternável nesta passada: sim (dark + light)
 📸 depois-join-request-modal-light-390px.png
 📸 depois-toasts-dark-desktop.png
 📸 depois-toasts-light-desktop.png
+📸 depois-toasts-dark-390px.png
+📸 depois-toasts-light-390px.png
 📸 depois-room-grade-dark-desktop.png
 📸 depois-room-grade-light-desktop.png
 📸 depois-room-grade-dark-390px.png
