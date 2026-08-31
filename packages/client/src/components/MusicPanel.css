@@ -89,9 +89,11 @@
     overflow: hidden;
   }
 
+  /* Mesmo motivo do `.mic-meter-fill`: o trilho é `--border`, e o que precisa
+     de 3:1 contra ele é o token de traço, não o de fundo sólido. */
   .music-progress-fill {
     height: 100%;
-    background: var(--accent-strong);
+    background: var(--accent);
   }
 
   .music-actions {

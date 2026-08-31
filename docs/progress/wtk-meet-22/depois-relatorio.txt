@@ -1,0 +1,40 @@
+tema alternável nesta passada: sim (dark + light)
+📸 depois-home-dark-desktop.png
+📸 depois-home-light-desktop.png
+📸 depois-home-dark-390px.png
+📸 depois-home-light-390px.png
+📸 depois-prejoin-dark-desktop.png
+📸 depois-prejoin-light-desktop.png
+📸 depois-prejoin-dark-390px.png
+📸 depois-prejoin-light-390px.png
+📸 depois-join-request-modal-dark-desktop.png
+📸 depois-join-request-modal-light-desktop.png
+📸 depois-join-request-modal-dark-390px.png
+📸 depois-join-request-modal-light-390px.png
+📸 depois-toasts-dark-desktop.png
+📸 depois-toasts-light-desktop.png
+📸 depois-room-grade-dark-desktop.png
+📸 depois-room-grade-light-desktop.png
+📸 depois-room-grade-dark-390px.png
+📸 depois-room-grade-light-390px.png
+📸 depois-chat-panel-dark-desktop.png
+📸 depois-chat-panel-light-desktop.png
+📸 depois-chat-panel-dark-390px.png
+📸 depois-chat-panel-light-390px.png
+📸 depois-music-vote-card-dark-desktop.png
+📸 depois-music-vote-card-light-desktop.png
+painel de música aberto na primeira tentativa: false; votação: true
+📸 depois-music-panel-dark-desktop.png
+📸 depois-music-panel-light-desktop.png
+📸 depois-music-panel-dark-390px.png
+📸 depois-music-panel-light-390px.png
+📸 depois-room-destaque-dark-desktop.png
+📸 depois-room-destaque-light-desktop.png
+📸 depois-room-destaque-dark-390px.png
+📸 depois-room-destaque-light-390px.png
+📸 depois-settings-modal-dark-desktop.png
+📸 depois-settings-modal-light-desktop.png
+📸 depois-settings-modal-dark-390px.png
+📸 depois-settings-modal-light-390px.png
+rádios de tema no modal: 3
+📸 depois-room-grade-dark-320px.png

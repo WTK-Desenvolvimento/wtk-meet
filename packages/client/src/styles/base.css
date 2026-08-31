@@ -73,6 +73,7 @@
        continua maior, e a barra de controles em 390px passa a ter alvos de
        44px sem ganhar linha (o palco é quem cede a altura). */
     min-height: var(--control-min);
+    min-width: var(--control-min);
     display: inline-flex;
     align-items: center;
     justify-content: center;

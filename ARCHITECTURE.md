@@ -613,8 +613,9 @@ reescolher o headset a cada chamada — é um custo real e recorrente, cobrado j
 de quem investiu em hardware melhor. `sessionStorage` (usado para o nome de exibição)
 não serve: ele morre ao fechar a aba. A supressão de ruído (§6.11) acrescenta uma
 **segunda chave**, `wtk-meet:audio`, deliberadamente fora desta — o porquê está em
-§6.11. **Nada além dessas duas chaves ganha persistência**; o histórico de chat
-continua estritamente em memória (§6.3).
+§6.11 — e o tema (§6.13) acrescenta uma **terceira**, `wtk-meet:theme`. **Nada além
+dessas três chaves ganha persistência**; o histórico de chat continua estritamente em
+memória (§6.3).
 
 A lógica vive em `client/src/lib/devices.js`, um módulo **puro, sem DOM** — mesmo
 padrão de `gridLayout.js`. Ele recebe a lista crua de `enumerateDevices` e um objeto
@@ -786,7 +787,8 @@ reconciliação reescreve sozinha quando o hardware some (§6.10). Supressão de
 é escolha de hardware: é propriedade do **ambiente** de quem fala, vale para qualquer
 microfone e nunca deve ser reescrita por reconciliação. Juntas, a autocorreção de
 device passaria por cima de um campo que ela não deveria nem enxergar. Continua valendo
-o limite de §6.10: nada além dessas duas chaves ganha persistência.
+o limite de §6.10: nada além das três chaves nomeadas (`wtk-meet:devices`,
+`wtk-meet:audio` e `wtk-meet:theme`, §6.13) ganha persistência.
 
 **No modo worklet, o track do mesh não é o track do `getUserMedia`.** O pipeline tem
 dono explícito (`lib/micPipeline.js`, único arquivo da feature que encosta em
@@ -817,6 +819,7 @@ regressão, não melhoria.
 **Nada disso sai da máquina.** Nenhum evento de sinalização novo, nenhum campo no data
 channel, nenhuma mudança no servidor: o processamento acontece antes do encoder, e o
 que trafega continua sendo exatamente o que já trafegava.
+
 
 ### 6.12 Ciclo de vida da credencial de TURN e recuperação de conexão
 
@@ -900,6 +903,87 @@ transições discretas e observáveis. Em regime permanente o tráfego adicional
 **O que não mudou:** a política `relay`, a ordem dos transceivers (§6.1), a assinatura
 dos callbacks do mesh e a ausência de telemetria — a observabilidade aqui é log de
 servidor e `console` do navegador (§5), não um endpoint de métricas.
+
+### 6.13 Tema claro/escuro e a base de design
+
+O produto tem **três temas escolhíveis** — Sistema, Claro e Escuro — num grupo de rádio
+dentro do modal de Configurações. A escolha vale só naquele navegador, é aplicada na
+hora e não passa pelo botão Salvar.
+
+**Terceira exceção nomeada à regra de zero persistência.** A preferência é gravada em
+`localStorage` sob a chave `wtk-meet:theme`, com o valor cru `system` | `light` |
+`dark`. A justificativa é a mesma classe das outras duas, e vale enunciá-la: **tema é
+preferência de apresentação, não conteúdo de chamada.** Ele não diz com quem se falou,
+nem quando, nem o que; não vai para o servidor de sinalização, não entra no data
+channel e não é sincronizado entre participantes. E a alternativa — reescolher o tema a
+cada aba — cobra um custo recorrente justamente de quem depende do tema claro por baixa
+visão ou por estar num ambiente com muita luz.
+
+**Chave própria, e não um sexto campo em `wtk-meet:devices`.** Pelo mesmo argumento que
+separou `wtk-meet:audio` (§6.11): `wtk-meet:devices` responde *que hardware usar*, tem
+exatamente cinco campos e é reescrito sozinho pela reconciliação quando um dispositivo
+some. Tema não é hardware e nunca é reconciliado. O valor é string crua, e não JSON,
+porque quem o lê primeiro é um script minúsculo que não pode lançar (abaixo).
+
+**A chave só nasce depois de uma escolha explícita.** Sem nada gravado, a preferência
+efetiva é `system` e nada é escrito — a mesma regra de `wtk-meet:audio`.
+
+**Resolvido em JS, escrito como `data-theme` no `<html>`.** Um script **inline e
+síncrono** no `<head>` do `index.html` lê a preferência, resolve `system` por
+`matchMedia` e escreve `document.documentElement.dataset.theme` com o valor já
+resolvido (`light` ou `dark`, nunca `system`) **antes do primeiro paint**. O bundle é
+`type="module"`, portanto adiado: um tema aplicado num `useEffect` piscaria o tema
+errado a cada navegação, e a Home é a primeira tela de quem recebe o link. Enquanto a
+preferência for `system`, um listener de `matchMedia` em `main.tsx` reescreve o
+atributo quando o sistema muda, sem recarregar.
+
+O CSS tem exatamente **dois** blocos de token — `:root[data-theme='dark']` e
+`:root[data-theme='light']` — e cada um declara o próprio `color-scheme`. É o
+`color-scheme` que mantém legíveis os widgets nativos que o produto não estiliza: os
+`<select>` do modal, o `input[type=range]` do volume, o `accent-color` dos checkboxes
+e a barra de rolagem `thin` da coluna de miniaturas.
+
+**A lógica pura vive em `client/src/lib/theme.ts`**, no padrão de `devices.ts` e
+`noiseSuppression.ts`: recebe o storage-like e um booleano, devolve estruturas, nunca
+lança e não toca em DOM (exceto `applyTheme`, que recebe o elemento por parâmetro).
+Coberto por `test/theme.test.ts` em `node:test`, sem jsdom. O literal da chave existe
+também no script inline — inevitável, já que ele roda antes de qualquer módulo — e
+`test/themeInlineScript.test.ts` prende os dois lados, no mesmo padrão do teste que
+prende `PROCESSOR_NAME` entre `noiseSuppression.ts` e o worklet.
+
+**A base de design.** Todo o estilo nasce de `client/src/styles/tokens.css`, o único
+arquivo do produto onde uma cor literal pode aparecer, com três famílias de token:
+
+1. **Tema** — viram com claro/escuro: superfícies, traço, texto, marca, estado, cromo.
+2. **Sobre mídia** (`--media-*`, `--on-media-*`) — **fixas nos dois temas**. Tudo que
+   fica por cima de um `<video>`: o fundo do tile, o scrim do rótulo, o chip de
+   conexão, o letterbox, o painel de participantes. O tile é uma janela para conteúdo
+   que o produto não controla; um rótulo de fundo claro sobre uma câmera clara some, e
+   um letterbox branco em volta de um compartilhamento de tela ofusca.
+3. **Escalas** — espaçamento, raio, tipografia, alvo de toque. Constantes.
+
+As variáveis de **runtime** (`--grid-cols`, `--tile-w`, `--grid-gap`, `--spot-w`,
+`--spot-h`, `--rail-w`, `--thumb-w`, `--thumb-h`, `--speak-level`, `--mic-level`)
+**não** são tokens de design e não moram ali: elas são escritas por JS a partir de
+`lib/gridLayout.ts` e `lib/spotlightLayout.ts`, que têm teste unitário próprio.
+
+O CSS é **co-localizado**: cada componente e cada página importa o próprio `.css`, e
+`src/styles/` guarda só `tokens.css` e `base.css`. Como todo o CSS do produto é de
+especificidade 1, a ordem da cascata é fixada por camadas —
+`@layer tokens, base, components, overlays` — declaradas no `<head>` do `index.html`,
+a única posição garantidamente anterior a qualquer folha do bundle. Sem isso, quem
+ganha passaria a depender do grafo de módulos do bundler.
+
+**Contraste e foco.** Os dois temas atendem AA: 4.5:1 em texto (3:1 em texto grande) e
+3:1 no limite de todo controle. Por isso a marca e os estados têm **dois tokens cada** —
+`--accent` (traço e texto) e `--accent-strong` (fundo sólido, que carrega texto por
+cima), `--warning` (borda) e `--warning-text` (texto), `--danger` e `--danger-strong`:
+o âmbar que funciona como traço no escuro tem ~2.2:1 sobre branco e não pode ser texto
+no claro. Todo elemento focável mostra um anel de `--focus-ring`, um azul escolhido por
+manter ≥3:1 contra **todos** os fundos do produto, inclusive os de mídia. A regra de
+foco é restrita a elementos interativos: o `.video-tile` usa `outline` para "está
+falando", `conn-warn` e `conn-bad` ao mesmo tempo, e um anel genérico apagaria o estado
+de conexão de quem está focado.
 
 ## 7. Stack
 

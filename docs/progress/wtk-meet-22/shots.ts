@@ -86,7 +86,16 @@ async function shot(page: Page, nome: string, tema: string, viewport: string) {
  * e o indicador de foco que ele efetivamente mostra.
  */
 async function varrerFoco(page: Page, limite = 30) {
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  // Reposiciona o **ponto de partida** da navegação sequencial no começo do
+  // documento. Um `blur()` sozinho não faz isso: o navegador guarda o último
+  // elemento focado e o próximo Tab continua dali, o que fazia a varredura
+  // começar no meio da barra de controles e cobrir três paradas.
+  await page.evaluate(() => {
+    (document.activeElement as HTMLElement | null)?.blur();
+    document.body.setAttribute('tabindex', '-1');
+    document.body.focus();
+    document.body.removeAttribute('tabindex');
+  });
   const paradas: { alvo: string; outline: string; boxShadow: string; visivel: boolean }[] = [];
   for (let i = 0; i < limite; i += 1) {
     await page.keyboard.press('Tab');
@@ -108,7 +117,9 @@ async function varrerFoco(page: Page, limite = 30) {
       };
     });
     if (!parada) break;
-    if (paradas.some((p) => p.alvo === parada.alvo) && paradas.length > 3) break;
+    // Para quando o ciclo de Tab volta ao primeiro alvo — e só aí. Cortar na
+    // primeira repetição qualquer encerrava a varredura em três paradas.
+    if (paradas.length > 0 && parada.alvo === paradas[0].alvo) break;
     paradas.push(parada);
   }
   return paradas;
@@ -266,6 +277,7 @@ async function main() {
     }
     await alice.page.setViewportSize(DESKTOP);
     await sleep(300);
+    medicoes.focoJoinRequest = await varrerFoco(alice.page, 12);
 
     // Aprovação: o toast de entrada nasce agora e some em poucos segundos.
     await setTheme(alice.page, 'dark');

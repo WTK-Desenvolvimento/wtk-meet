@@ -1,0 +1,369 @@
+{
+  "focoPreJoin": [
+    {
+      "alvo": "button.secondary «Configurações»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    }
+  ],
+  "focoJoinRequest": [
+    {
+      "alvo": "button «Negar»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Silenciar»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Desligar câmera»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Compartilhar tela»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Chat»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button.music-button «Música»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Silenciar avisos»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Configurações»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button.leave «Sair»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    }
+  ],
+  "geometriaGrade-desktop": {
+    "scrollWidth": 1280,
+    "clientWidth": 1280,
+    "scrollHeight": 720,
+    "innerHeight": 720,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 672,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": null,
+    "musicAbaixoDoVideo": null,
+    "stageAltura": 595
+  },
+  "geometriaGrade-390px": {
+    "scrollWidth": 390,
+    "clientWidth": 390,
+    "scrollHeight": 844,
+    "innerHeight": 844,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 813,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": null,
+    "musicAbaixoDoVideo": null,
+    "stageAltura": 699
+  },
+  "alvosPequenosGrade390": [],
+  "geometriaChat-desktop": {
+    "scrollWidth": 1280,
+    "clientWidth": 1280,
+    "scrollHeight": 720,
+    "innerHeight": 720,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 672,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": false,
+    "musicAbaixoDoVideo": null,
+    "stageAltura": 595
+  },
+  "geometriaChat-390px": {
+    "scrollWidth": 390,
+    "clientWidth": 390,
+    "scrollHeight": 844,
+    "innerHeight": 844,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 813,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": true,
+    "musicAbaixoDoVideo": null,
+    "stageAltura": 699
+  },
+  "geometriaMusica-desktop": {
+    "scrollWidth": 1280,
+    "clientWidth": 1280,
+    "scrollHeight": 720,
+    "innerHeight": 720,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 672,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": null,
+    "musicAbaixoDoVideo": false,
+    "stageAltura": 595
+  },
+  "geometriaMusica-390px": {
+    "scrollWidth": 390,
+    "clientWidth": 390,
+    "scrollHeight": 844,
+    "innerHeight": 844,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 813,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": null,
+    "musicAbaixoDoVideo": true,
+    "stageAltura": 699
+  },
+  "alvosPequenosMusica390": [],
+  "geometriaDestaque-desktop": {
+    "scrollWidth": 1280,
+    "clientWidth": 1280,
+    "scrollHeight": 720,
+    "innerHeight": 720,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 672,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": null,
+    "musicAbaixoDoVideo": null,
+    "stageAltura": 595
+  },
+  "geometriaDestaque-390px": {
+    "scrollWidth": 390,
+    "clientWidth": 390,
+    "scrollHeight": 844,
+    "innerHeight": 844,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 813,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": null,
+    "musicAbaixoDoVideo": null,
+    "stageAltura": 699
+  },
+  "alvosPequenosDestaque390": [],
+  "contratoDestaque": {
+    "objectFit": "contain",
+    "aspectTile": "auto",
+    "peerAudioDisplay": "contents",
+    "colorScheme": "light",
+    "zToasts": null,
+    "zParticipantes": null,
+    "zVoto": null,
+    "zSettings": null,
+    "zAprovacao": null,
+    "backdropPosition": null,
+    "selects": 0,
+    "chaves": [
+      "wtk-meet:devices"
+    ]
+  },
+  "focoSala": [
+    {
+      "alvo": "button «Silenciar avisos»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Configurações»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button.leave «Sair»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    }
+  ],
+  "contratoSettings": {
+    "objectFit": "contain",
+    "aspectTile": "16 / 9",
+    "peerAudioDisplay": "contents",
+    "colorScheme": "light",
+    "zToasts": null,
+    "zParticipantes": null,
+    "zVoto": null,
+    "zSettings": "28",
+    "zAprovacao": null,
+    "backdropPosition": "fixed",
+    "selects": 3,
+    "chaves": [
+      "wtk-meet:devices"
+    ]
+  },
+  "focoSettings": [
+    {
+      "alvo": "select «Padrão do sistemaMicrofo»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "select «Padrão do sistemaSaída F»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "input",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "input",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "input",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Cancelar»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button.primary «Salvar»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Silenciar»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Desligar câmera»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Compartilhar tela»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Chat»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button.music-button «Música»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Silenciar avisos»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Configurações»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    },
+    {
+      "alvo": "button.leave «Sair»",
+      "outline": "2px solid rgb(74, 123, 240)",
+      "boxShadow": "rgb(238, 240, 244) 0px 0px 0px 1px",
+      "visivel": true
+    }
+  ],
+  "alternancia": {
+    "aposClaro": {
+      "atributo": "light",
+      "gravado": "light",
+      "colorScheme": "light"
+    },
+    "aposEscuro": {
+      "atributo": "dark",
+      "gravado": "dark",
+      "colorScheme": "dark"
+    },
+    "aposCancelar": "dark",
+    "chaves": [
+      "wtk-meet:devices",
+      "wtk-meet:theme"
+    ],
+    "devices": [
+      "audioInputId",
+      "audioOutputId",
+      "soundsEnabled",
+      "startCameraOff",
+      "videoInputId"
+    ]
+  },
+  "primeiraVisita-dark": {
+    "atributo": "dark",
+    "chaves": [],
+    "colorScheme": "dark"
+  },
+  "primeiraVisita-light": {
+    "atributo": "light",
+    "chaves": [],
+    "colorScheme": "light"
+  },
+  "preferenciaGravada": {
+    "soPreferenciaClaraComSOEscuro": "light",
+    "aposReload": "light"
+  },
+  "geometria320": {
+    "scrollWidth": 320,
+    "clientWidth": 320,
+    "scrollHeight": 568,
+    "innerHeight": 568,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 537,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": null,
+    "musicAbaixoDoVideo": null,
+    "stageAltura": 373
+  },
+  "alvosPequenos320": []
+}

@@ -20,6 +20,11 @@
      não de tema — é um `<video>`, e vale a regra de `VideoTile.css`. */
   .settings-preview {
     position: relative;
+    /* `flex: 0 0 auto` é obrigatório: o modal é uma coluna flex com
+       `max-height: 100%`, e sem isto o preview é o primeiro a ser esmagado
+       quando o conteúdo passa da altura da janela — vira uma faixa de 30px e
+       deixa de servir para o que existe. Quem rola é o modal. */
+    flex: 0 0 auto;
     aspect-ratio: 16 / 9;
     background: var(--media-surface);
     border: 1px solid var(--border);
@@ -47,17 +52,21 @@
 
   /* Barra dirigida por custom property, como `--speak-level` no tile. */
   .mic-meter {
+    flex: 0 0 auto;
     height: 6px;
     border-radius: var(--radius-pill);
     background: var(--border);
     overflow: hidden;
   }
 
+  /* `--accent`, e não `--accent-strong`: o trilho é `--border`, e o fundo
+     sólido de marca não alcança 3:1 contra ele no tema escuro. Aqui não há
+     texto por cima, então o token de traço é o certo. */
   .mic-meter-fill {
     display: block;
     height: 100%;
     width: calc(var(--mic-level, 0) * 100%);
-    background: var(--accent-strong);
+    background: var(--accent);
     transition: width 80ms linear;
   }
 

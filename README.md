@@ -243,10 +243,10 @@ toggle de avisos sonoros (que saiu da barra de controles).
   (`videoInputId`, `audioInputId`, `audioOutputId`, `soundsEnabled` e
   `startCameraOff` — este último é a escolha da tela de pré-entrada, e vale `true`
   quando não há nada gravado) — e a supressão
-  de ruído, abaixo, sob `wtk-meet:audio`. **São as únicas exceções à regra de zero
-  persistência** — ela vale para conteúdo e metadado de chamada, não para qual
-  periférico do seu próprio equipamento usar. Limpar os dados do site apaga a
-  preferência.
+  de ruído, abaixo, sob `wtk-meet:audio`, e o tema, sob `wtk-meet:theme`. **São as três
+  únicas exceções à regra de zero persistência** — ela vale para conteúdo e metadado de
+  chamada, não para qual periférico do seu próprio equipamento usar nem para como você
+  prefere enxergar a tela. Limpar os dados do site apaga a preferência.
 - Se o dispositivo salvo não existir mais (outra máquina, dock desconectada), a
   chamada abre pelo padrão do sistema **sem erro na tela** e a preferência se corrige
   sozinha. Desconectar um dispositivo em uso volta ao padrão e avisa.
@@ -288,8 +288,27 @@ a opção.
   descreve o seu **ambiente**, não o seu hardware, e por isso não é reescrita quando um
   microfone é trocado ou desaparece.
 
+### Tema claro e escuro
+
+O mesmo modal traz **Tema**, com três opções: **Sistema**, **Claro** e **Escuro**.
+
+- **Sistema é o padrão** e acompanha o seu sistema operacional — inclusive se ele
+  mudar com a aba já aberta, sem recarregar.
+- A escolha é **aplicada na hora**: não passa pelo botão Salvar, e Cancelar não a
+  desfaz. É o que a dica embaixo do controle diz.
+- Ela é gravada sob a chave `wtk-meet:theme` (`system`, `light` ou `dark`), separada
+  das de dispositivos e de áudio, e **só passa a existir depois que você escolhe**.
+  Vale só naquele navegador: o tema não é enviado ao servidor, não entra no data
+  channel e não é sincronizado com os outros participantes.
+- O tema é aplicado **antes da página pintar**, então recarregar não pisca a cor
+  errada.
+- O que fica **por cima do vídeo** — o nome do participante, o chip de conexão, a
+  moldura preta em volta de um compartilhamento de tela — segue escuro nos dois temas.
+  É de propósito: essas peças ficam sobre imagem que o produto não controla, e clareá-las
+  as faria sumir sobre uma câmera clara.
+
 Ver `ARCHITECTURE.md` §6 para o desenho e os trade-offs (§6.9 para a música, §6.10 para
-dispositivos, §6.11 para a supressão de ruído).
+dispositivos, §6.11 para a supressão de ruído, §6.13 para o tema e a base de design).
 
 ### Uma exceção declarada: YouTube
 

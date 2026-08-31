@@ -59,7 +59,12 @@
     --black: #000000;
 
     --blue-700: #2454cc;
-    --blue-600: #3b64e0;
+    /* O fundo sólido de marca no escuro. Não é o #3b64e0 “natural” da escala:
+       ele fica em 2.90:1 contra `--surface-raised`, e o limite de um controle
+       preenchido é o próprio preenchimento (WCAG 1.4.11 pede 3:1). Este clareia
+       o suficiente sem derrubar o branco por cima abaixo de 4.5:1 — a margem
+       nos dois lados é de duas casas decimais, então remeça antes de mexer. */
+    --blue-600: #4069e8;
     --blue-550: #4a7bf0;
     --blue-400: #6b93ff;
     --blue-050: #e8eefb;
@@ -94,7 +99,7 @@
     --on-media-danger: var(--red-300);
     /* Traço de algo que está sobre mídia: branco a baixa opacidade, porque o
        que está atrás é escuro nos dois temas por decisão, não por acaso. */
-    --on-media-border: rgba(255, 255, 255, 0.22);
+    --on-media-border: rgba(255, 255, 255, 0.45);
     --panel-over-media: rgba(15, 17, 21, 0.94);
     --panel-over-media-control: rgba(20, 23, 29, 0.94);
     --panel-over-media-border: rgba(255, 255, 255, 0.14);
