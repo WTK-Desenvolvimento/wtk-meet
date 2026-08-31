@@ -3,6 +3,8 @@ import { useAudibleMedia } from '../lib/audibleMedia.js';
 
 import type { AudibleMediaOptions } from '../lib/audibleMedia.js';
 
+import './PeerAudio.css';
+
 /**
  * O que o `PeerAudio` precisa de cada participante: o stream, quando ele já
  * existe. É de propósito mais frouxo que o `Participant` do `Room` — este

@@ -1,0 +1,80 @@
+/* Casca comum dos dois modais e — mais importante — **o lugar único onde as
+   camadas z deste produto estão escritas por extenso**.
+
+   Antes, o mapa vivia espalhado em comentários de cinco arquivos, e cada um
+   repetia metade da regra. Os valores continuam declarados em quem os usa
+   (mudar a camada de um overlay é mudança dele, não daqui); o que mora aqui é o
+   **porquê** da ordem:
+
+     31  `.join-request-modal`     ─┐ pedido de entrada. É a única coisa da tela
+     30  `.modal-backdrop`         ─┘ que outra pessoa está esperando: ganha de
+                                      tudo, inclusive de configurações.
+     29  `.settings-modal`         ─┐ configurações. Acima dos toasts, abaixo da
+     28  `.modal-backdrop.settings`─┘ aprovação. A modificadora existe porque
+                                      reusar `.modal-backdrop` crua empataria os
+                                      dois e a ordem passaria a depender da ordem
+                                      de montagem no DOM, que não é estável (eles
+                                      vivem em ramos diferentes do `Room`).
+     25  `.music-vote-card`          votação de música. Controle de acesso nunca
+                                      fica atrás de música.
+     20  `.toasts`                   avisos de entrada/saída, efêmeros.
+     15  `.participants-panel`       lista do modo estreito; nada aqui é decisão
+         `.participants-toggle`      que alguém esteja esperando.
+
+   Não converta essas camadas em tokens numéricos: o comentário que explica por
+   que aprovação ganha de configurações vale mais do que a indireção. */
+
+@layer overlays {
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-5);
+    background: var(--overlay-backdrop);
+  }
+
+  .modal-backdrop.settings {
+    z-index: 28;
+  }
+
+  /* Superfície compartilhada pelos dois modais. Os seletores continuam
+     separados (`.join-request-modal`, `.settings-modal`) porque são contrato
+     com o E2E — o que se compartilha é a declaração, não o nome. */
+  .join-request-modal,
+  .settings-modal {
+    position: relative;
+    max-height: 100%;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-5) var(--space-6);
+    box-shadow: var(--shadow-3);
+  }
+
+  .join-request-modal h2,
+  .settings-modal h2 {
+    margin: 0;
+    font-size: var(--text-lg);
+  }
+
+  @media (max-width: 480px) {
+    .modal-backdrop {
+      padding: var(--space-3);
+      /* Em tela estreita o modal cola no topo: centralizado, um modal alto tem
+         metade fora da tela e a outra metade inalcançável (a página não rola). */
+      align-items: flex-start;
+    }
+
+    .join-request-modal,
+    .settings-modal {
+      padding: var(--space-4);
+    }
+  }
+}

@@ -1,0 +1,72 @@
+/* Modal de pedidos de entrada. A casca e o mapa de camadas estão em
+   `modal.css`, importado por este componente. */
+
+@layer overlays {
+  .join-request-modal {
+    z-index: 31;
+    width: min(30rem, 100%);
+    gap: var(--space-4);
+  }
+
+  .join-request-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .join-request {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .join-request-name {
+    overflow-wrap: anywhere;
+    font-weight: 600;
+  }
+
+  .join-request-actions {
+    display: flex;
+    gap: var(--space-2);
+    flex-shrink: 0;
+  }
+
+  /* "Aprovar" é a ação esperada e a que se procura no susto de alguém batendo à
+     porta; "Negar" fica no traço neutro. */
+  .join-request button.approve {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .join-request button.approve:hover:not(:disabled) {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+  }
+
+  .join-request-hint {
+    margin: 0;
+    color: var(--muted-text);
+    font-size: var(--text-sm);
+  }
+
+  /* Em 390px os dois botões dividem a linha inteira em vez de espremerem o nome
+     do lado. */
+  @media (max-width: 480px) {
+    .join-request-actions {
+      width: 100%;
+    }
+
+    .join-request-actions button {
+      flex: 1;
+    }
+  }
+}

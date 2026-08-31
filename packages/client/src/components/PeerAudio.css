@@ -1,0 +1,13 @@
+/* Sink de áudio dos peers.
+
+   Três linhas, e um contrato: **nenhuma caixa de layout e nunca
+   `display: none`**. O elemento precisa continuar sendo mídia ativa para tocar
+   — escondê-lo com `display: none` cala a sala inteira, e o E2E verifica que os
+   `<audio>` daqui estão montados e ativos. `display: contents` é o único valor
+   que some do layout sem parar a mídia. */
+
+@layer components {
+  .peer-audio-sinks {
+    display: contents;
+  }
+}

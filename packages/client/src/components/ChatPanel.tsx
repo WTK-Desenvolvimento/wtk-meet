@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { formatTime, MAX_MESSAGE_LENGTH, type ChatMessage } from '../lib/chat.js';
 
+import './ChatPanel.css';
+
 /**
  * Painel de chat da sala. As mensagens chegam e saem pelos data channels P2P
  * (ver `lib/chat.js` e `lib/webrtcMesh.js`); este componente não conhece o

@@ -11,6 +11,35 @@ import {
   type DevicePreferences,
 } from '../lib/devices.js';
 import { MODE, noiseConstraints, type NoiseMode } from '../lib/noiseSuppression.js';
+import {
+  THEME_LABELS,
+  THEME_ORDER,
+  applyTheme,
+  readTheme,
+  resolveTheme,
+  writeTheme,
+  type PreferenceStorage,
+  type ThemePreference,
+} from '../lib/theme.js';
+
+import './modal.css';
+import './SettingsModal.css';
+
+/**
+ * `localStorage` quando ele existe **e** é acessível; `null` nos dois casos em
+ * que não é. Os dois acontecem de verdade aqui: `settingsNoiseToggle.test.ts`
+ * renderiza este componente com `react-dom/server` no Node, onde `window` não
+ * existe; e em janela privada o próprio acesso à propriedade lança. As funções
+ * de `lib/theme.ts` já toleram `null` — o que elas não podem é receber o acesso
+ * que estoura antes de serem chamadas.
+ */
+function browserStorage(): PreferenceStorage | null {
+  try {
+    return typeof window === 'undefined' ? null : window.localStorage;
+  } catch {
+    return null;
+  }
+}
 
 const SINK_UNSUPPORTED_HINT =
   'Este navegador não permite escolher a saída de áudio pela página. ' +
@@ -98,6 +127,9 @@ export default function SettingsModal({
   const [devices, setDevices] = useState(() => listDevices([]));
   const [level, setLevel] = useState(0);
   const [previewError, setPreviewError] = useState('');
+  // O tema é o único controle deste modal que **não** entra no payload de
+  // `onSave` — ver o comentário do grupo de rádio, mais abaixo.
+  const [theme, setTheme] = useState<ThemePreference>(() => readTheme(browserStorage()));
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const firstFieldRef = useRef<HTMLSelectElement | null>(null);
@@ -260,6 +292,26 @@ export default function SettingsModal({
     setPending((prev) => ({ ...prev, [key]: value }));
   };
 
+  /**
+   * Aplica e persiste na hora, fora do contrato Salvar/Cancelar.
+   *
+   * É o que se espera de um seletor de tema, e evita duas armadilhas concretas:
+   * incluir `theme` no payload de `onSave` obrigaria a mexer nos dois chamadores
+   * (`Home` e `Room`) e no tipo do payload, por um campo que nada tem a ver com
+   * hardware; e a variante "aplica ao vivo e reverte no desmonte" quebra no
+   * `StrictMode` do React, que monta→desmonta→remonta em desenvolvimento — a
+   * limpeza rodaria logo após o primeiro mount e reverteria o tema sozinha.
+   *
+   * A chave `wtk-meet:theme` só passa a existir **depois** desta função rodar:
+   * nada é gravado no carregamento da página (ARCHITECTURE.md §6.10).
+   */
+  const chooseTheme = (pref: ThemePreference) => {
+    setTheme(pref);
+    const efetiva = writeTheme(browserStorage(), pref);
+    const sistemaEscuro = !!window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+    applyTheme(document.documentElement, resolveTheme(efetiva, sistemaEscuro));
+  };
+
   const handleSave = () => {
     onSave?.({ ...pending });
   };
@@ -351,6 +403,36 @@ export default function SettingsModal({
           />
           <span>Avisos sonoros de entrada e saída</span>
         </label>
+
+        {/* Grupo de rádio, e **nunca** um quarto `<select>`: o harness do E2E
+            bloqueia em `selects.length === 3` e o roteiro endereça os três por
+            índice. Um `<select>` de tema aqui trava a abertura do modal em
+            timeout e derruba quase toda a suíte, porque quase todo cenário passa
+            por aqui. Rádio é a única forma de tri-estado que não toca nessa
+            contagem — e os dois checkboxes vizinhos provam que acrescentar
+            controles nomeados é seguro: o E2E os endereça por nome acessível,
+            não por posição. */}
+        <fieldset className="settings-theme">
+          <legend>Tema</legend>
+          <div className="settings-theme-options">
+            {THEME_ORDER.map((opcao) => (
+              <label className="settings-theme-option" key={opcao}>
+                <input
+                  type="radio"
+                  name="wtk-theme"
+                  value={opcao}
+                  checked={theme === opcao}
+                  onChange={() => chooseTheme(opcao)}
+                />
+                <span>{THEME_LABELS[opcao]}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <p className="settings-hint">
+          Vale só neste navegador e é aplicado na hora — Cancelar não desfaz a
+          escolha de tema.
+        </p>
 
         <div className="settings-actions">
           <button type="button" onClick={() => onClose?.()}>

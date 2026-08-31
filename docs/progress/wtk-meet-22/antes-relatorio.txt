@@ -1,0 +1,21 @@
+tema alternável nesta passada: não (só dark)
+📸 antes-home-dark-desktop.png
+📸 antes-home-dark-390px.png
+📸 antes-prejoin-dark-desktop.png
+📸 antes-prejoin-dark-390px.png
+📸 antes-join-request-modal-dark-desktop.png
+📸 antes-join-request-modal-dark-390px.png
+📸 antes-toasts-dark-desktop.png
+📸 antes-room-grade-dark-desktop.png
+📸 antes-room-grade-dark-390px.png
+📸 antes-chat-panel-dark-desktop.png
+📸 antes-chat-panel-dark-390px.png
+📸 antes-music-vote-card-dark-desktop.png
+painel de música aberto na primeira tentativa: false; votação: true
+📸 antes-music-panel-dark-desktop.png
+📸 antes-music-panel-dark-390px.png
+📸 antes-room-destaque-dark-desktop.png
+📸 antes-room-destaque-dark-390px.png
+📸 antes-settings-modal-dark-desktop.png
+📸 antes-settings-modal-dark-390px.png
+📸 antes-room-grade-dark-320px.png

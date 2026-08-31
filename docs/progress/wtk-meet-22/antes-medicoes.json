@@ -1,0 +1,511 @@
+{
+  "focoPreJoin": [
+    {
+      "alvo": "button.secondary «Configurações»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    }
+  ],
+  "geometriaGrade-desktop": {
+    "scrollWidth": 1280,
+    "clientWidth": 1280,
+    "scrollHeight": 720,
+    "innerHeight": 720,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 665,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": null,
+    "musicAbaixoDoVideo": null,
+    "stageAltura": 586
+  },
+  "geometriaGrade-390px": {
+    "scrollWidth": 390,
+    "clientWidth": 390,
+    "scrollHeight": 844,
+    "innerHeight": 844,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 797,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": null,
+    "musicAbaixoDoVideo": null,
+    "stageAltura": 623
+  },
+  "alvosPequenosGrade390": [
+    {
+      "alvo": "button.",
+      "texto": "Silenciar",
+      "w": 92,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Desligar câmera",
+      "w": 140,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Compartilhar tela",
+      "w": 150,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Chat",
+      "w": 68,
+      "h": 39
+    },
+    {
+      "alvo": "button.music-button",
+      "texto": "Música",
+      "w": 83,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Silenciar avisos",
+      "w": 134,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Configurações",
+      "w": 129,
+      "h": 39
+    },
+    {
+      "alvo": "button.leave",
+      "texto": "Sair",
+      "w": 62,
+      "h": 39
+    }
+  ],
+  "geometriaChat-desktop": {
+    "scrollWidth": 1280,
+    "clientWidth": 1280,
+    "scrollHeight": 720,
+    "innerHeight": 720,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 665,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": false,
+    "musicAbaixoDoVideo": null,
+    "stageAltura": 586
+  },
+  "geometriaChat-390px": {
+    "scrollWidth": 390,
+    "clientWidth": 390,
+    "scrollHeight": 844,
+    "innerHeight": 844,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 797,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": true,
+    "musicAbaixoDoVideo": null,
+    "stageAltura": 623
+  },
+  "geometriaMusica-desktop": {
+    "scrollWidth": 1280,
+    "clientWidth": 1280,
+    "scrollHeight": 720,
+    "innerHeight": 720,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 665,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": null,
+    "musicAbaixoDoVideo": false,
+    "stageAltura": 586
+  },
+  "geometriaMusica-390px": {
+    "scrollWidth": 390,
+    "clientWidth": 390,
+    "scrollHeight": 844,
+    "innerHeight": 844,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 797,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": null,
+    "musicAbaixoDoVideo": true,
+    "stageAltura": 623
+  },
+  "alvosPequenosMusica390": [
+    {
+      "alvo": "button.icon-button",
+      "texto": "✕",
+      "w": 28,
+      "h": 23
+    },
+    {
+      "alvo": "input.",
+      "texto": "",
+      "w": 280,
+      "h": 18
+    },
+    {
+      "alvo": "input.",
+      "texto": "",
+      "w": 337,
+      "h": 38
+    },
+    {
+      "alvo": "button.",
+      "texto": "Adicionar",
+      "w": 165,
+      "h": 30
+    },
+    {
+      "alvo": "button.",
+      "texto": "Arquivo",
+      "w": 165,
+      "h": 30
+    },
+    {
+      "alvo": "button.",
+      "texto": "Silenciar",
+      "w": 92,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Desligar câmera",
+      "w": 140,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Compartilhar tela",
+      "w": 150,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Chat",
+      "w": 68,
+      "h": 39
+    },
+    {
+      "alvo": "button.music-button",
+      "texto": "Música",
+      "w": 83,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Silenciar avisos",
+      "w": 134,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Configurações",
+      "w": 129,
+      "h": 39
+    },
+    {
+      "alvo": "button.leave",
+      "texto": "Sair",
+      "w": 62,
+      "h": 39
+    }
+  ],
+  "geometriaDestaque-desktop": {
+    "scrollWidth": 1280,
+    "clientWidth": 1280,
+    "scrollHeight": 720,
+    "innerHeight": 720,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 665,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": null,
+    "musicAbaixoDoVideo": null,
+    "stageAltura": 586
+  },
+  "geometriaDestaque-390px": {
+    "scrollWidth": 390,
+    "clientWidth": 390,
+    "scrollHeight": 844,
+    "innerHeight": 844,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 797,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": null,
+    "musicAbaixoDoVideo": null,
+    "stageAltura": 623
+  },
+  "alvosPequenosDestaque390": [
+    {
+      "alvo": "button.participants-toggle",
+      "texto": "Participantes3",
+      "w": 121,
+      "h": 32
+    },
+    {
+      "alvo": "button.",
+      "texto": "Silenciar",
+      "w": 92,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Desligar câmera",
+      "w": 140,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Compartilhar tela",
+      "w": 150,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Chat",
+      "w": 68,
+      "h": 39
+    },
+    {
+      "alvo": "button.music-button",
+      "texto": "Música",
+      "w": 83,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Silenciar avisos",
+      "w": 134,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Configurações",
+      "w": 129,
+      "h": 39
+    },
+    {
+      "alvo": "button.leave",
+      "texto": "Sair",
+      "w": 62,
+      "h": 39
+    }
+  ],
+  "contratoDestaque": {
+    "objectFit": "contain",
+    "aspectTile": "auto",
+    "peerAudioDisplay": "contents",
+    "colorScheme": "dark",
+    "zToasts": null,
+    "zParticipantes": null,
+    "zVoto": null,
+    "zSettings": null,
+    "zAprovacao": null,
+    "backdropPosition": null,
+    "selects": 0,
+    "chaves": [
+      "wtk-meet:devices"
+    ]
+  },
+  "focoSala": [
+    {
+      "alvo": "button «Silenciar avisos»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Configurações»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button.leave «Sair»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    }
+  ],
+  "contratoSettings": {
+    "objectFit": "contain",
+    "aspectTile": "16 / 9",
+    "peerAudioDisplay": "contents",
+    "colorScheme": "dark",
+    "zToasts": null,
+    "zParticipantes": null,
+    "zVoto": null,
+    "zSettings": "28",
+    "zAprovacao": null,
+    "backdropPosition": "fixed",
+    "selects": 3,
+    "chaves": [
+      "wtk-meet:devices"
+    ]
+  },
+  "focoSettings": [
+    {
+      "alvo": "select «Padrão do sistemaMicrofo»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "select «Padrão do sistemaSaída F»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "input",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "input",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Cancelar»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button.primary «Salvar»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Silenciar»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Desligar câmera»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Compartilhar tela»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Chat»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button.music-button «Música»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Silenciar avisos»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button «Configurações»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    },
+    {
+      "alvo": "button.leave «Sair»",
+      "outline": "1px auto rgb(16, 16, 16)",
+      "boxShadow": "",
+      "visivel": true
+    }
+  ],
+  "primeiraVisita-dark": {
+    "atributo": null,
+    "chaves": [],
+    "colorScheme": "dark"
+  },
+  "primeiraVisita-light": {
+    "atributo": null,
+    "chaves": [],
+    "colorScheme": "dark"
+  },
+  "geometria320": {
+    "scrollWidth": 320,
+    "clientWidth": 320,
+    "scrollHeight": 568,
+    "innerHeight": 568,
+    "semScrollHorizontal": true,
+    "semScrollVertical": true,
+    "controlsBottom": 521,
+    "controlsDentro": true,
+    "chatAbaixoDoVideo": null,
+    "musicAbaixoDoVideo": null,
+    "stageAltura": 296
+  },
+  "alvosPequenos320": [
+    {
+      "alvo": "button.",
+      "texto": "Silenciar",
+      "w": 92,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Desligar câmera",
+      "w": 140,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Compartilhar tela",
+      "w": 150,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Chat",
+      "w": 68,
+      "h": 39
+    },
+    {
+      "alvo": "button.music-button",
+      "texto": "Música",
+      "w": 83,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Silenciar avisos",
+      "w": 134,
+      "h": 39
+    },
+    {
+      "alvo": "button.",
+      "texto": "Configurações",
+      "w": 129,
+      "h": 39
+    },
+    {
+      "alvo": "button.leave",
+      "texto": "Sair",
+      "w": 62,
+      "h": 39
+    }
+  ]
+}

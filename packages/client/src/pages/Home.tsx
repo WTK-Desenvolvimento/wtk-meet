@@ -16,6 +16,8 @@ import {
 } from '../lib/roomSlug.js';
 import { isReservedPath, parseInviteLink } from '../lib/roomRouting.js';
 
+import './Home.css';
+
 /**
  * Pergunta ao servidor se **já tem gente** no endereço escolhido.
  *

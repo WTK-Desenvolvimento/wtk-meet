@@ -3,6 +3,8 @@ import VideoTile, { type Tile } from './VideoTile.js';
 import type { LevelSnapshot } from '../lib/audioLevels.js';
 import { computeGridLayout, GRID_GAP } from '../lib/gridLayout.js';
 
+import './VideoGrid.css';
+
 /**
  * A grade de vídeos. Mede o próprio palco, pergunta a `lib/gridLayout.js` qual é
  * a melhor grade para aquela caixa e escreve o resultado como custom properties

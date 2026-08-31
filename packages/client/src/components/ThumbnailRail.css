@@ -1,0 +1,88 @@
+/* Coluna de miniaturas do modo destaque. */
+
+@layer components {
+  /* Quem rola é a coluna — nunca o destaque, nunca a página. `min-height: 0` em
+     todos os níveis, senão a pilha de miniaturas empurra a altura e ressuscita o
+     scroll de documento que o layout de viewport fixo eliminou. */
+  .thumb-rail {
+    flex: 0 0 auto;
+    width: var(--rail-w, auto);
+    max-height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--grid-gap, 12px);
+  }
+
+  /* Largura *e* altura vêm da conta do módulo puro, como no destaque: deixar a
+     altura para o `aspect-ratio` do tile faria o navegador chegar a um número
+     ligeiramente diferente do que entrou no cálculo de "a pilha cabe?". */
+  .thumb-item {
+    flex: 0 0 auto;
+    width: var(--thumb-w, 100%);
+    height: var(--thumb-h, auto);
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: transparent;
+    display: block;
+    /* A casca de `button` impõe alvo de toque mínimo; aqui a altura é calculada
+       e o alvo já é o tile inteiro. */
+    min-height: 0;
+  }
+
+  .thumb-item .video-tile {
+    width: 100%;
+    height: 100%;
+    aspect-ratio: auto;
+  }
+
+  button.thumb-item {
+    cursor: pointer;
+  }
+
+  button.thumb-item:hover .video-tile {
+    outline-color: var(--accent);
+  }
+
+  /* O anel de foco fica no `<button>` e o `outline` de estado fica no
+     `.video-tile` filho: é o modelo de todo o resto do produto. Um
+     `:focus-visible { outline }` que alcançasse o tile apagaria `conn-warn` /
+     `conn-bad` de quem está focado — e o E2E, que lê a classe, continuaria
+     verde enquanto a pessoa não veria nada. */
+  button.thumb-item:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 3px;
+  }
+
+  /* Com duas ou mais telas ativas a coluna é um grupo de escolha, e a que está em
+     destaque continua nele como botão pressionado — sem stream, para não pagar a
+     decodificação da mesma imagem duas vezes (o tile cai no placeholder). É o
+     marcador de "é esta que você está vendo", em cima do `aria-pressed`.
+     A espessura extra é o sinal **não cromático** exigido pela revisão de
+     acessibilidade: cor sozinha não distingue estado. */
+  button.thumb-item[aria-pressed='true'] .video-tile {
+    outline-color: var(--accent);
+    outline-width: 3px;
+    outline-offset: -3px;
+  }
+
+  button.thumb-item.spotlighted {
+    cursor: default;
+  }
+
+  button.thumb-item.spotlighted .video-tile {
+    opacity: 0.75;
+  }
+
+  /* Dentro do painel do modo estreito a coluna ocupa o painel inteiro. */
+  .thumb-rail.in-panel {
+    flex: 1;
+    width: 100%;
+    max-height: 100%;
+  }
+}

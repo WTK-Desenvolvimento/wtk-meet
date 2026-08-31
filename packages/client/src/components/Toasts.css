@@ -1,0 +1,50 @@
+/* Toasts de entrada e saída. Camada 20 — ver o mapa em `modal.css`. */
+
+@layer overlays {
+  .toasts {
+    position: fixed;
+    top: var(--space-4);
+    right: var(--space-4);
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    pointer-events: none;
+    max-width: calc(100vw - var(--space-4) * 2);
+  }
+
+  .toast {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius-md);
+    padding: var(--space-3) var(--space-4);
+    font-size: var(--text-sm);
+    box-shadow: var(--shadow-1);
+    animation: toast-in 160ms ease-out;
+  }
+
+  .toast-leave {
+    border-left-color: var(--muted-text);
+  }
+
+  .toast-icon {
+    color: var(--muted-text);
+  }
+
+  @keyframes toast-in {
+    from {
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .toast {
+      animation: none;
+    }
+  }
+}

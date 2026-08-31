@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 
+import './modal.css';
+import './JoinRequestModal.css';
+
 const ESC_HINT = 'Esc não decide nada: o pedido continua pendente. Escolha Aprovar ou Negar.';
 const DEFAULT_HINT = 'Cada pedido precisa de uma decisão: Aprovar ou Negar.';
 

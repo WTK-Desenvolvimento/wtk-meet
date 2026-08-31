@@ -1,0 +1,37 @@
+/* Home — só o que é da Home.
+   A casca (`.home`, `.field`, `.actions`, `.join-block`, `.hint`, `.error`)
+   mora em `styles/base.css`: o lobby renderiza `className="home prejoin"` e
+   reusa a mesma casca. */
+
+@layer components {
+  /* O preview do endereço fica sob o campo e muda a cada tecla: reservar a
+     altura evita que a página inteira pule entre "sorteamos um endereço" e o
+     link. */
+  .field .hint {
+    display: block;
+    min-height: 2.4em;
+    font-weight: 400;
+  }
+
+  .field input[aria-invalid='true'] {
+    border-color: var(--danger);
+  }
+
+  /* Aviso de sala ocupada: não bloqueia a criação, oferece as duas saídas
+     (entrar junto ou trocar de endereço) lado a lado. */
+  .occupied-room {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .occupied-room p {
+    margin: 0;
+  }
+
+  .occupied-actions {
+    display: flex;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+}

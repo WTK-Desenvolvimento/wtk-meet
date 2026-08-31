@@ -2,6 +2,8 @@
  * Avisos efêmeros de entrada/saída. O ciclo de vida (timer de ~4s) vive no
  * `Room`, junto com o bipe — aqui é só apresentação.
  */
+import './Toasts.css';
+
 /** Um aviso efêmero. O ciclo de vida (o timer) é do `Room`. */
 export interface Toast {
   id: string | number;

@@ -51,6 +51,8 @@ import type { JoinRequest } from '../components/JoinRequestModal.js';
 import type { Toast } from '../components/Toasts.js';
 import type { PendingPreferences } from '../components/SettingsModal.js';
 
+import './Room.css';
+
 const PHASE = {
   CONNECTING: 'connecting',
   WAITING_APPROVAL: 'waiting-approval',

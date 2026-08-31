@@ -11,9 +11,11 @@
  *    (que resolve `.js` → `.ts` sozinho) e os testes das fases 2–6, que não
  *    podem ser tocados e importam pelo nome antigo.
  *
- * 2. **`load`** — só `.tsx`, transformado com esbuild. Arquivos `.ts` **não**
- *    são interceptados: o Node ≥ 22.18 faz type stripping nativo, e não
- *    interceptar é uma engrenagem a menos.
+ * 2. **`load`** — `.tsx` transformado com esbuild, e `.css` devolvido como
+ *    módulo vazio (o estilo é co-localizado com os componentes e quem o
+ *    entende é o Vite, não o Node). Arquivos `.ts` **não** são interceptados:
+ *    o Node ≥ 22.18 faz type stripping nativo, e não interceptar é uma
+ *    engrenagem a menos.
  *
  * O que este arquivo deliberadamente **não** faz: type-check. O portão de tipos
  * é `npm run typecheck`; misturar os dois deixaria o `npm test` lento e vermelho
@@ -84,6 +86,19 @@ export async function load(url, context, nextLoad) {
   // `.ts` vai para o type stripping nativo do Node. A query é ignorada aqui
   // pelo mesmo motivo do `resolve`.
   const semQuery = url.split('?')[0];
+
+  // 3. **CSS vira módulo vazio.** Desde a WTK-MEET-22 o estilo é co-localizado:
+  //    cada componente faz `import './Componente.css'`, que é o que o Vite
+  //    entende e transforma em folha de estilo. O `node --test` não tem
+  //    bundler — sem isto, todo teste que importa um `.tsx` de componente morre
+  //    em `ERR_UNKNOWN_FILE_EXTENSION`, e o sintoma se lê como erro de
+  //    resolução de módulo. Um módulo vazio é a resposta certa: nenhum teste
+  //    deste repositório afirma nada sobre estilo (o único portão que enxerga
+  //    CSS é o E2E, no navegador de verdade).
+  if (semQuery.endsWith('.css')) {
+    return { format: 'module', source: 'export default undefined;', shortCircuit: true };
+  }
+
   if (!semQuery.endsWith('.tsx')) return nextLoad(url, context);
 
   const { readFile } = await import('node:fs/promises');
