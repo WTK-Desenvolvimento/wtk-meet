@@ -839,6 +839,9 @@ export function useMusicRoom({
     clearTimeout(soundboardTailRef.current ?? undefined);
     soundboardTailRef.current = null;
     if (soundboardPanelOpenRef.current) return;
+    // Nunca segurou o canal: não há o que devolver, e agendar um
+    // `setMusicTrack(null)` daqui poderia disputar com a reconciliação.
+    if (!soundboardHoldRef.current) return;
     soundboardTailRef.current = setTimeout(() => {
       soundboardTailRef.current = null;
       soundboardHoldRef.current = false;

@@ -1247,15 +1247,18 @@ export default function Room() {
         setChatOpen(false);
         setMusicOpen(false);
       }
-      setSoundboardPanelOpen(!open);
       return !open;
     });
-  }, [setSoundboardPanelOpen]);
+  }, []);
 
-  const closeSoundboard = useCallback(() => {
-    setSoundboardOpen(false);
-    setSoundboardPanelOpen(false);
-  }, [setSoundboardPanelOpen]);
+  const closeSoundboard = useCallback(() => setSoundboardOpen(false), []);
+
+  // A posse do canal segue o painel por **efeito**, e não de dentro do
+  // atualizador de estado acima: um atualizador é chamado mais de uma vez em
+  // modo estrito, e efeito colateral dentro dele acontece o dobro das vezes.
+  useEffect(() => {
+    setSoundboardPanelOpen(soundboardOpen);
+  }, [setSoundboardPanelOpen, soundboardOpen]);
 
   /** Dispara e traduz a recusa (CORS, cooldown) em mensagem no painel. */
   const playSound = useCallback(
