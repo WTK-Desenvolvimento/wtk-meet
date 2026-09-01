@@ -67,7 +67,8 @@ Uma divergência **do DoD consigo mesmo** também precisa estar escrita:
 | `e892af3` | Módulos puros: `lib/soundboard.ts`, `lib/soundboardRate.ts`, `soundboard-play` em `musicProtocol.ts` + 24 casos |
 | `4506b97` | `MusicEngine.ensureOutput`, `lib/soundboardPlayer.ts`, posse do canal e recepção em `useMusicRoom` |
 | `cbff291` | UI: `useSoundboard`, `SoundboardPanel`, botão da barra, mute por peer no `RemoteMusicAudio`, CSS |
-| (este) | Cenário `SB` no E2E e documentação |
+| `ef81365` | Cenário `SB` no E2E e documentação (ARCHITECTURE §6.13, READMEs, CHANGELOG, este arquivo) |
+| `fb889fa` | A posse do canal passa a seguir o painel por efeito, não de dentro do atualizador de estado |
 
 ---
 
@@ -86,11 +87,16 @@ de Bob** a atribuição do anúncio e a energia no quarto canal (`rms=0.16`, de 
 36 KB recebidos). A prova é a segunda máquina, e não o monitor de quem clica — é o
 monitor que engana quando o áudio sai silêncio digital.
 
-**Uma execução intermediária morreu na seção T** ("timeout esperando mesh da sala
-de ruído"), com as três conexões daquela sala em `new`. É a falha ambiental
-conhecida do sandbox (contenção derrubando o `node-turn`, sem TURN não há conexão
-com `iceTransportPolicy: 'relay'`): na execução seguinte, sem nenhuma alteração de
-código, a mesma seção fechou verde.
+O número foi confirmado em **duas execuções completas** (a última já sobre a árvore
+final, com o refactor da posse do canal dentro).
+
+**Duas execuções intermediárias morreram antes do fim** — uma na seção T ("timeout
+esperando mesh da sala de ruído", as três conexões daquela sala em `new`) e outra
+ainda na seção A, com um par parado em `conn: new, ice: new, sig: stable`. É a falha
+ambiental conhecida deste sandbox (contenção derrubando o `node-turn`; sem TURN não há
+conexão com `iceTransportPolicy: 'relay'`), e não regressão: as duas execuções
+seguintes, sem nenhuma alteração de código entre elas, fecharam 147/148 com a mesma
+única falha.
 
 ---
 
