@@ -26,6 +26,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { getAudioContext } from './audioContext.js';
 import { MusicEngine } from './musicEngine.js';
+import { SoundboardError, SoundboardPlayer } from './soundboardPlayer.js';
+import { MAX_SOUND_MS } from './soundboard.js';
+import { consume, createRateState, retryInMs } from './soundboardRate.js';
+import type { Favorite } from './soundboard.js';
+import type { RateState } from './soundboardRate.js';
 import type { WebRTCMesh } from './webrtcMesh.js';
 import type { VoteResult } from './musicVote.js';
 import type { SanitizedMusicMessage } from './musicProtocol.js';
@@ -43,6 +48,7 @@ import {
   sanitizeMusicMessage,
   voteCastMessage,
   voteOpenMessage,
+  soundboardPlayMessage,
   voteResultMessage,
 } from './musicProtocol.js';
 import {
@@ -113,6 +119,23 @@ const RESULT_LINGER_MS = 3_000;
  */
 const RETRY_DELAY_MS = 700;
 
+/**
+ * Cauda da janela de mute do ouvinte, somada ao `durationMs` anunciado. Cobre a
+ * diferença de latência entre o anúncio (SCTP) e o áudio (SRTP pelo TURN): sem
+ * ela, o fim do efeito vazaria por algumas dezenas de ms.
+ */
+const MUTE_GUARD_MS = 1_500;
+
+/**
+ * Quanto tempo o canal de música fica atado depois do último efeito, com o
+ * painel já fechado. Reativar um sender custa alguns quadros, e um efeito de
+ * 1,2s perde o ataque se a ativação acontecer no mesmo instante do clique.
+ */
+const SOUNDBOARD_TAIL_MS = 5_000;
+
+/** Quantos disparos recentes a lista de atividade do painel guarda. */
+const ACTIVITY_LIMIT = 8;
+
 function newId() {
   return globalThis.crypto?.randomUUID?.() || `m-${Math.random().toString(36).slice(2)}-${Date.now()}`;
 }
@@ -155,12 +178,36 @@ interface LoadedTrack {
   role: Delivery;
 }
 
+/** Um disparo recebido (ou feito), para a lista de atividade do painel. */
+export interface SoundboardActivity {
+  id: string;
+  peerId: string;
+  title: string;
+  at: number;
+}
+
+/** O que o disparo devolve ao painel: sucesso, ou uma razão com mensagem. */
+export interface SoundboardFireResult {
+  ok: boolean;
+  reason?: string;
+}
+
 export interface UseMusicRoomOptions {
   meshRef: { current: WebRTCMesh | null };
   participants: Map<string, unknown>;
   getSelfId?: () => string;
   displayName: string;
   pushToast: (kind: string, text: string) => void;
+  /**
+   * "Devo silenciar o soundboard deste peer?" — a escolha do **ouvinte**,
+   * decidida fora daqui (mute global do storage + lista em memória do `Room`).
+   * Vem como função, e não como lista, porque ela muda a cada render e o que o
+   * hook precisa é consultá-la no instante em que o anúncio chega.
+   *
+   * A resposta **nunca** trafega: ela não vira mensagem, não vira estado
+   * publicado e não altera o volume nem o mic de ninguém.
+   */
+  isSoundboardMuted?: (peerId: string) => boolean;
 }
 
 export function useMusicRoom({
@@ -169,6 +216,7 @@ export function useMusicRoom({
   getSelfId,
   displayName,
   pushToast,
+  isSoundboardMuted,
 }: UseMusicRoomOptions) {
   const [session, setSession] = useState(createSession);
   const [vote, setVote] = useState<Vote | null>(null);
@@ -179,6 +227,13 @@ export function useMusicRoom({
   const [notice, setNotice] = useState<string | null>(null);
   const [youtubeWarned, setYoutubeWarned] = useState(false);
   const [nowPlayingTick, setNowPlayingTick] = useState(0);
+  // ---- soundboard (ver a seção homônima adiante)
+  const [soundboardActivity, setSoundboardActivity] = useState<SoundboardActivity[]>([]);
+  /** Peers com janela de mute aberta agora — é o que o `RemoteMusicAudio` lê. */
+  const [soundboardSilenced, setSoundboardSilenced] = useState<string[]>([]);
+  /** Peers que estouraram o limite de entrada: a UI oferece silenciá-los. */
+  const [soundboardFlooding, setSoundboardFlooding] = useState<string[]>([]);
+  const [soundboardCooldownMs, setSoundboardCooldownMs] = useState(0);
 
   const sessionRef = useRef(session);
   const voteRef = useRef<Vote | null>(null);
@@ -220,8 +275,20 @@ export function useMusicRoom({
   const presentIdsRef = useRef<string[]>([]);
   const knownPeersRef = useRef(new Set<string>());
   const displayNameRef = useRef(displayName);
+  const soundboardRef = useRef<SoundboardPlayer | null>(null);
+  const isSoundboardMutedRef = useRef<((peerId: string) => boolean) | undefined>(undefined);
+  /** Limitador de saída (o meu botão) e o de entrada, um balde por peer. */
+  const outboundRateRef = useRef<RateState>(createRateState());
+  const inboundRateRef = useRef(new Map<string, RateState>());
+  const muteTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const soundboardHoldRef = useRef(false);
+  const soundboardPanelOpenRef = useRef(false);
+  const soundboardTailRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Este cliente está produzindo o áudio da faixa corrente para o mesh? */
+  const streamingMusicRef = useRef(false);
 
   displayNameRef.current = displayName;
+  isSoundboardMutedRef.current = isSoundboardMuted;
   volumeRef.current = volume;
 
   const selfId = getSelfId?.() || '';
@@ -487,6 +554,37 @@ export function useMusicRoom({
     return engineRef.current;
   }, [handleDuration, handleEnded, handlePlayerError]);
 
+  /**
+   * Ata o track do canal de música ao mesh — **uma vez**, e sempre o mesmo
+   * objeto: o `MediaStreamDestination` do `MusicEngine` é criado uma vez e vive
+   * enquanto o motor vive. A guarda contra `localMusicTrack` já ser este track
+   * é o que faz um disparo de soundboard não custar `replaceTrack` nenhum
+   * quando a música já está no ar.
+   */
+  const attachMusicTrack = useCallback(
+    async (track: MediaStreamTrack | null) => {
+      const mesh = meshRef.current;
+      if (!mesh || !track) return;
+      if (mesh.localMusicTrack === track) return;
+      await mesh.setMusicTrack(track);
+    },
+    [meshRef],
+  );
+
+  /**
+   * Devolve o canal ao silêncio — **a menos que o soundboard esteja com ele**.
+   *
+   * Era daqui que vinha o bug mais provável desta entrega: os cinco ramos de
+   * reconciliação que "desligam o canal" desligariam também o soundboard, no
+   * meio de um efeito, sem erro nenhum. Manter `setMusicTrack(null)` cru
+   * nesses ramos "por segurança" é exatamente o anti-pattern.
+   */
+  const detachMusicTrack = useCallback(async () => {
+    streamingMusicRef.current = false;
+    if (soundboardHoldRef.current) return;
+    await meshRef.current?.setMusicTrack(null);
+  }, [meshRef]);
+
   const ensureYouTube = useCallback(() => {
     if (!youtubeRef.current && youtubeHostRef.current) {
       // O host é do React; **tudo dentro dele é do envelope**, que monta um nó
@@ -523,14 +621,13 @@ export function useMusicRoom({
     const { playback } = sessionRef.current;
     const entry = entryById(sessionRef.current, playback.entryId);
     const me = selfIdRef.current;
-    const mesh = meshRef.current;
     const token = (loadTokenRef.current += 1);
 
     if (!entry) {
       loadedRef.current = null;
       engineRef.current?.stop();
       youtubeRef.current?.stop();
-      await mesh?.setMusicTrack(null);
+      await detachMusicTrack();
       return;
     }
 
@@ -543,7 +640,7 @@ export function useMusicRoom({
       loadedRef.current = null;
       engineRef.current?.stop();
       youtubeRef.current?.stop();
-      await mesh?.setMusicTrack(null);
+      await detachMusicTrack();
       return;
     }
 
@@ -552,7 +649,7 @@ export function useMusicRoom({
 
     if (entry.kind === 'youtube') {
       engineRef.current?.stop();
-      await mesh?.setMusicTrack(null);
+      await detachMusicTrack();
       const player = ensureYouTube();
       if (!player) return;
       loadedRef.current = { signature, entryId: entry.id, kind: 'youtube', role };
@@ -584,9 +681,10 @@ export function useMusicRoom({
     if (token !== loadTokenRef.current) return; // outra faixa entrou no meio
 
     if (role === 'stream' && owner) {
-      await mesh?.setMusicTrack(engine.track);
+      streamingMusicRef.current = true;
+      await attachMusicTrack(engine.track);
     } else {
-      await mesh?.setMusicTrack(null);
+      await detachMusicTrack();
     }
 
     const position = owner ? playback.positionSec : estimatePosition(playback, performance.now());
@@ -595,7 +693,7 @@ export function useMusicRoom({
       const ok = await engine.play();
       if (!ok) setAudioBlocked(true);
     }
-  }, [ensureEngine, ensureYouTube, meshRef]);
+  }, [attachMusicTrack, detachMusicTrack, ensureEngine, ensureYouTube]);
 
   // Reconcilia sempre que a **decisão** muda — não a cada tique de posição.
   useEffect(() => {
@@ -711,7 +809,169 @@ export function useMusicRoom({
   useEffect(() => {
     engineRef.current?.setMonitorVolume(volume);
     youtubeRef.current?.setVolume(volume);
+    soundboardRef.current?.setMonitorVolume(volume);
   }, [volume]);
+
+  // -------------------------------------------------------------- soundboard
+
+  const ensureSoundboard = useCallback(() => {
+    if (!soundboardRef.current) {
+      soundboardRef.current = new SoundboardPlayer({
+        // O efeito é mixado no **mesmo** `MediaStreamDestination` do canal de
+        // música — sem transceiver novo, sem `replaceTrack` por disparo e sem
+        // renegociação de SDP. O tocador não é dono desse nó (ver `ensureOutput`).
+        getOutput: () => ensureEngine().ensureOutput(),
+      });
+      soundboardRef.current.setMonitorVolume(volumeRef.current);
+    }
+    return soundboardRef.current;
+  }, [ensureEngine]);
+
+  /**
+   * Quem está com o canal de música: o player, o soundboard, ou ninguém.
+   *
+   * Com o painel aberto o canal fica atado (quem vai disparar abriu o painel), e
+   * depois do último efeito ele fica mais `SOUNDBOARD_TAIL_MS` — reativar um
+   * sender custa alguns quadros, e um efeito de 1,2s perderia o ataque se a
+   * ativação acontecesse no mesmo instante do clique.
+   */
+  const scheduleChannelRelease = useCallback(() => {
+    clearTimeout(soundboardTailRef.current ?? undefined);
+    soundboardTailRef.current = null;
+    if (soundboardPanelOpenRef.current) return;
+    soundboardTailRef.current = setTimeout(() => {
+      soundboardTailRef.current = null;
+      soundboardHoldRef.current = false;
+      // Só devolve o canal se o player não estiver transmitindo: soltar o track
+      // debaixo de uma faixa em curso silenciaria a sala sem erro nenhum.
+      if (!streamingMusicRef.current) void meshRef.current?.setMusicTrack(null);
+    }, SOUNDBOARD_TAIL_MS);
+  }, [meshRef]);
+
+  /** Ata o canal para o soundboard. Idempotente e sem custo quando já está lá. */
+  const acquireSoundboardChannel = useCallback(async () => {
+    const engine = ensureEngine();
+    const output = engine.ensureOutput();
+    if (!output) return false;
+    soundboardHoldRef.current = true;
+    clearTimeout(soundboardTailRef.current ?? undefined);
+    soundboardTailRef.current = null;
+    await attachMusicTrack(engine.track);
+    return true;
+  }, [attachMusicTrack, ensureEngine]);
+
+  /** O painel abriu ou fechou. Nada disso trafega — é decisão desta aba. */
+  const setSoundboardPanelOpen = useCallback(
+    (open: boolean) => {
+      soundboardPanelOpenRef.current = !!open;
+      if (open) void acquireSoundboardChannel();
+      else scheduleChannelRelease();
+    },
+    [acquireSoundboardChannel, scheduleChannelRelease],
+  );
+
+  const pushActivity = useCallback((item: SoundboardActivity) => {
+    setSoundboardActivity((prev) => [item, ...prev].slice(0, ACTIVITY_LIMIT));
+  }, []);
+
+  /**
+   * A janela de mute do ouvinte.
+   *
+   * No fio, efeito e música do player são **o mesmo sinal** — os dois vêm
+   * mixados no canal daquele peer, e nenhum receptor consegue separá-los. O
+   * único ponto de controle possível é temporal: emudecer o `<audio>` **daquele
+   * peer** enquanto o efeito dura. A consequência tem que estar na cara do
+   * usuário: se o peer silenciado estiver, no mesmo instante, transmitindo uma
+   * faixa do player, a faixa dele também emudece durante a janela (tipicamente
+   * 1–3s, no máximo ~16s). O rótulo do controle diz isso.
+   */
+  const openMuteWindow = useCallback((peerId: string, durationMs: number) => {
+    setSoundboardSilenced((prev) => (prev.includes(peerId) ? prev : [...prev, peerId]));
+    const anterior = muteTimersRef.current.get(peerId);
+    if (anterior) clearTimeout(anterior);
+    const timer = setTimeout(
+      () => {
+        muteTimersRef.current.delete(peerId);
+        setSoundboardSilenced((prev) => prev.filter((id) => id !== peerId));
+      },
+      Math.max(0, Math.min(MAX_SOUND_MS, durationMs)) + MUTE_GUARD_MS,
+    );
+    muteTimersRef.current.set(peerId, timer);
+  }, []);
+
+  /**
+   * Dispara um efeito: sonda, decodifica, **anuncia** e toca — nesta ordem.
+   *
+   * O anúncio vai antes do `start`, no mesmo tique, porque ele viaja por SCTP e
+   * o áudio por SRTP/TURN: anunciar depois faria o mute de quem silenciou perder
+   * a corrida em boa parte dos disparos. O silenciamento continua sendo
+   * best-effort nas bordas, e um vazamento de dezenas de ms é aceitável — muito
+   * mais que um atraso artificial no disparo, que custaria responsividade a todo
+   * mundo.
+   */
+  const fireSoundboard = useCallback(
+    async (favorite: Favorite): Promise<SoundboardFireResult> => {
+      const now = performance.now();
+      const decision = consume(outboundRateRef.current, now);
+      if (!decision.allowed) {
+        setSoundboardCooldownMs(decision.retryInMs);
+        return { ok: false, reason: 'rate-limited' };
+      }
+      // A vaga é consumida **antes** do `await`: três cliques em sequência
+      // rápida passariam todos por uma checagem feita depois do download.
+      outboundRateRef.current = decision.state;
+      setSoundboardCooldownMs(decision.retryInMs);
+
+      const player = ensureSoundboard();
+      let buffer: AudioBuffer;
+      try {
+        buffer = await player.load(favorite.sourceRef);
+      } catch (err) {
+        return { ok: false, reason: err instanceof SoundboardError ? err.reason : 'fetch-failed' };
+      }
+
+      // O canal precisa estar atado **antes** do som existir.
+      if (!(await acquireSoundboardChannel())) return { ok: false, reason: 'no-audio-context' };
+
+      const durationMs = player.durationMsOf(buffer);
+      send(soundboardPlayMessage({ soundId: favorite.id, title: favorite.title, durationMs }));
+      try {
+        player.start(buffer);
+      } catch {
+        return { ok: false, reason: 'no-audio-context' };
+      }
+      pushActivity({
+        id: newId(),
+        peerId: selfIdRef.current,
+        title: favorite.title,
+        at: Date.now(),
+      });
+      scheduleChannelRelease();
+      return { ok: true };
+    },
+    [acquireSoundboardChannel, ensureSoundboard, pushActivity, scheduleChannelRelease, send],
+  );
+
+  /** Enquanto houver cooldown, o botão mostra quanto falta. */
+  const soundboardCooling = soundboardCooldownMs > 0;
+  useEffect(() => {
+    if (!soundboardCooling) return undefined;
+    const timer = setInterval(() => {
+      setSoundboardCooldownMs(retryInMs(outboundRateRef.current, performance.now()));
+    }, 250);
+    return () => clearInterval(timer);
+  }, [soundboardCooling]);
+
+  useEffect(
+    () => () => {
+      for (const timer of muteTimersRef.current.values()) clearTimeout(timer);
+      muteTimersRef.current.clear();
+      clearTimeout(soundboardTailRef.current ?? undefined);
+      soundboardRef.current?.destroy();
+      soundboardRef.current = null;
+    },
+    [],
+  );
 
   // ------------------------------------------------------------------ votação
 
@@ -1181,11 +1441,45 @@ export function useMusicRoom({
           updateSession((prev) => mergeSnapshot(prev, message.snapshot, performance.now()));
           break;
 
+        case 'soundboard-play': {
+          // O limitador de entrada descarta **anúncios**, não som: o áudio já
+          // vem mixado no canal daquele peer. O que ele protege é a lista de
+          // atividade, o agendamento das janelas de mute e a CPU. Contra abuso
+          // de áudio, a defesa é o mute daquele participante — por isso quem
+          // estoura o limite aparece em `flooding`, e a UI oferece o botão.
+          const agora = performance.now();
+          const decisao = consume(inboundRateRef.current.get(message.peerId), agora);
+          inboundRateRef.current.set(message.peerId, decisao.state);
+          if (!decisao.allowed) {
+            setSoundboardFlooding((prev) =>
+              prev.includes(message.peerId) ? prev : [...prev, message.peerId],
+            );
+            return;
+          }
+          pushActivity({ id: newId(), peerId: message.peerId, title: message.title, at: Date.now() });
+          // A escolha do ouvinte é consultada aqui e só aqui: ela não vira
+          // mensagem, não é publicada e não sai desta aba.
+          if (isSoundboardMutedRef.current?.(message.peerId)) {
+            openMuteWindow(message.peerId, message.durationMs);
+          }
+          break;
+        }
+
         default:
           break;
       }
     },
-    [adoptVote, advanceFrom, applyCommand, applyVoteResult, registerVote, showNotice, updateSession],
+    [
+      adoptVote,
+      advanceFrom,
+      applyCommand,
+      applyVoteResult,
+      openMuteWindow,
+      pushActivity,
+      registerVote,
+      showNotice,
+      updateSession,
+    ],
   );
 
   const handleRemoteMusic = useCallback((peerId: string, stream: MediaStream) => {
@@ -1240,6 +1534,16 @@ export function useMusicRoom({
     if (gone.length === 0) return;
 
     setMusicStreams((prev) => prev.filter((item) => !gone.includes(item.peerId)));
+    // O `peerId` é o socket id daquela sessão: quem saiu não volta com o mesmo.
+    // Guardar balde, janela de mute ou aviso de excesso dele é guardar lixo.
+    setSoundboardSilenced((prev) => prev.filter((id) => !gone.includes(id)));
+    setSoundboardFlooding((prev) => prev.filter((id) => !gone.includes(id)));
+    for (const peerId of gone) {
+      inboundRateRef.current.delete(peerId);
+      const timer = muteTimersRef.current.get(peerId);
+      if (timer) clearTimeout(timer);
+      muteTimersRef.current.delete(peerId);
+    }
 
     for (const peerId of gone) {
       // Votação do proponente que caiu não pode ficar pendurada na tela.
@@ -1360,6 +1664,22 @@ export function useMusicRoom({
     meshCallbacks,
     nowPlayingTick,
     isOwner: session.playback.ownerId === selfId && !!session.playback.entryId,
+    /**
+     * O soundboard, do ponto de vista do `Room`. Note o que **não** está aqui:
+     * nenhuma escolha de mute é publicada, e nenhuma URL de efeito trafega.
+     */
+    soundboard: {
+      /** Disparos recentes, com autoria — a lista da direita do painel. */
+      activity: soundboardActivity,
+      /** Peers com janela de mute aberta: o `RemoteMusicAudio` os emudece. */
+      silencedPeerIds: soundboardSilenced,
+      /** Peers que estouraram o limite de entrada (a UI oferece silenciá-los). */
+      floodingPeerIds: soundboardFlooding,
+      /** Quanto falta para o próximo disparo caber, em ms. `0` = pode disparar. */
+      cooldownMs: soundboardCooldownMs,
+      fire: fireSoundboard,
+      setPanelOpen: setSoundboardPanelOpen,
+    },
     actions: {
       proposeEnable,
       castMyVote,
