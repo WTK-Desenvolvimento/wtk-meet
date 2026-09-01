@@ -243,7 +243,8 @@ toggle de avisos sonoros (que saiu da barra de controles).
   (`videoInputId`, `audioInputId`, `audioOutputId`, `soundsEnabled` e
   `startCameraOff` — este último é a escolha da tela de pré-entrada, e vale `true`
   quando não há nada gravado) — e a supressão
-  de ruído, abaixo, sob `wtk-meet:audio`. **São as únicas exceções à regra de zero
+  de ruído, abaixo, sob `wtk-meet:audio`, e os favoritos do soundboard sob
+  `wtk-meet:soundboard`. **São as únicas exceções à regra de zero
   persistência** — ela vale para conteúdo e metadado de chamada, não para qual
   periférico do seu próprio equipamento usar. Limpar os dados do site apaga a
   preferência.
@@ -306,6 +307,29 @@ VITE_ENABLE_YOUTUBE=false   # remove a origem YouTube da UI e do parser
 
 O padrão é ligado, com aviso explícito na UI ao adicionar a primeira faixa de YouTube
 da sessão. Se a promessa de privacidade for absoluta na sua instalação, desligue.
+
+### Soundboard: efeitos para a sala inteira, sem votação
+
+O botão **Soundboard** abre um painel à esquerda onde você cola a URL de um efeito
+curto, favorita e dispara com um clique. O som é mixado no **seu** canal de música e
+sobe pelo mesmo caminho cifrado da sua voz — todo mundo ouve, sem fila e sem votação.
+
+- **Os favoritos são deste navegador**, gravados em `localStorage` sob
+  `wtk-meet:soundboard` (até 50, com título editável). Ninguém mais vê a sua lista.
+- **Disparar é livre, com teto:** 3 disparos a cada 5 segundos, aplicado tanto no envio
+  (o botão mostra quanto falta) quanto na recepção. Um efeito por vez, e efeitos acima
+  de 15 segundos são cortados no fim da janela.
+- **Tocar um efeito não atrapalha a música da sala:** os dois sinais somam no mesmo
+  canal, a faixa não pausa e não perde a posição.
+- **Você pode silenciar o soundboard**, no geral ou de uma pessoa específica. A escolha
+  é sua, vale só para você e **não é enviada a ninguém**. Como no fio o efeito e a
+  música daquela pessoa são o mesmo sinal, enquanto o efeito dura a música que ela
+  estiver transmitindo também fica muda — o painel avisa isso.
+- **URL sem CORS é recusada com mensagem**, e não com silêncio. É o caso do
+  **MyInstants**: o site não libera CORS, então o navegador não consegue capturar aquele
+  áudio para dentro da chamada. Hospede o efeito em qualquer lugar que responda com
+  `Access-Control-Allow-Origin` e ele funciona. Ver "Limitações conhecidas" no
+  `ARCHITECTURE.md`.
 
 ## Testes
 

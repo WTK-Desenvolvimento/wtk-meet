@@ -137,6 +137,7 @@ só o aviso; ela não afeta a decisão de acesso em si. O evento carrega apenas 
 | — | Quem está falando: os níveis de áudio são medidos localmente por cada participante e nunca saem da máquina (§6.4) |
 | — | Se alguém está compartilhando tela ou com a câmera desligada — esse estado é anunciado pelo data channel, não pelo servidor |
 | — | Que a sala está ouvindo música, o que está na fila ou quem votou o quê — o player inteiro vive nos clients (§6.8). A exceção é a origem YouTube: ali quem sabe é a Google, não este servidor |
+| — | Que alguém disparou um efeito do soundboard, quais efeitos existem nos favoritos de quem, ou quem silenciou quem — nada disso passa pelo servidor nem por rota nova (§6.13) |
 
 Nada disso é persistido: ao encerrar a sala (todos saem) ou reiniciar o processo, o
 estado desaparece. Não há banco de dados no backend.
@@ -567,6 +568,14 @@ regerado).
 **Volume é sempre local** e nunca trafega: volume compartilhado é uma guerra de
 cliques, e mais um campo para convergir sem nenhum ganho.
 
+**O quarto transceiver tem dois produtores desde a WTK-MEET-23.** O
+`MediaStreamDestination` do `MusicEngine` passou a ser também o ponto de mixagem do
+soundboard (§6.13). O track continua sendo **um só e o mesmo objeto** — trocar de faixa
+nunca exigiu `replaceTrack`, e disparar um efeito também não —, mas os cinco ramos de
+reconciliação que "desligam o canal" agora perguntam antes se o soundboard está com
+ele. Sem essa pergunta, parar a faixa no meio de um efeito derrubaria o efeito, e o
+sintoma seria silêncio sem erro nenhum.
+
 **Um `AudioContext` só, e ele é do `Room`.** Nós de contextos diferentes não podem
 ser conectados, então o grafo da música precisa do mesmo contexto do indicador de
 fala. O dono passou a ser o `Room` (`lib/audioContext.js`): enquanto era o
@@ -613,8 +622,11 @@ reescolher o headset a cada chamada — é um custo real e recorrente, cobrado j
 de quem investiu em hardware melhor. `sessionStorage` (usado para o nome de exibição)
 não serve: ele morre ao fechar a aba. A supressão de ruído (§6.11) acrescenta uma
 **segunda chave**, `wtk-meet:audio`, deliberadamente fora desta — o porquê está em
-§6.11. **Nada além dessas duas chaves ganha persistência**; o histórico de chat
-continua estritamente em memória (§6.3).
+§6.11. Os favoritos do soundboard (§6.13) acrescentam a **terceira e última**,
+`wtk-meet:soundboard`, pelo mesmo argumento: um favorito é preferência de UI daquele
+navegador, não conteúdo nem metadado de chamada, e não sai da aba. **Nada além dessas
+três chaves ganha persistência**; o histórico de chat continua estritamente em memória
+(§6.3), e a lista de participantes silenciados no soundboard também (§6.13).
 
 A lógica vive em `client/src/lib/devices.js`, um módulo **puro, sem DOM** — mesmo
 padrão de `gridLayout.js`. Ele recebe a lista crua de `enumerateDevices` e um objeto
@@ -786,7 +798,8 @@ reconciliação reescreve sozinha quando o hardware some (§6.10). Supressão de
 é escolha de hardware: é propriedade do **ambiente** de quem fala, vale para qualquer
 microfone e nunca deve ser reescrita por reconciliação. Juntas, a autocorreção de
 device passaria por cima de um campo que ela não deveria nem enxergar. Continua valendo
-o limite de §6.10: nada além dessas duas chaves ganha persistência.
+o limite de §6.10: nada além dessas três chaves (com `wtk-meet:soundboard`, §6.13)
+ganha persistência.
 
 **No modo worklet, o track do mesh não é o track do `getUserMedia`.** O pipeline tem
 dono explícito (`lib/micPipeline.js`, único arquivo da feature que encosta em
@@ -901,6 +914,82 @@ transições discretas e observáveis. Em regime permanente o tráfego adicional
 dos callbacks do mesh e a ausência de telemetria — a observabilidade aqui é log de
 servidor e `console` do navegador (§5), não um endpoint de métricas.
 
+### 6.13 Soundboard
+
+Um painel recolhível **à esquerda** do palco onde cada pessoa cola a URL de um efeito
+curto, favorita e dispara com um clique. O som é mixado no **canal de música de quem
+apertou** e sobe pelo mesh — mesmo transporte, mesma cifra, mesmo quarto transceiver
+(§6.9). Não há votação, não há fila e não há estado replicado a convergir: um efeito é
+um evento, não uma sessão.
+
+**Mixagem no canal que já existe, e não num transceiver novo.** A ordem das m-lines é
+contrato de rede (§6.1): um quinto transceiver exigiria renegociação para todo mundo e
+faria um client não atualizado classificar errado — o efeito cairia no stream de voz,
+com o bug *parecendo* funcionar. O efeito entra como `AudioBufferSourceNode` →
+ganho fixo → `DynamicsCompressor` → o mesmo `MediaStreamDestination` do player. Não há
+`replaceTrack` por disparo nem renegociação de SDP; o canal é atado uma vez, quando o
+painel abre (quem vai disparar abriu o painel), e devolvido cinco segundos depois do
+último efeito — reativar um sender custa quadros, e um efeito de 1,2s perderia o ataque.
+
+**Nada de `<audio>` para efeitos.** Mídia cross-origin sem CORS deixa o grafo *tainted*
+e o `MediaStreamDestination` emite **silêncio digital, sem erro** — a armadilha nº 2 de
+`lib/musicEngine.js`. O caminho é `fetch` → `decodeAudioData` → buffer, com a mesma
+sonda `Range: bytes=0-0` de §6.9 **antes** de mixar. A diferença é o que se faz com o
+"não": no player há o modo `local` como plano B; aqui não há, porque o requisito é o
+efeito subir pelo canal de quem disparou. Então o "não" vira **mensagem visível no
+painel**, e não um clique que aparentemente não faz nada. Consequência prática que
+precisa estar escrita: **o MyInstants não manda CORS** (verificado em 2026-09-01), e
+uma URL de lá é recusada com essa mensagem. Servir esse áudio exigiria um proxy no
+servidor de sinalização — decisão de produto pendente, registrada em §9.
+
+**O anúncio vai antes do som.** Quem dispara manda `soundboard-play`
+(`{ soundId, title, durationMs }`) pelo data channel `wtk-chat`, no mesmo tique, e só
+então dá `start()` no buffer. O tipo entra em `MUSIC_MESSAGE_TYPES`, de modo que um
+client antigo o ignore sem quebrar, e vale a regra de identidade de §6.9 inteira: o
+autor é `rec.peerId`, e um campo `from` no payload é ignorado, não validado. Nenhuma
+URL trafega — quem ouve não baixa nada.
+
+**Rate limit de 3 disparos por 5s, nas duas pontas, com relógio injetado** (módulo puro
+`lib/soundboardRate.js`). No emissor ele desabilita o botão e mostra o tempo restante.
+No receptor ele descarta **anúncios**, não som: o áudio já vem mixado no canal do
+remetente, e nenhum receptor consegue separá-los. O limitador de entrada protege a
+lista de atividade, o agendamento das janelas de mute e a CPU. Contra abuso de áudio a
+defesa é outra — por isso quem estoura o limite aparece marcado no painel, com o mute
+daquela pessoa a um clique. Prometer que o rate limit protege a sala contra spam de
+áudio seria pior que não ter rate limit.
+
+**O mute do ouvinte é uma janela temporal, e ele nunca trafega.** Como efeito e música
+são o mesmo sinal no fio, o único ponto de controle possível é emudecer o `<audio>`
+daquele peer por `durationMs + 1500ms`. O trade-off tem que estar na cara do usuário, e
+está no rótulo do controle: se o peer silenciado estiver transmitindo uma faixa do
+player no mesmo instante, a faixa dele também emudece durante a janela (tipicamente
+1–3s, no máximo ~16s). Nas bordas o silenciamento é *best-effort*: o anúncio vai por
+SCTP e o áudio por SRTP/TURN, e um vazamento de dezenas de ms é preferível a um atraso
+artificial no disparo, que custaria responsividade a todo mundo.
+
+**Um efeito por vez por participante**, e efeitos acima de 15s são cortados no fim da
+janela (`source.start(0, 0, MAX_SOUND_MS / 1000)`): somar vozes no mesmo canal satura,
+e saturação chega ao outro lado como distorção que ninguém sabe atribuir.
+
+**Favoritos são do navegador; a lista de silenciados, da sessão.** Os favoritos vão
+para `wtk-meet:soundboard` (a terceira chave de §6.10) por `lib/soundboard.js`, módulo
+**puro** que recebe um objeto storage-like e nunca lança — storage ausente, JSON
+inválido, item malformado e versão desconhecida caem todos nos defaults. A URL é
+validada pelo `parseSource` de `musicSources.js`, a mesma função que decide o que entra
+na fila do player: duas tabelas de esquemas aceitos divergiriam, e a permissiva seria a
+porta de `javascript:`. Os limites (50 favoritos, 300 caracteres de URL) recusam **com
+mensagem**, nunca gravam truncado. Já a lista de participantes silenciados vive só em
+memória: `peerId` é o socket id daquela sessão, e persisti-la silenciaria a pessoa
+errada na próxima sala.
+
+**O painel é exclusivo com o chat e o player.** A página nunca rola e a grade é
+calculada para caber no viewport (§6.7): dois painéis abertos já espremeriam os tiles
+até o piso de legibilidade. Ele é irmão do palco de vídeo dentro do `.stage` (um flex
+row), então **empurra** a grade em vez de flutuar por cima dela — e por isso convive
+com o modo destaque de §6.8 sem sobrepor tile nenhum. Em viewport estreita o palco vira
+coluna e o painel vira faixa, nunca overlay: cobrir a barra de controles deixaria a
+pessoa sem como sair da sala.
+
 ## 7. Stack
 
 - **Frontend:** React + Vite. `RTCPeerConnection` nativo (sem SDK de terceiros tipo
@@ -991,6 +1080,16 @@ infra/coturn/  config de referência para STUN/TURN self-hosted
   ao adicionar a primeira faixa de YouTube da sessão. **É uma decisão de produto em
   aberto**, não um esquecimento: arquivo local e URL direta entregam o recurso sem
   nenhum terceiro.
+- **O soundboard (§6.13) não toca URL do MyInstants.** O site não responde com
+  `Access-Control-Allow-Origin` (verificado em 2026-09-01), e sem CORS não existe
+  caminho no navegador que ponha esse áudio dentro de um `MediaStreamTrack` — o que
+  existe é o silêncio digital sem erro. Hoje a URL é recusada com mensagem visível, e
+  o recurso funciona com qualquer host que libere CORS. Servi-lo exigiria um endpoint
+  de proxy no servidor de sinalização (allowlist de host e de caminho, teto de bytes,
+  timeout, rate limit por IP), o que **expande o que o servidor faz e o que ele sabe**:
+  ele passaria a transportar bytes de mídia de terceiro e a ver "algum IP pediu o som
+  X". É decisão de produto em aberto, não esquecimento — a análise completa está em
+  `docs/agents/arch-temp-soundboard-myinstants.md` §3.1.
 - O canal de música nasce **mono**, com teto de 96 kbps. Estéreo exigiria munging do
   `fmtp` do Opus no SDP e é uma entrega separada.
 - A fila de música não reordena por drag-and-drop: a ordem é a de inserção. Remover
