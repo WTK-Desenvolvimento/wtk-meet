@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import SettingsModal from '../components/SettingsModal.js';
 import { readPreferences, writePreferences } from '../lib/devices.js';
@@ -15,6 +15,7 @@ import {
   normalizeRoomPathInput,
 } from '../lib/roomSlug.js';
 import { isReservedPath, parseInviteLink } from '../lib/roomRouting.js';
+import { trackPageView } from '../lib/telemetry.js';
 
 /**
  * Pergunta ao servidor se **já tem gente** no endereço escolhido.
@@ -59,6 +60,11 @@ export default function Home() {
   // Chave separada de `wtk-meet:devices` — o porquê está em `lib/noiseSuppression.js`.
   const [audioPrefs, setAudioPrefs] = useState(() => readAudioPreferences(window.localStorage));
   const noiseMode = useMemo(() => detectNoiseMode(), []);
+
+  // Page view da Home. É a única forma de saber quem abriu e desistiu antes de
+  // criar sala — nesse caminho nenhum socket chega a existir, então o servidor
+  // de sinalização não vê nada. O beacon leva `route: 'home'` e nada mais.
+  useEffect(() => trackPageView('home'), []);
 
   // O endereço é slugificado enquanto se digita, não rejeitado: quem escreve
   // "Sala do Nícolas" escreve assim porque é assim que se escreve, e descobrir

@@ -140,3 +140,82 @@ test('salas são isoladas: lotar uma não fecha a outra', () => {
   assert.equal(rooms.isFull('retro'), false);
   assert.equal(rooms.members('retro').length, 1);
 });
+
+// ─────────────────────────── contabilidade efêmera (WTK-MEET-21)
+//
+// Os três leitores acrescentados para telemetria. O que eles guardam vive e
+// morre com o `Map`: quando a sala esvazia e é deletada, some junto. O
+// `RoomStore` continua passivo — ele não importa `telemetry.ts`, não recebe
+// callback e não emite evento; quem orquestra é o `index.ts`.
+
+test('roomStats acompanha o pico de ocupação, e o pico não desce quando alguém sai', () => {
+  // O pico é o que vira amostra de `wtk_room_occupancy` no fechamento da sala.
+  // Se ele acompanhasse o tamanho corrente, a métrica mediria "quantos estavam
+  // na hora em que o último saiu", que é sempre 1.
+  const rooms = new RoomStore();
+  rooms.addMember('daily', 'a', 'A');
+  rooms.addMember('daily', 'b', 'B');
+  rooms.addMember('daily', 'c', 'C');
+  assert.equal(rooms.roomStats('daily')?.peak, 3);
+
+  rooms.removeMember('daily', 'c');
+  rooms.removeMember('daily', 'b');
+  assert.equal(rooms.roomStats('daily')?.size, 1, 'o tamanho corrente desce');
+  assert.equal(rooms.roomStats('daily')?.peak, 3, 'o pico não');
+});
+
+test('roomStats e memberJoinedAt somem junto com a sala', () => {
+  const rooms = new RoomStore();
+  rooms.addMember('daily', 'a', 'A');
+  assert.ok(rooms.roomStats('daily'));
+  assert.ok(typeof rooms.memberJoinedAt('daily', 'a') === 'number');
+
+  rooms.removeMember('daily', 'a');
+  assert.equal(rooms.roomStats('daily'), null, 'nada sobrevive à sala');
+  assert.equal(rooms.memberJoinedAt('daily', 'a'), null);
+  assert.equal(rooms.roomStats('sala-que-nunca-existiu'), null);
+});
+
+test('o instante de entrada é por socket, e reentrada do mesmo socket não o reinicia', () => {
+  // `admitToRoom` sobrescreve o membro quando o displayName muda; zerar o
+  // relógio ali faria a sessão daquele socket ser contada em pedaços.
+  let agora = 1_000;
+  const rooms = new RoomStore(() => agora);
+  rooms.addMember('daily', 'a', 'A');
+  agora = 5_000;
+  rooms.addMember('daily', 'b', 'B');
+  agora = 9_000;
+  rooms.addMember('daily', 'a', 'A Renomeada');
+
+  assert.equal(rooms.memberJoinedAt('daily', 'a'), 1_000);
+  assert.equal(rooms.memberJoinedAt('daily', 'b'), 5_000);
+  assert.equal(rooms.roomStats('daily')?.openedAt, 1_000, 'a sala nasce com o primeiro membro');
+});
+
+test('snapshot é a soma real do store, depois de 50 ciclos de entrada e saída', () => {
+  // A propriedade que torna `wtk_rooms_active` incapaz de derivar: ela é
+  // leitura deste `Map`, não um contador que alguém teria que decrementar nos
+  // quatro caminhos de saída do servidor.
+  const rooms = new RoomStore();
+  assert.deepEqual(rooms.snapshot(), { rooms: 0, participants: 0 });
+
+  for (let ciclo = 0; ciclo < 50; ciclo += 1) {
+    rooms.addMember(`sala-${ciclo}`, `s-${ciclo}-1`, 'P1');
+    rooms.addMember(`sala-${ciclo}`, `s-${ciclo}-2`, 'P2');
+    // Metade dos ciclos esvazia; a outra metade fica de pé.
+    if (ciclo % 2 === 0) {
+      rooms.removeMember(`sala-${ciclo}`, `s-${ciclo}-1`);
+      rooms.removeMember(`sala-${ciclo}`, `s-${ciclo}-2`);
+    }
+  }
+
+  const esperado = { rooms: 25, participants: 50 };
+  assert.deepEqual(rooms.snapshot(), esperado);
+  assert.equal(rooms.rooms.size, esperado.rooms, 'e bate com o Map, que é a fonte da verdade');
+});
+
+test('sala criada por ensureRoom e nunca ocupada não conta como sala ativa', () => {
+  const rooms = new RoomStore();
+  rooms.ensureRoom('fantasma');
+  assert.deepEqual(rooms.snapshot(), { rooms: 0, participants: 0 });
+});
