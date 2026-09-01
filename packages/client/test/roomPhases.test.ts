@@ -430,6 +430,16 @@ mock.module('../src/lib/useMusicRoom.js', {
         musicStreams: new Map(),
         youtubeHostRef: { current: null },
         meshCallbacks: {},
+        // A superfície do soundboard que o `Room` consome. O dublê não toca
+        // áudio nenhum: o que este arquivo cobre é a fase da sala.
+        soundboard: {
+          activity: [],
+          silencedPeerIds: [],
+          floodingPeerIds: [],
+          cooldownMs: 0,
+          fire: async () => ({ ok: true }),
+          setPanelOpen: () => {},
+        },
         actions: {
           add: () => {},
           remove: () => {},

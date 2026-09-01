@@ -6,12 +6,16 @@ import { AudioLevelMonitor } from '../lib/audioLevels.js';
 import { appendMessage, createChatMessage, sanitizeIncomingMessage } from '../lib/chat.js';
 import { closeAudioContext, getAudioContext, resumeAudioContextOnGesture } from '../lib/audioContext.js';
 import { useMusicRoom } from '../lib/useMusicRoom.js';
+import { useSoundboard } from '../lib/useSoundboard.js';
+
+import type { Favorite } from '../lib/soundboard.js';
 import VideoTile from '../components/VideoTile.js';
 import VideoGrid from '../components/VideoGrid.js';
 import SpotlightStage from '../components/SpotlightStage.js';
 import PeerAudio from '../components/PeerAudio.jsx';
 import ChatPanel from '../components/ChatPanel.js';
 import MusicPanel from '../components/MusicPanel.js';
+import SoundboardPanel from '../components/SoundboardPanel.js';
 import MusicVoteCard from '../components/MusicVoteCard.js';
 import RemoteMusicAudio from '../components/RemoteMusicAudio.jsx';
 import Toasts from '../components/Toasts.js';
@@ -181,6 +185,7 @@ export default function Room() {
   const [chatOpen, setChatOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [musicOpen, setMusicOpen] = useState(false);
+  const [soundboardOpen, setSoundboardOpen] = useState(false);
   const [selfId, setSelfId] = useState('');
 
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -393,13 +398,21 @@ export default function Room() {
 
   // Toda a máquina de estados da música (fila, votação, quem transmite) vive no
   // hook; o `Room` só liga os fios e desenha. Ver `lib/useMusicRoom.js`.
+  // Favoritos e mutes desta aba. Vem **antes** do `useMusicRoom` porque é ele
+  // quem responde "silenciei o soundboard deste peer?" quando um anúncio chega.
+  const soundboard = useSoundboard({ storage: window.localStorage });
   const music = useMusicRoom({
     meshRef,
     participants,
     getSelfId: () => selfId,
     displayName,
     pushToast,
+    isSoundboardMuted: soundboard.isMuted,
   });
+  // Callbacks estáveis do hook: extraídos para as deps abaixo não mudarem a
+  // cada render (o objeto `music.soundboard` é remontado a cada um).
+  const { fire: fireSound, setPanelOpen: setSoundboardPanelOpen } = music.soundboard;
+  const { reportFire } = soundboard;
   const musicCallbacksRef = useRef(music.meshCallbacks);
   musicCallbacksRef.current = music.meshCallbacks;
 
@@ -1215,8 +1228,42 @@ export default function Room() {
   const openChat = useCallback(() => {
     setChatOpen(true);
     setMusicOpen(false);
+    setSoundboardOpen(false);
     setUnreadCount(0);
   }, []);
+
+  /**
+   * O terceiro painel entra na mesma regra de exclusividade: a página nunca
+   * rola e a grade é calculada para caber no viewport, então dois painéis
+   * abertos já espremeriam os tiles até o piso de legibilidade.
+   *
+   * Abrir o painel também **ata o canal de música** (ver `useMusicRoom`): quem
+   * vai disparar abriu o painel, e ativar o sender no mesmo instante do clique
+   * faria um efeito de 1,2s perder o ataque.
+   */
+  const toggleSoundboard = useCallback(() => {
+    setSoundboardOpen((open) => {
+      if (!open) {
+        setChatOpen(false);
+        setMusicOpen(false);
+      }
+      setSoundboardPanelOpen(!open);
+      return !open;
+    });
+  }, [setSoundboardPanelOpen]);
+
+  const closeSoundboard = useCallback(() => {
+    setSoundboardOpen(false);
+    setSoundboardPanelOpen(false);
+  }, [setSoundboardPanelOpen]);
+
+  /** Dispara e traduz a recusa (CORS, cooldown) em mensagem no painel. */
+  const playSound = useCallback(
+    (favorite: Favorite) => {
+      void fireSound(favorite).then(reportFire);
+    },
+    [fireSound, reportFire],
+  );
 
   const toggleMusic = useCallback(() => {
     if (!music.enabled) {
@@ -1227,10 +1274,23 @@ export default function Room() {
       return;
     }
     setMusicOpen((open) => {
-      if (!open) setChatOpen(false);
+      if (!open) {
+        setChatOpen(false);
+        closeSoundboard();
+      }
       return !open;
     });
-  }, [music.actions, music.enabled]);
+  }, [closeSoundboard, music.actions, music.enabled]);
+
+  /** Quem pode ser silenciado no painel: os peers, nunca eu mesmo. */
+  const soundboardPeople = useMemo(
+    () =>
+      [...participants.entries()].map(([peerId, person]) => ({
+        peerId,
+        name: person.displayName || 'Participante',
+      })),
+    [participants],
+  );
 
   /**
    * As pessoas da sala, na ordem de chegada (o `Map` preserva a inserção). As
@@ -1381,6 +1441,7 @@ export default function Room() {
       <RemoteMusicAudio
         streams={music.musicStreams}
         volume={music.volume}
+        mutedPeerIds={music.soundboard.silencedPeerIds}
         onBlocked={handleMusicBlocked}
         sinkId={preferences.audioOutputId}
         onSinkError={handleSinkError}
@@ -1497,7 +1558,11 @@ export default function Room() {
   return (
     <>
       {overlays}
-      <main className={`room in-call${chatOpen ? ' with-chat' : ''}${musicOpen ? ' with-music' : ''}`}>
+      <main
+        className={`room in-call${chatOpen ? ' with-chat' : ''}${musicOpen ? ' with-music' : ''}${
+          soundboardOpen ? ' with-soundboard' : ''
+        }`}
+      >
         {/* E2EE desabilitado por ora */}
 
         {mediaError && <p className="warning">{mediaError}</p>}
@@ -1516,6 +1581,31 @@ export default function Room() {
         )}
 
         <div className="stage">
+          {/* Antes do palco de vídeo de propósito: `.stage` é um flex row, e a
+              ordem do JSX é a ordem visual. É também o que faz o painel
+              conviver com o modo destaque sem sobrepor nada — ele empurra o
+              `SpotlightStage` e o `ThumbnailRail` em vez de flutuar por cima. */}
+          {soundboardOpen && (
+            <SoundboardPanel
+              favorites={soundboard.favorites}
+              activity={music.soundboard.activity}
+              people={soundboardPeople}
+              floodingPeerIds={music.soundboard.floodingPeerIds}
+              mutedAll={soundboard.mutedAll}
+              mutedPeerIds={soundboard.mutedPeerIds}
+              cooldownMs={music.soundboard.cooldownMs}
+              error={soundboard.error}
+              selfId={selfId}
+              onClose={closeSoundboard}
+              onAdd={soundboard.add}
+              onRemove={soundboard.remove}
+              onRename={soundboard.rename}
+              onPlay={playSound}
+              onToggleMutedAll={soundboard.toggleMutedAll}
+              onTogglePeerMuted={soundboard.togglePeerMuted}
+            />
+          )}
+
           {spotlightScreen ? (
             <SpotlightStage
               spotlight={spotlightScreen}
@@ -1604,6 +1694,19 @@ export default function Room() {
             {music.currentEntry && (
               <span className="music-button-track">{music.currentEntry.title}</span>
             )}
+          </button>
+          {/* Rótulo exato `Soundboard`, sem emoji e sem começar por
+              `Silenciar`/`Chat`/`Música`: os roteiros do e2e procuram botões
+              desta barra por `textContent` exato e por prefixo. */}
+          <button
+            type="button"
+            className="soundboard-button"
+            onClick={toggleSoundboard}
+            aria-label="Soundboard"
+            aria-expanded={soundboardOpen}
+            title="Efeitos sonoros favoritados neste navegador"
+          >
+            Soundboard
           </button>
           <button
             onClick={() => savePreferences({ soundsEnabled: !soundsEnabled })}
