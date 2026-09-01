@@ -121,6 +121,11 @@ function transpilarUrlTypeScript(): Plugin {
 
 export default defineConfig({
   plugins: [resolveJsToTs(), transpilarUrlTypeScript(), react()],
+  // Duas cópias de React no grafo (o `react-router-dom` traz um `react@18`
+  // para a raiz, o client declara `react@19`) dão dois dispatchers de hooks e
+  // uma página em branco com `Cannot read properties of null (reading
+  // 'useRef')`. O `dedupe` obriga o bundle a carregar uma cópia só.
+  resolve: { dedupe: ['react', 'react-dom'] },
   server: {
     port: 5173,
     // TODO(WTK-MEET-21): `'all'` não é um valor aceito. O Vite libera qualquer
