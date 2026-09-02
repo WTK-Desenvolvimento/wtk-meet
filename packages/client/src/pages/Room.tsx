@@ -141,7 +141,7 @@ export default function Room() {
   }, [roomId, passphrase, location.pathname, location.hash, navigate]);
 
   const [displayName, setDisplayName] = useState(
-    () => sessionStorage.getItem('displayName') || '',
+    () => localStorage.getItem('wtk-meet:display-name') || '',
   );
   const [nameInput, setNameInput] = useState('');
 
@@ -283,7 +283,7 @@ export default function Room() {
     // Um aviso de preview que ficou na tela do lobby não tem por que atravessar
     // a entrada: o que valer na sala será dito de novo pelo efeito de setup.
     setMediaError(null);
-    sessionStorage.setItem('displayName', name);
+    localStorage.setItem('wtk-meet:display-name', name);
     setDisplayName(name);
   }, []);
 

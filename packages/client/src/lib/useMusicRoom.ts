@@ -225,7 +225,14 @@ export function useMusicRoom({
   const [session, setSession] = useState(createSession);
   const [vote, setVote] = useState<Vote | null>(null);
   const [myVote, setMyVote] = useState<VoteChoice | null>(null);
-  const [volume, setVolumeState] = useState(0.8);
+  const [volume, setVolumeState] = useState(() => {
+    try {
+      const stored = Number(localStorage.getItem('wtk-meet:music-volume'));
+      return Number.isFinite(stored) && stored >= 0 && stored <= 1 ? stored : 0.8;
+    } catch {
+      return 0.8;
+    }
+  });
   const [musicStreams, setMusicStreams] = useState<MusicStream[]>([]);
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -1649,7 +1656,9 @@ export function useMusicRoom({
   const queue = useMemo(() => orderedQueue(session), [session]);
   const currentEntry = entryById(session, session.playback.entryId);
   const setVolume = useCallback((value: number) => {
-    setVolumeState(Math.min(1, Math.max(0, value)));
+    const clamped = Math.min(1, Math.max(0, value));
+    setVolumeState(clamped);
+    try { localStorage.setItem('wtk-meet:music-volume', String(clamped)); } catch { /* cota */ }
   }, []);
 
   const unlockAudio = useCallback(async () => {
