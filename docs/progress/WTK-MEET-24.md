@@ -63,3 +63,46 @@ Qualquer um dos três:
    `_ds/nocturne-9f40bfdf-cfcf-43c2-933c-a1689ac8f55a/styles.css`, `support.js`.
 
 Nenhum arquivo de `packages/` foi alterado nesta branch.
+
+---
+
+## 5. Passagem de QA — 02/09/2026
+
+A task foi movida para **QA Testing** sem que nada tivesse sido implementado
+(padrão já visto na WTK-MEET-21: o pipeline avança sozinho). Registro do que a
+QA encontrou, para que a próxima sessão não repita a varredura.
+
+### Não há o que testar
+
+| Verificação | Resultado |
+|---|---|
+| `git diff --stat f9caeae..HEAD` | 1 arquivo: `docs/progress/WTK-MEET-24.md` (+65) |
+| Arquivos de `packages/` alterados | **nenhum** — zero linhas de código de produção |
+| `definitionOfDone` no card | `null` |
+| `scope` no card | `null` |
+
+Sem código e sem critério de aceite, um plano de cobertura seria ficção: os
+testes precisariam afirmar um layout que ninguém pôde ler.
+
+### O bloqueio foi re-testado, não herdado
+
+Antes de concluir, as rotas foram exercitadas de novo nesta sessão:
+
+- `DesignSync list_files` → *"needs design-system authorization, and
+  /design-login cannot run in this non-interactive session"*.
+- Arquivos do comp → ainda ausentes do workspace (`find /` vazio para
+  `*.dc.html`, `_ds/`, `nocturne*`, `support.js`).
+- `ANTHROPIC_API_KEY` → vazia.
+
+### Por que a task não foi movida
+
+- **Para frente** (Code Review) declararia testado um redesign inexistente.
+- **Para trás** (Development) devolveria a um agente sujeito ao *mesmo* bloqueio
+  de insumo, criando um ciclo Development ↔ QA sem progresso. O `move_task_backward`
+  do protocolo de QA existe para bug de implementação; aqui não há implementação,
+  e a causa é externa ao código.
+
+A task fica em QA Testing aguardando **ação humana** — as três saídas da seção 4
+continuam valendo. A saída (1), `/design-login`, é a mais barata: uma vez só,
+numa sessão interativa desta máquina, e as sessões headless passam a reutilizar
+a autorização.
