@@ -96,6 +96,9 @@ export default function JoinRequestModal({
         <ul className="join-request-list">
           {requests.map((request: JoinRequest, index: number) => (
             <li key={request.requesterId} className="join-request">
+              <span className="join-request-avatar" aria-hidden="true">
+                {(request.displayName || '?').trim().charAt(0).toUpperCase()}
+              </span>
               <span className="join-request-name">
                 <strong>{request.displayName}</strong> quer entrar na sala
               </span>

@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import SettingsModal from '../components/SettingsModal.js';
+import KeyFingerprint from '../components/KeyFingerprint.js';
 import { readPreferences, writePreferences } from '../lib/devices.js';
 import { readAudioPreferences, writeAudioPreferences } from '../lib/noiseSuppression.js';
 import { detectNoiseMode } from '../lib/micPipeline.js';
-import { SIGNALING_URL } from '../config.js';
+import { useKeyFingerprint } from '../lib/keyFingerprint.js';
+import { MAX_PARTICIPANTS, SIGNALING_URL } from '../config.js';
 import {
   MAX_ROOM_PATH_LENGTH,
   ROOM_SLUG_LENGTH,
@@ -60,6 +62,13 @@ export default function Home() {
   // Chave separada de `wtk-meet:devices` — o porquê está em `lib/noiseSuppression.js`.
   const [audioPrefs, setAudioPrefs] = useState(() => readAudioPreferences(window.localStorage));
   const noiseMode = useMemo(() => detectNoiseMode(), []);
+
+  // Passphrase só de exemplo, para a coluna da direita mostrar como a
+  // impressão da chave funciona antes de existir sala nenhuma. Gerada uma
+  // vez, inteiramente no navegador, com a mesma função que gera a chave de
+  // verdade — nunca sai daqui, e não é a chave de nenhuma sala real.
+  const [exampleKey] = useState(() => generatePassphrase());
+  const exampleFingerprint = useKeyFingerprint(exampleKey);
 
   // Page view da Home. É a única forma de saber quem abriu e desistiu antes de
   // criar sala — nesse caminho nenhum socket chega a existir, então o servidor
@@ -142,103 +151,157 @@ export default function Home() {
 
   return (
     <main className="home">
-      <h1>wtk-meet</h1>
-      <p className="tagline">
-        Videochamadas em grupo, mesh P2P + E2EE. Nenhum servidor vê ou grava sua chamada.
-      </p>
+      <div className="home-copy">
+        <div className="home-brand">
+          <span className="home-mark" aria-hidden="true">w</span>
+          <span className="home-wordmark">
+            wtk<em>·</em>meet
+          </span>
+        </div>
 
-      <label className="field">
-        Seu nome
-        <input
-          value={displayName}
-          onChange={(e) => setDisplayName(e.target.value)}
-          placeholder="Como te chamam"
-          maxLength={40}
-        />
-      </label>
-
-      <label className="field">
-        Endereço da sala <span className="optional">(opcional)</span>
-        <input
-          value={address}
-          onChange={(e) => {
-            // Normaliza a cada tecla: maiúscula vira minúscula, acento cai,
-            // espaço e `_` viram hífen. A variante `…Input` preserva o hífen
-            // da ponta enquanto se digita — sem isso, o espaço apagaria a si
-            // mesmo e "uma sala" sairia "umasala".
-            setAddress(normalizeRoomPathInput(e.target.value));
-            setOccupied('');
-            setError('');
-          }}
-          placeholder="daily, sala-do-suporte…"
-          aria-invalid={addressError ? 'true' : undefined}
-          aria-describedby="address-hint"
-        />
-        <span id="address-hint" className="hint">
-          {addressError ? (
-            <span className="error">{addressError}</span>
-          ) : roomPath ? (
-            <>
-              Sua sala: <code>{buildRoomUrl(window.location.origin, roomPath, 'chave')}</code>.
-              Endereço escolhido é mais fácil de adivinhar que um sorteado — quem chegar
-              continua precisando da sua aprovação para entrar.
-            </>
-          ) : (
-            <>Em branco, sorteamos um endereço de {ROOM_SLUG_LENGTH} caracteres.</>
-          )}
-        </span>
-      </label>
-
-      {error && <p className="error">{error}</p>}
-
-      {occupied && (
-        <div className="warning occupied-room">
-          <p>
-            Já existe gente na sala <code>/{occupied}</code>. Entrar coloca você junto dessas
-            pessoas — e vai precisar da aprovação delas.
+        <div>
+          <h1>
+            Entra, fala,
+            <br />
+            fecha a aba.
+          </h1>
+          <p className="tagline">
+            Sem conta, sem app, sem histórico. Quando a última pessoa sai, a sala deixa de
+            existir — não tem banco de dados pra ela voltar.
           </p>
-          <div className="occupied-actions">
-            <button onClick={() => enterRoom(occupied)}>Entrar mesmo assim</button>
-            <button
-              className="secondary"
-              onClick={() => {
-                setOccupied('');
-                setAddress('');
-              }}
-            >
-              Escolher outro endereço
+        </div>
+
+        <div className="home-form">
+          <label className="field">
+            Como te chamam
+            <input
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder="Como te chamam"
+              maxLength={40}
+            />
+          </label>
+
+          <label className="field">
+            Nome da sala <span className="optional">— deixa vazio e a gente sorteia</span>
+            <div className="join-block">
+              <input
+                value={address}
+                onChange={(e) => {
+                  // Normaliza a cada tecla: maiúscula vira minúscula, acento cai,
+                  // espaço e `_` viram hífen. A variante `…Input` preserva o hífen
+                  // da ponta enquanto se digita — sem isso, o espaço apagaria a si
+                  // mesmo e "uma sala" sairia "umasala".
+                  setAddress(normalizeRoomPathInput(e.target.value));
+                  setOccupied('');
+                  setError('');
+                }}
+                placeholder="daily, sala-do-suporte…"
+                aria-invalid={addressError ? 'true' : undefined}
+                aria-describedby="address-hint"
+              />
+            </div>
+            <span id="address-hint" className="hint">
+              {addressError ? (
+                <span className="error">{addressError}</span>
+              ) : roomPath ? (
+                <>
+                  Sua sala: <code>{buildRoomUrl(window.location.origin, roomPath, 'chave')}</code>.
+                  Endereço escolhido é mais fácil de adivinhar que um sorteado — quem chegar
+                  continua precisando da sua aprovação para entrar.
+                </>
+              ) : (
+                <>Em branco, sorteamos um endereço de {ROOM_SLUG_LENGTH} caracteres.</>
+              )}
+            </span>
+          </label>
+
+          {error && <p className="error">{error}</p>}
+
+          {occupied && (
+            <div className="warning occupied-room">
+              <p>
+                Já existe gente na sala <code>/{occupied}</code>. Entrar coloca você junto
+                dessas pessoas — e vai precisar da aprovação delas.
+              </p>
+              <div className="occupied-actions">
+                <button onClick={() => enterRoom(occupied)}>Entrar mesmo assim</button>
+                <button
+                  className="secondary"
+                  onClick={() => {
+                    setOccupied('');
+                    setAddress('');
+                  }}
+                >
+                  Escolher outro endereço
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="actions">
+            <div style={{ display: 'flex', gap: 'var(--space-3)', alignItems: 'center', flexWrap: 'wrap' }}>
+              <button onClick={handleCreate} disabled={checking || !!addressError}>
+                {checking ? 'Verificando…' : 'Abrir a sala'}
+              </button>
+              <span className="hint">ou</span>
+              <div className="join-block" style={{ flex: 1, minWidth: 220 }}>
+                <input
+                  value={inviteLink}
+                  onChange={(e) => setInviteLink(e.target.value)}
+                  placeholder="cola o link do convite"
+                />
+                <button onClick={handleJoin} disabled={!inviteLink}>
+                  Cair
+                </button>
+              </div>
+            </div>
+
+            <button className="secondary" onClick={() => setSettingsOpen(true)}>
+              Configurações
             </button>
           </div>
-        </div>
-      )}
 
-      <div className="actions">
-        <button onClick={handleCreate} disabled={checking || !!addressError}>
-          {checking ? 'Verificando…' : 'Criar sala'}
-        </button>
-
-        <button className="secondary" onClick={() => setSettingsOpen(true)}>
-          Configurações
-        </button>
-
-        <div className="join-block">
-          <input
-            value={inviteLink}
-            onChange={(e) => setInviteLink(e.target.value)}
-            placeholder="Cole o link do convite"
-          />
-          <button onClick={handleJoin} disabled={!inviteLink}>
-            Entrar
-          </button>
+          <p className="hint">
+            A chave da sala vive só no link, depois do <code>#</code> — nunca é enviada ao
+            servidor. Compartilhe o <strong>link inteiro</strong>, incluindo a parte depois do{' '}
+            <code>#</code>: sem ela a pessoa abre o mesmo endereço com outra chave. Use um canal
+            separado (mensagem, etc).
+          </p>
         </div>
       </div>
 
-      <p className="hint">
-        A chave da sala vive só no link, depois do <code>#</code> — nunca é enviada ao
-        servidor. Compartilhe o <strong>link inteiro</strong>, incluindo a parte depois do{' '}
-        <code>#</code>: sem ela a pessoa abre o mesmo endereço com outra chave. Use um canal
-        separado (mensagem, etc).
-      </p>
+      <div className="home-side">
+        <div className="home-side-glow" aria-hidden="true" />
+
+        <div className="home-fingerprint-block">
+          <div className="home-fingerprint-kicker">A marca é a chave</div>
+          <KeyFingerprint colors={exampleFingerprint} />
+          <p>
+            Sua chave de 128 bits desenhada em oito cores. Todo mundo na sala vê a{' '}
+            <em>mesma</em> sequência — se a sua é diferente da do seu amigo, vocês entraram com
+            chaves diferentes. Dá para conferir de relance, sem ler hash nenhum.
+          </p>
+        </div>
+
+        <div className="home-stats">
+          <div className="home-stat">
+            <span className="home-stat-figure">0</span>
+            <span className="home-stat-text">bytes gravados. O servidor só apresenta as
+              pessoas e sai de perto.</span>
+          </div>
+          <div className="home-stat">
+            <span className="home-stat-figure">{MAX_PARTICIPANTS}</span>
+            <span className="home-stat-text">pessoas por sala, cada uma conectada direto em
+              todas as outras.</span>
+          </div>
+          <div className="home-stat">
+            <span className="home-stat-figure">#</span>
+            <span className="home-stat-text">A chave vive depois da cerquilha. Nunca sai do
+              seu navegador.</span>
+          </div>
+        </div>
+      </div>
 
       {/* Montagem condicional, não `open={false}`: é o desmonte que para o
           stream de preview, inclusive quando a saída daqui é navegar para a
