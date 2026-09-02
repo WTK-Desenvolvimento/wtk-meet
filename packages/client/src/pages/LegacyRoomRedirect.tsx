@@ -1,5 +1,7 @@
+import { useEffect } from 'react';
 import { Navigate, useLocation, useParams } from 'react-router-dom';
 import { legacyRoomRedirect } from '../lib/roomRouting.js';
+import { trackPageView } from '../lib/telemetry.js';
 
 /**
  * `/room/:roomId#chave` → `/:roomId#chave`.
@@ -16,5 +18,10 @@ import { legacyRoomRedirect } from '../lib/roomRouting.js';
 export default function LegacyRoomRedirect() {
   const { roomId } = useParams();
   const { hash } = useLocation();
+  // Mede se os links antigos ainda circulam — a única pergunta que justifica a
+  // existência deste componente, e a que decide quando ele pode ser removido.
+  // O beacon leva `route: 'legacy'` e nada mais: nem o `roomId` do link velho,
+  // nem o fragmento, que carrega a passphrase.
+  useEffect(() => trackPageView('legacy'), []);
   return <Navigate to={legacyRoomRedirect(roomId, hash)} replace />;
 }

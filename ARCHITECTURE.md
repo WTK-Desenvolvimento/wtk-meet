@@ -138,6 +138,8 @@ só o aviso; ela não afeta a decisão de acesso em si. O evento carrega apenas 
 | — | Se alguém está compartilhando tela ou com a câmera desligada — esse estado é anunciado pelo data channel, não pelo servidor |
 | — | Que a sala está ouvindo música, o que está na fila ou quem votou o quê — o player inteiro vive nos clients (§6.8). A exceção é a origem YouTube: ali quem sabe é a Google, não este servidor |
 | — | Que alguém disparou um efeito do soundboard, quais efeitos existem nos favoritos de quem, ou quem silenciou quem — nada disso passa pelo servidor nem por rota nova (§6.13) |
+| Que uma página foi vista, e qual das três (`home`, `room`, `legacy`) — em agregado, sem saber **qual** sala nem **qual** aba (§10) | Qual sala foi vista, por quem, e a partir de qual link — o beacon não tem campo para nada disso, e a métrica não tem label de sala (§10) |
+| Quanto tempo uma aba ficou na sala, em agregado (§10) | Qual aba, de quem — nenhum identificador de aba, de sessão ou de usuário é criado, lido ou persistido (§10) |
 
 Nada disso é persistido: ao encerrar a sala (todos saem) ou reiniciar o processo, o
 estado desaparece. Não há banco de dados no backend.
@@ -158,6 +160,13 @@ Duas mudanças da WTK-MEET-10 mexem nesta tabela e merecem estar escritas:
   resposta foi reduzida ao mínimo (sem contagem, sem nomes) e o recurso vive num commit
   isolado, revertível sozinho — a decisão de mantê-lo é de produto, não de
   implementação.
+
+A WTK-MEET-21 acrescenta duas linhas à coluna "Sabe", e elas precisam estar escritas
+aqui e não só na seção nova: o servidor passa a saber **que** uma página foi vista e
+**quanto tempo** uma aba ficou na sala. Continua sem saber qual sala, qual aba e quem —
+não por política, mas porque o envelope do beacon não tem campo para isso e a métrica
+não tem label para isso (§10). A tabela acima é o documento que alguém desconfiado lê
+primeiro; contradizê-la em silêncio custaria mais do que a métrica vale.
 
 ## 6. Experiência de chamada: tela, chat, indicador de fala e presença
 
@@ -996,6 +1005,19 @@ pessoa sem como sair da sala.
   PeerJS/Twilio). Socket.IO client apenas para sinalização.
 - **Backend (sinalização):** Node.js + Express + Socket.IO. Estado 100% em memória
   (`Map`), sem banco de dados, sem filas, sem cache externo.
+- **Telemetria (WTK-MEET-21):** cinco pacotes `@opentelemetry/*` no server —
+  `api`, `core`, `sdk-metrics`, `resources` e `exporter-metrics-otlp-http` — que
+  arrastam onze pacotes ao todo, **todos** sob o mesmo escopo e **nenhum** de
+  terceiros (a codificação OTLP usada é JSON, não protobuf). É a primeira vez que
+  este projeto aceita dependência de runtime nova no servidor, e a troca foi
+  consciente: o que se compra é a codificação OTLP correta — temporalidade
+  cumulativa, `start_time_unix_nano`, `fixed64` serializado como string — que é
+  precisamente onde um exporter escrito à mão falha **em silêncio** contra um
+  collector real, produzindo contadores que o Prometheus lê como reset a cada scrape.
+  O plano B fica barato de propósito: o exporter é injetado e tipado pela interface
+  `PushMetricExporter`, então trocá-lo por ~150 linhas de POST OTLP/JSON é mudança
+  de **um** arquivo, sem tocar em call site nenhum. No client não entrou nada: o
+  navegador não fala OTLP (§10).
 - **TURN:** credenciais efêmeras emitidas pela **Cloudflare TURN API** através do
   servidor de sinalização (`server/src/turnCredentials.ts`), nunca baked no bundle —
   ver §6.12. Sem STUN público em nenhum caminho: sob `iceTransportPolicy: 'relay'` um
@@ -1016,7 +1038,8 @@ pessoa sem como sair da sala.
   recurso**, a classe exata que o compilador elimina antes do E2E de 10 minutos.
 
   O footprint que a decisão original protegia continua protegido: nenhuma
-  dependência de runtime nova, nenhum runner de teste novo. O `node --test` enxerga
+  dependência de runtime nova (**ver a ressalva abaixo, de 2026-08**), nenhum
+  runner de teste novo. O `node --test` enxerga
   TypeScript por meio de dois arquivos de hook em `tools/` (~40 linhas), o `.ts` roda
   pelo type stripping nativo do Node e só o `.tsx` passa pelo esbuild — que já
   estava na árvore, via Vite. O que entrou de verdade: `typescript` e
@@ -1058,12 +1081,18 @@ client/test/   testes unitários (node:test): histerese de áudio, modelo de cha
                sanitização do protocolo (§6.9) — e as fases da sala e o contrato do mesh
 e2e/           teste ponta a ponta com 3 participantes Chromium + TURN local
 infra/coturn/  config de referência para STUN/TURN self-hosted
+infra/otel/    exemplo de pipeline do OpenTelemetry Collector / Alloy até o Prometheus
+               e o painel Grafana versionado (§10)
 ```
 
-> Cada pacote tem seu `package.json`, seu `node_modules` e seu `tsconfig.json`: não há
-> workspace na raiz. É o que mantém os dois `Dockerfile` independentes. O preço é que
-> o contexto de build do `docker-compose.yml` é a **raiz** (com `dockerfile:`
-> explícito), porque de dentro de `./client` o `tsconfig.base.json` não é visível.
+> **Corrigido em 2026-08 (WTK-MEET-21):** o parágrafo anterior dizia que não havia
+> workspace na raiz. Havia deixado de ser verdade na WTK-MEET-20, que moveu os três
+> pacotes para `packages/` sob **npm workspaces** — hoje o install é um só, na raiz
+> (`npm install`), e `npm test` / `typecheck` / `lint` rodam pelos scripts da raiz.
+> Cada pacote continua com seu `package.json` e seu `tsconfig.json`, e os dois
+> `Dockerfile` continuam independentes via `npm ci --workspace=…`. O contexto de
+> build do `docker-compose.yml` é a **raiz** (com `dockerfile:` explícito) porque de
+> dentro de `packages/client` o `tsconfig.base.json` não é visível.
 
 ## 9. Limitações conhecidas / trabalho futuro
 
@@ -1107,3 +1136,214 @@ infra/coturn/  config de referência para STUN/TURN self-hosted
   é liga/desliga. Também não há botão de "testar saída", nem seletor de fonte para
   compartilhamento de tela (`getDisplayMedia` já traz o seletor nativo do navegador), e
   a preferência não é sincronizada entre abas — cada aba é uma sessão independente.
+
+## 10. Telemetria anônima (WTK-MEET-21)
+
+Até esta entrega o processo do servidor **não emitia um único número**. Ele já sabia tudo
+o que seria preciso saber — o `RoomStore` tem a sala inteira em um `Map`, e o `index.ts`
+vê cada `join-request`, cada `approve-join`, cada `deny-join` e cada `disconnect` — mas
+esse conhecimento morria no processo, e perguntas triviais de operação não tinham
+resposta: quantas salas estão abertas agora, quanto dura uma chamada, quantas entradas
+foram recusadas por sala cheia, se alguém sequer abriu a Home hoje.
+
+Esta seção existe porque uma camada de telemetria é, por definição, um cano novo saindo
+do processo — e a distância entre "métrica agregada" e "vigilância discreta" cabe em
+detalhes que não aparecem em code review distraído: um label `room` aqui, um `sessionId`
+ali, um `X-Forwarded-For` gravado em log acolá. As decisões abaixo existem para tornar
+essa fronteira **estrutural**, e não disciplinar.
+
+### 10.1 O servidor de sinalização é o único ponto de saída
+
+O navegador nunca fala com o collector. Ele manda um beacon para `POST /telemetry` no
+mesmo servidor com que já fala, e o servidor converte o beacon nas mesmas métricas
+agregadas que já exporta por OTLP/HTTP.
+
+Três razões, todas concretas. O endereço do collector nunca fica exposto publicamente nem
+no bundle (um `VITE_OTEL_ENDPOINT` seria legível no DevTools, e um collector OTLP aberto
+na internet é vetor de flood contra o Prometheus). Se o navegador falasse OTLP, o
+collector veria o **IP de cada participante**; falando com o servidor de sinalização —
+que já vê esse IP, por necessidade técnica de manter um WebSocket — não há observador
+novo. E o que sai do processo continua sendo um formato só, por um cano só: a prova de
+não-vazamento tem **um** lugar para olhar.
+
+Descartadas: SDK OTel no browser exportando direto (os três motivos acima, mais uma
+dependência de runtime nova no client, que hoje tem quatro); e "nenhuma métrica de
+client", porque page view e tempo de aba são exatamente as duas perguntas que o servidor
+não responde sozinho — ele não vê quem abriu a Home e desistiu, nem a aba que ficou
+aberta depois de o socket cair.
+
+### 10.2 Agregado, sem label de sala, de participante ou de origem
+
+O conjunto de séries exportadas é **fixo e conhecido em tempo de compilação**. As únicas
+chaves de atributo que existem no sistema inteiro são `outcome` e `route`. Nenhum
+`roomId`, nenhum `socketId`, nenhum `displayName`, nenhum IP, nenhum `Origin`, nenhum
+User-Agent — **nem hasheados**.
+
+O endereço da sala é secreto por desenho: desde a WTK-MEET-10 ele é um slug curto e
+adivinhável (`/daily`), e a chave de E2EE vive no fragmento da URL. Um label
+`room="daily"` transformaria "quem está reunido agora" em série temporal **persistida** no
+Prometheus — que é exatamente o banco de dados que §5 se orgulha de não ter. Um label
+hasheado é pior, porque parece resolvido: com um espaço de nomes prováveis (`daily`,
+`suporte`, `1x1-nicolas`) o hash é reversível por força bruta em segundos, e continua
+sendo um identificador estável de sala ao longo do tempo.
+
+O segundo motivo é operacional e vale por si: cardinalidade constante significa que o
+custo de armazenamento do Prometheus **não depende do uso do produto**. Uma instalação com
+10 salas e uma com 10 000 geram o mesmo número de séries.
+
+O reforço não é só o desenho dos call sites. O `MeterProvider` leva uma *view* catch-all
+(`instrumentName: '*'`) com `attributesProcessors: [createAllowListAttributesProcessor(['outcome', 'route'])]`:
+um atributo acrescentado por engano em qualquer call site futuro é descartado **antes da
+agregação**, e não vira série. Some-se `aggregationCardinalityLimit` como teto duro.
+
+### 10.3 Nenhum identificador ⇒ nenhum consentimento a pedir
+
+O produto não cria, não lê e não persiste identificador de usuário, de aba ou de sala para
+fins de telemetria. Consequentemente não há banner de cookies nem tela de consentimento —
+e a ausência é uma **consequência declarada**, não um esquecimento. A base legal para
+banner é o armazenamento/leitura de informação no terminal do usuário e o tratamento de
+dado pessoal; um contador de page views por rota, sem identificador, sem IP e sem
+User-Agent, não é nenhum dos dois.
+
+O que sustenta isso ao longo do tempo não é este parágrafo: é
+`packages/client/test/telemetryNoLeak.test.ts`, que **falha** se o módulo de telemetria do
+client tocar `localStorage`, `sessionStorage`, `document.cookie`, `crypto.randomUUID` ou
+`Math.random`, e `packages/server/test/telemetryNoLeak.test.ts`, que exercita o fluxo
+completo — entrada, pedido, aprovação, recusa, sala cheia, desconexão — com um endereço de
+sala e um nome próprio reconhecíveis, e depois procura cada um deles nos **bytes crus** que
+saem para o collector.
+
+> **Consequência que precisa estar escrita:** reintroduzir qualquer identificador —
+> inclusive "só um id de sessão para deduplicar" — **reabre** a exigência de consentimento
+> e invalida esta decisão. Quem reintroduzir tem que trazer o banner junto. Esse
+> identificador nunca chega anunciado como tal: chega como detalhe de implementação de
+> outra coisa.
+
+Descartadas: cookie de sessão de 30 min "só para não contar a mesma aba duas vezes" (a
+duplicação que ele evitaria não vale a promessa que ele quebra); e hash de IP+UA como
+"identificador anônimo" (é dado pessoal pseudonimizado, não anônimo, e o produto não
+precisa dele para responder nenhuma das perguntas acima).
+
+### 10.4 Gauges derivados do `RoomStore`, nunca contados
+
+`wtk_rooms_active` e `wtk_participants_active` são `ObservableGauge` cujo callback lê um
+snapshot do `RoomStore` no instante da coleta. Não são `UpDownCounter` incrementados nos
+handlers.
+
+Contador incremental exigiria que **todo** caminho de saída decrementasse — e este
+servidor tem quatro (`leave-room`, `disconnect`, `cancelPendingJoin` no meio de uma
+aprovação, e a remoção implícita quando a sala é deletada). Um caminho esquecido produz
+"7 salas ativas" num servidor com zero, o gráfico mente para sempre, e ninguém descobre
+sem reiniciar o processo. Derivar do estado real torna o defeito impossível por
+construção: a fonte da verdade do produto é o `Map`, e a métrica é uma leitura dele.
+
+O callback roda dentro do ciclo de exportação, então ele é total por construção (só lê
+`size` de `Map`s) e ainda assim vem embrulhado num guard que devolve o último valor
+conhecido — um `throw` ali viraria erro a cada janela, para sempre.
+
+### 10.5 O `RoomStore` continua passivo
+
+`rooms.ts` ganhou apenas memória efêmera adicional — `openedAt` da sala, `peak` de
+ocupação e `joinedAt` de cada membro, todos num `Map` paralelo que morre junto com a sala
+— e três leitores (`roomStats`, `memberJoinedAt`, `snapshot`). Ele **não** importa
+`telemetry.ts`, não recebe callbacks e não emite eventos. Todas as chamadas de registro
+ficam em `index.ts`, ao lado dos `emit` que elas descrevem, e **sempre depois** deles: uma
+chamada de telemetria no meio de `admitToRoom` que lançasse alteraria a ordem observável
+de `join-approved` e `peer-joined`, que é o que `test/signaling.test.ts` caracteriza. Por
+isso todo `record*` é síncrono, total e devolve `void` — nenhum pode ser esperado por um
+handler, e há teste que afirma isso.
+
+A contabilidade fica **ao lado** de `Member`, e não dentro dele: `Member` é o estado do
+produto ("o que se guarda de cada participante — só isto, nada de nome real, nada de IP"),
+e misturar a bookkeeping do observador no mesmo objeto acoplaria os dois.
+
+### 10.6 O beacon viaja como `text/plain`
+
+O client envia o JSON com tipo `text/plain;charset=UTF-8` (via `navigator.sendBeacon` com
+`Blob`, ou `fetch` com `keepalive: true` como fallback), e o servidor monta
+`express.json({ limit: '1kb', type: () => true })` **apenas** na rota `/telemetry`.
+
+É o detalhe que decide se a telemetria do client funciona ou some. `text/plain` é
+CORS-safelisted: a requisição é simples e **não gera preflight**. Um `Blob` de
+`application/json` faria o navegador tentar um `OPTIONS` antes — e no `pagehide`, com a aba
+morrendo, o preflight frequentemente não completa e o beacon é descartado em silêncio. O
+sintoma seria "o page view da Home aparece, o fim de sessão nunca", com zero erro no
+console de quem investiga.
+
+Do outro lado, `type: () => true` faz a receita de verificação do README (`curl -d` sem
+header, que manda `application/x-www-form-urlencoded`) cair no mesmo caminho do
+`sendBeacon`. Aceitar qualquer tipo e validar o **conteúdo** é o que unifica os três.
+
+**Consequência de segurança, e por que ela é aceitável:** um endpoint que aceita corpo de
+qualquer tipo, sem preflight, é chamável por qualquer página da internet. O que se pode
+fazer com isso é incrementar um contador agregado — não há estado, não há sessão, não há
+efeito colateral. O limite de 1 kB e o rate limit de §10.8 cuidam do resto, e o README diz
+com todas as letras que os números do client são falsificáveis por construção. "Proteger"
+com token no bundle ou checagem de `Origin` daria falsa segurança: os dois são copiáveis
+do DevTools em dez segundos.
+
+O handler de erro do body-parser é montado **na rota**, e não com `app.use` global: a
+mensagem do `SyntaxError` do body-parser inclui um trecho do corpo recebido, e sem handler
+próprio ela iria para o stderr. É o vazamento mais provável desta entrega, e ele mora no
+caminho de erro — que é justamente o que ninguém olha.
+
+### 10.7 Sem endpoint configurado, é no-op absoluto
+
+`initTelemetry` sem `OTEL_EXPORTER_OTLP_ENDPOINT` devolve uma implementação no-op com a
+**mesma superfície** — mesmos métodos, mesmas assinaturas, todos vazios — e imprime **um**
+aviso no boot, no padrão do aviso de TURN ausente (§6.12). Nenhum `MeterProvider` é criado,
+nenhum timer é armado, nenhum socket é aberto. É o que roda em `npm run dev` e em todo
+teste que não seja de telemetria: ninguém precisa de collector para desenvolver.
+
+A diferença em relação ao TURN é que TURN ausente desliga o produto inteiro, enquanto
+telemetria ausente não degrada nada — por isso aviso, e não erro. `/health` ganhou
+`telemetry: { enabled: boolean }`, aditivo, booleano puro: nunca o endpoint, nunca os
+headers.
+
+### 10.8 Rate limit sobre IP truncado, que nunca é armazenado nem exportado
+
+Janela fixa de 60s em memória, chaveada por IP **truncado** (IPv4 → /24, IPv6 → /48). O
+`Map` é descartado inteiro ao virar a janela. A chave nunca vai para log, nunca vira
+atributo de métrica e nunca sai do processo. Estouro responde **429 sem corpo** e conta
+como `wtk_telemetry_beacons_total{outcome="rejected"}` — o enum é fechado em dois valores,
+e acrescentar `rate_limited` quebraria o catálogo e o painel versionado.
+
+Duas notas honestas, que estão também no código:
+
+- O servidor **não** habilita `trust proxy`. Atrás de um reverse proxy, `req.ip` é o IP do
+  proxy e o rate limit degrada para um balde **global** — mais restritivo, nunca menos.
+  Isso é preferível a ler `X-Forwarded-For`, que é falsificável e que reintroduziria o IP
+  real do usuário num caminho de código novo.
+- O `Map` tem teto (10 000 chaves por janela); ao estourar, o limite passa a valer
+  globalmente até a virada. Sem teto, o balde seria o vazamento de memória.
+
+### 10.9 Temporalidade cumulativa e os nomes exatos
+
+Temporalidade **cumulativa** (default do exporter OTLP; delta exigiria
+`deltatocumulative` no pipeline do collector, que é estado a mais em troca de nada), e o
+`infra/otel/collector.example.yaml` configura o exporter Prometheus com
+**`add_metric_suffixes: false`**.
+
+O tradutor Prometheus do Collector, por default, anexa sufixo de unidade e `_total` ao
+nome do instrumento: `wtk_session_duration_seconds` (unidade `s`) tem chance real de
+chegar como `wtk_session_duration_seconds_seconds`, e o painel versionado mostraria "No
+data" sem nenhum erro em lugar nenhum. Desligar o sufixo faz o nome do catálogo ser o nome
+no PromQL, no painel e na documentação: um nome só, do começo ao fim.
+
+O resource é montado **explicitamente** com `resourceFromAttributes({ 'service.name',
+'service.version' })`. Nada de `detectResources()`: `hostDetector` e `processDetector`
+acrescentariam `host.name`, `process.pid` e `process.command_args`, que carregam hostname e
+caminho do filesystem do operador para dentro da stack de monitoramento sem ninguém ter
+pedido. E nada de `NodeSDK`, que liga instrumentações automáticas — inclusive HTTP, que
+criaria métricas por rota **com path**, e o path de sala **é** o `roomId`.
+
+### 10.10 Fora de escopo, e por quê
+
+- **Traces e logs.** A stack faz fan-out para Tempo e Loki, mas esta entrega exporta
+  apenas métricas. Os dois pipelines ficam escritos e comentados no
+  `collector.example.yaml`: um trace de sinalização carregaria `roomId` em atributo de
+  span por default, e isso exige uma rodada de decisão de privacidade que não coube aqui.
+- **Qualquer métrica de mídia** (bitrate, packet loss, jitter, `getStats()`). São dados
+  por-peer, medidos no navegador, e o caminho até o servidor recriaria exatamente o
+  identificador que esta entrega se recusa a criar.
+- **Alertas e SLOs.** O painel é entregue; regras de alerta são decisão de operação.

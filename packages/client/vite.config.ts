@@ -121,19 +121,49 @@ function transpilarUrlTypeScript(): Plugin {
 
 export default defineConfig({
   plugins: [resolveJsToTs(), transpilarUrlTypeScript(), react()],
-  // Duas cópias de React no grafo (o `react-router-dom` traz um `react@18`
-  // para a raiz, o client declara `react@19`) dão dois dispatchers de hooks e
-  // uma página em branco com `Cannot read properties of null (reading
-  // 'useRef')`. O `dedupe` obriga o bundle a carregar uma cópia só.
+  /**
+   * Uma cópia de React, e só uma. Sem esta linha o app **não renderiza nada**.
+   *
+   * O bump da PR #26 (`6973768`, "React para 19, react-router-dom para 7",
+   * mergeado em `b9fb31f`) deixou o lockfile com **duas** cópias de React:
+   *
+   *   node_modules/react                  18.3.1   ← içado para satisfazer o
+   *   node_modules/react-router-dom        7.18.2     peer `react >=18` do router
+   *   packages/client/node_modules/react  19.2.8   ← o que o app declara
+   *
+   * O bundle carrega React 19 (resolvido a partir de `packages/client`) e o
+   * `react-router-dom` carrega o 18 do topo. Duas cópias, dois dispatchers, e o
+   * primeiro hook que o router chama estoura com
+   * `Cannot read properties of null (reading 'useRef')` — a árvore inteira
+   * morre, `#root` fica vazio e a página fica branca, sem nada no servidor que
+   * indique problema.
+   *
+   * `dedupe` faz o Vite resolver todo `react`/`react-dom` a partir da raiz do
+   * projeto (`packages/client`), ou seja, sempre o 19.2.8. É a remediação
+   * documentada do Vite para exatamente este caso em monorepo.
+   *
+   * **Conserto mais fundo, para quem cuidar das dependências:** um bloco
+   * `overrides` no `package.json` da raiz fixando `react`/`react-dom` em
+   * `^19.2.8` faria o npm parar de instalar a segunda cópia — resolve na origem,
+   * e não só no build do client. Ficou de fora aqui de propósito: mexe na
+   * resolução de dependências do repositório inteiro e pede um install limpo.
+   */
   resolve: { dedupe: ['react', 'react-dom'] },
   server: {
     port: 5173,
-    // TODO(WTK-MEET-21): `'all'` não é um valor aceito. O Vite libera qualquer
-    // host só com `true`; para qualquer outro valor ele **itera** o que
-    // recebeu — e iterar uma string percorre 'a', 'l', 'l', que não casa com
-    // hostname nenhum. Ou seja, hoje isto não libera nada. Preservado
-    // exatamente como estava: esta entrega migra tipos e não corrige
-    // comportamento (a correção é uma linha: `allowedHosts: true`).
+    // `'all'` não é um valor aceito. O Vite libera qualquer host só com `true`;
+    // para qualquer outro valor ele **itera** o que recebeu — e iterar uma
+    // string percorre 'a', 'l', 'l', que não casa com hostname nenhum. Ou
+    // seja, isto não libera nada, e o servidor de desenvolvimento segue com a
+    // proteção contra DNS rebinding de pé.
+    //
+    // Decidido na WTK-MEET-21 (que herdou o TODO por causa do identificador,
+    // não do assunto): **mantido como está, de propósito**. A "correção" de uma
+    // linha — `allowedHosts: true` — é um afrouxamento de proteção, não um
+    // conserto, e ninguém pediu acesso remoto ao dev server. Quem precisar
+    // disso deve listar os hosts explicitamente (`allowedHosts: ['meu.host']`),
+    // em commit próprio, revertível sozinho. O registro está em
+    // `docs/progress/WTK-MEET-21.md`.
     allowedHosts: 'all' as unknown as true,
   },
 });

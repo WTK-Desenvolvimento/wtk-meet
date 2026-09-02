@@ -42,6 +42,7 @@ import { resolveSpotlightScreen } from '../lib/spotlightLayout.js';
 import { applyPeerConnectionState, describeConnection } from '../lib/peerConnectionStatus.js';
 import { buildRoomUrl, generatePassphrase } from '../lib/roomSlug.js';
 import { roomPathFromLocation } from '../lib/roomRouting.js';
+import { startSession, trackPageView } from '../lib/telemetry.js';
 // import { deriveRoomKey, isInsertableStreamsSupported } from '../lib/e2ee.js';
 import { fetchIceServers, MAX_PARTICIPANTS } from '../config.js';
 import type { ChatMessage } from '../lib/chat.js';
@@ -786,6 +787,54 @@ export default function Room() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId, passphrase, displayName, redirectPending]);
+
+  /**
+   * Page view da sala — depois do redirect, nunca antes.
+   *
+   * Contar na montagem contaria também os paths que nem são sala (`/assets`,
+   * `/a/b`), que voltam para a Home no efeito de canonicalização. `route:
+   * 'room'` é tudo o que viaja: nem o slug, nem o fragmento (que carrega a
+   * passphrase), nem o nome de quem entrou.
+   */
+  useEffect(() => {
+    if (redirectPending) return;
+    trackPageView('room');
+  }, [redirectPending]);
+
+  /**
+   * Quanto tempo a aba ficou na sala.
+   *
+   * É a segunda das duas perguntas que o servidor não responde sozinho: ele vê
+   * o socket cair, mas não vê a aba que continua aberta depois disso — e nem a
+   * aba que fica aberta e escondida.
+   *
+   * Três gatilhos, e `end()` idempotente porque eles se sobrepõem: o unmount
+   * do efeito, o `pagehide` e o `visibilitychange → hidden`. `unload` **não**
+   * entra: navegadores com bfcache o ignoram, e um beacon disparado dali some
+   * em silêncio.
+   *
+   * Consequência de medida que precisa estar escrita: com `visibilitychange`
+   * entre os gatilhos, esta métrica é "tempo até a aba ser escondida ou
+   * fechada pela primeira vez", e não "duração da reunião" — trocar de aba no
+   * meio da chamada encerra a contagem. É o preço de o beacon chegar em
+   * navegador móvel, onde `pagehide` não é garantido. Quem quer duração de
+   * reunião lê `wtk_session_duration_seconds`, medida no servidor.
+   */
+  useEffect(() => {
+    if (phase !== PHASE.IN_CALL) return undefined;
+    const session = startSession();
+    const finish = () => session.end();
+    const onVisibility = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') finish();
+    };
+    window.addEventListener('pagehide', finish);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', finish);
+      document.removeEventListener('visibilitychange', onVisibility);
+      finish();
+    };
+  }, [phase]);
 
   // Mantém um analisador por stream de áudio presente na sala (local + remotos),
   // todos no mesmo AudioContext e no mesmo loop de rAF.

@@ -346,6 +346,7 @@ test('/health reporta turn.configured sem chamar a Cloudflare, e preserva ok (A5
   assert.deepEqual(await (await fetch(`${semTurn.base}/health`)).json(), {
     ok: true,
     turn: { configured: false },
+    telemetry: { enabled: false },
   });
 
   // `throw` no dublê: se o /health tocasse a Cloudflare, ele quebraria aqui.
@@ -357,6 +358,7 @@ test('/health reporta turn.configured sem chamar a Cloudflare, e preserva ok (A5
   assert.deepEqual(await (await fetch(`${comTurn.base}/health`)).json(), {
     ok: true,
     turn: { configured: true },
+    telemetry: { enabled: false },
   });
 });
 

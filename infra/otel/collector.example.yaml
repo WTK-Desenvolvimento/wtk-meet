@@ -1,0 +1,92 @@
+# OpenTelemetry Collector / Grafana Alloy — exemplo para o wtk-meet.
+#
+# O wtk-meet fala **só métricas**, por OTLP, a partir de um único processo: o
+# servidor de sinalização. O navegador nunca fala com este collector — ele manda
+# beacons anônimos para `POST /telemetry` no próprio servidor, que converte tudo
+# nas mesmas métricas agregadas que já exporta. Não há, portanto, receiver
+# público a proteger: este endereço não precisa estar exposto na internet, e não
+# deve estar.
+#
+# Copie para onde seu Alloy/Collector lê e ajuste os `endpoint`. Do lado do
+# wtk-meet basta:
+#
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4318
+#
+# (base, sem `/v1/metrics` — o servidor acrescenta o caminho do sinal.)
+
+receivers:
+  otlp:
+    protocols:
+      # gRPC fica ligado para quem já manda outras coisas para o mesmo
+      # collector; o wtk-meet usa HTTP/JSON, na 4318.
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Lote pequeno: são nove séries no total, e latência baixa vale mais do que
+  # eficiência de rede num volume desses.
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+    # ─────────────────────────────────────────────────────────────────────
+    # A linha que decide se o painel versionado mostra dados ou "No data".
+    #
+    # Por padrão o tradutor Prometheus do Collector anexa o sufixo da unidade e
+    # `_total` ao nome do instrumento. Com ele ligado,
+    # `wtk_session_duration_seconds` (unidade `s`) chega ao Prometheus como
+    # `wtk_session_duration_seconds_seconds`, e `wtk_joins_total` como
+    # `wtk_joins_total_total`. Nada quebra, nada avisa: o painel escrito contra
+    # os nomes do catálogo simplesmente não encontra série nenhuma.
+    #
+    # Desligado, o nome do catálogo é o nome no PromQL, no painel e na
+    # documentação — um nome só, do começo ao fim.
+    # ─────────────────────────────────────────────────────────────────────
+    add_metric_suffixes: false
+
+    # O `service.name` do resource vira label do alvo; nada além dele sai do
+    # wtk-meet (o resource é montado explicitamente, sem `detectResources`, para
+    # não arrastar `host.name` e `process.command_args`).
+    resource_to_telemetry_conversion:
+      enabled: false
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]
+
+  # Traces e logs: extensão futura, deliberadamente **fora** desta entrega.
+  #
+  # Não é falta de tempo. Um trace de sinalização carrega o `roomId` em atributo
+  # de span por default — e o endereço da sala é secreto por desenho neste
+  # produto (slug curto e adivinhável, chave de E2EE no fragmento da URL, que
+  # nunca chega ao servidor). Ligar tracing sem antes decidir o que fazer com
+  # esse atributo transformaria "quem está reunido agora" em dado persistido no
+  # Tempo, que é exatamente o banco de dados que o produto se orgulha de não
+  # ter. Quem ligar isto precisa trazer a decisão de privacidade junto.
+  #
+  #    traces:
+  #      receivers: [otlp]
+  #      processors: [batch]
+  #      exporters: [otlp/tempo]
+  #    logs:
+  #      receivers: [otlp]
+  #      processors: [batch]
+  #      exporters: [loki]
+  #
+  # E os exporters correspondentes:
+  #
+  #    otlp/tempo:
+  #      endpoint: tempo:4317
+  #      tls:
+  #        insecure: true
+  #    loki:
+  #      endpoint: http://loki:3100/loki/api/v1/push

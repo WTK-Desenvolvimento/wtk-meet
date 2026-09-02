@@ -205,6 +205,13 @@ isso o endereço mora na raiz, num segmento só, e o `/room/` deixou de existir.
   trafegam pelo mesmo data channel, com snapshot para quem entra depois. Nenhuma rota
   nem evento novo no servidor, e nada em storage — a fila morre com a sala.
 
+Uma exceção honesta, desde a telemetria: o client faz **uma** chamada HTTP ao servidor que
+não é sinalização nem TURN — o beacon de `POST /telemetry`. Ele carrega, no máximo, qual
+das três telas foi vista (`home`, `room` ou `legacy`) e quantos milissegundos a aba ficou
+na sala. Não carrega o endereço da sala, o fragmento da URL, o seu nome nem identificador
+nenhum — o envelope não tem campo para isso. Ver [Telemetria](#telemetria); com
+`VITE_TELEMETRY_ENABLED=false` ele não existe.
+
 ### Entrar na sala: a tela de pré-entrada
 
 Abrir o link de uma sala **não acende o LED da webcam**. Quem chega sem nome na sessão
@@ -330,6 +337,129 @@ sobe pelo mesmo caminho cifrado da sua voz — todo mundo ouve, sem fila e sem v
   áudio para dentro da chamada. Hospede o efeito em qualquer lugar que responda com
   `Access-Control-Allow-Origin` e ele funciona. Ver "Limitações conhecidas" no
   `ARCHITECTURE.md`.
+## Telemetria
+
+O servidor exporta **métricas agregadas** por OTLP para um OpenTelemetry Collector /
+Grafana Alloy — e nada mais. Sem `OTEL_EXPORTER_OTLP_ENDPOINT` configurado, ele se
+comporta exatamente como antes: nenhum `MeterProvider` é criado, nenhum timer é armado,
+nenhum socket é aberto, e um aviso aparece no boot.
+
+**Nenhum identificador é criado.** Nem cookie, nem `localStorage`, nem UUID de aba, nem
+hash de sala. É por isso que não existe banner de consentimento aqui: a base legal para
+banner é o armazenamento/leitura de informação no seu terminal e o tratamento de dado
+pessoal, e um contador de page views por rota — sem identificador, sem IP e sem
+User-Agent — não é nenhum dos dois. O que sustenta isso não é este parágrafo, é teste:
+`packages/client/test/telemetryNoLeak.test.ts` **reprova** se o módulo de telemetria
+encostar em `localStorage`, `sessionStorage`, `document.cookie`, `crypto.randomUUID` ou
+`Math.random`, e `packages/server/test/telemetryNoLeak.test.ts` roda o fluxo completo com
+um nome de sala e um nome de pessoa reconhecíveis e procura os dois nos bytes que saem
+para o collector.
+
+### O servidor é o único ponto de saída
+
+O navegador **nunca fala com o collector**. Ele manda um beacon para `POST /telemetry` no
+mesmo servidor de sinalização com que já fala, e o servidor converte o beacon nas mesmas
+métricas agregadas que já exporta. Três razões:
+
+1. O endereço do collector nunca fica no bundle — um `VITE_OTEL_ENDPOINT` seria legível
+   por qualquer pessoa que abrisse o DevTools, e um collector OTLP aberto na internet é
+   um vetor de flood contra o Prometheus.
+2. Se o navegador falasse OTLP, o collector veria o **IP de cada participante**. Falando
+   com o servidor de sinalização — que já vê esse IP, por necessidade técnica de manter
+   um WebSocket — não há nenhum observador novo.
+3. O que sai do processo é um formato só, por um cano só: a prova de não-vazamento tem
+   **um** lugar para olhar.
+
+### Variáveis
+
+| Variável | Pacote | Default | Efeito |
+|---|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | server | *(vazio)* | **Ausente ⇒ telemetria desligada por inteiro.** Endereço base, sem `/v1/metrics` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | server | *(vazio)* | Autenticação do collector. Nunca aparece em `/health` nem em log |
+| `OTEL_SERVICE_NAME` | server | `wtk-meet-server` | Atributo de resource |
+| `OTEL_METRIC_EXPORT_INTERVAL_MS` | server | `60000` | Intervalo de exportação |
+| `TELEMETRY_RATE_LIMIT_PER_MINUTE` | server | `120` | Teto de beacons por janela de 60s, por IP truncado |
+| `VITE_TELEMETRY_ENABLED` | client | `true` | `false` desliga **antes** de qualquer efeito: nenhuma requisição sai do browser |
+
+Para desligar tudo: não configure `OTEL_EXPORTER_OTLP_ENDPOINT` (o servidor para de
+exportar) e passe `VITE_TELEMETRY_ENABLED=false` **como build arg** do client. É build
+arg, e não variável de runtime, porque `import.meta.env` é substituído em tempo de build
+— a mesma variável no nginx não teria efeito nenhum. O `docker-compose.yml` já faz isso.
+
+### O catálogo, inteiro
+
+Nove métricas. Duas chaves de atributo no sistema todo — `outcome` e `route` — e nenhuma
+delas identifica ninguém. **Não há label de sala, de participante ou de origem, nem
+hasheado**: o endereço da sala é secreto por desenho (slug curto, chave de E2EE no
+fragmento da URL), e um label `room="daily"` transformaria "quem está reunido agora" em
+série temporal persistida no Prometheus — que é exatamente o banco de dados que este
+produto se orgulha de não ter. Um hash seria pior, porque parece resolvido: com um espaço
+de nomes prováveis (`daily`, `suporte`, `1x1-nicolas`), ele é reversível por força bruta
+em segundos.
+
+| Nome | Tipo | Unidade | Atributos | Quando |
+|---|---|---|---|---|
+| `wtk_rooms_active` | gauge | `{room}` | — | Salas com pelo menos um participante, na coleta |
+| `wtk_participants_active` | gauge | `{participant}` | — | Soma dos membros de todas as salas, na coleta |
+| `wtk_room_occupancy` | histogram | `{participant}` | — | Pico de ocupação de cada sala, no fechamento |
+| `wtk_session_duration_seconds` | histogram | `s` | — | Tempo de um socket dentro de uma sala |
+| `wtk_room_lifetime_seconds` | histogram | `s` | — | Do primeiro a entrar ao último a sair |
+| `wtk_joins_total` | counter | `{join}` | `outcome` | Desfecho de cada tentativa de entrada |
+| `wtk_page_views_total` | counter | `{page_view}` | `route` | Montagem de cada página (via beacon) |
+| `wtk_client_session_duration_seconds` | histogram | `s` | — | Tempo da aba na sala (via beacon) |
+| `wtk_telemetry_beacons_total` | counter | `{beacon}` | `outcome` | Cada `POST /telemetry` |
+
+`outcome` de `wtk_joins_total` ∈ `admitted, approved, denied, room_full, invalid_room`;
+`outcome` de `wtk_telemetry_beacons_total` ∈ `accepted, rejected`; `route` ∈ `home, room,
+legacy`.
+
+Três leituras que evitam interpretação errada do painel:
+
+- **`wtk_joins_total` conta desfechos, não tentativas.** Quem desiste na fila de
+  aprovação não aparece em nenhum dos cinco valores — o conjunto é fechado e não tem
+  valor para isso. A diferença entre "pedidos recebidos" e a soma dos desfechos é,
+  portanto, invisível. É limitação declarada, não bug.
+- **`wtk_client_session_duration_seconds` não é duração de reunião.** Ela mede o tempo
+  até a aba ser escondida ou fechada pela primeira vez: trocar de aba no meio da chamada
+  encerra a contagem. É o preço de o beacon chegar em navegador móvel, onde `pagehide`
+  não é garantido. Para duração de reunião, leia `wtk_session_duration_seconds`, medida
+  no servidor.
+- **Os números do client são falsificáveis.** `POST /telemetry` é público e não
+  autenticado — não pode ser autenticado, porque credencial no bundle é pública por
+  construção e id de sessão é justamente o que este desenho se recusa a criar. Um script
+  simples infla `wtk_page_views_total`. O que existe contra isso é limite de 1 kB, rate
+  limit por janela e nenhum trabalho além de um incremento. Um painel de produto que
+  finge precisão que não tem é pior do que nenhum painel.
+
+### Verificando
+
+```bash
+curl -s localhost:4000/health
+# {"ok":true,"turn":{"configured":false},"telemetry":{"enabled":false}}
+
+curl -si -X POST localhost:4000/telemetry -d '{"event":"page_view","route":"home"}'
+# HTTP/1.1 204 No Content
+```
+
+O `curl -d` sem `-H` manda `application/x-www-form-urlencoded`, e o endpoint aceita
+**qualquer** Content-Type de propósito, validando o conteúdo em vez do cabeçalho. É a
+mesma razão pela qual o client manda `text/plain`: esse tipo é CORS-safelisted, não gera
+preflight, e um preflight no `pagehide` de uma aba morrendo frequentemente não completa —
+o beacon sumiria em silêncio.
+
+`/health` reporta um booleano e só: nunca o endereço do collector, nunca os headers.
+
+### Collector e painel
+
+`infra/otel/collector.example.yaml` tem o pipeline mínimo até o Prometheus, com
+**`add_metric_suffixes: false`** — sem essa linha o tradutor do Collector anexa o sufixo
+da unidade e `wtk_session_duration_seconds` chega como
+`wtk_session_duration_seconds_seconds`, fazendo o painel mostrar "No data" sem nenhum erro
+em lugar nenhum. Traces e logs ficam escritos e comentados como extensão futura: um trace
+de sinalização carrega o `roomId` em atributo de span por default, e isso exige uma
+decisão de privacidade que não coube nesta entrega.
+
+`infra/otel/dashboards/wtk-meet.json` é o painel Grafana, importável sem edição manual.
 
 ## Testes
 

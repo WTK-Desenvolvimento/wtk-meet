@@ -9,6 +9,21 @@ e o projeto adere ao [Versionamento Semantico](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
+- Telemetria anonima via OTLP: o servidor de sinalizacao exporta nove metricas
+  agregadas para um OpenTelemetry Collector / Grafana Alloy. Sem
+  `OTEL_EXPORTER_OTLP_ENDPOINT` configurado o comportamento e identico ao
+  anterior, com um aviso no boot.
+- `POST /telemetry`: beacon anonimo e stateless do client. Nenhum cookie,
+  nenhum identificador de usuario, de aba ou de sala e criado, lido ou
+  persistido — e por isso nao ha banner de consentimento, e isso e sustentado
+  por teste.
+- `GET /health` passa a reportar `telemetry: { enabled }` (aditivo).
+- `infra/otel/collector.example.yaml` e o painel Grafana versionado em
+  `infra/otel/dashboards/wtk-meet.json`.
+- Variaveis: `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`,
+  `OTEL_SERVICE_NAME`, `OTEL_METRIC_EXPORT_INTERVAL_MS`,
+  `TELEMETRY_RATE_LIMIT_PER_MINUTE` (server) e `VITE_TELEMETRY_ENABLED`
+  (client, build arg).
 - Soundboard: painel recolhivel a esquerda com favoritos locais
   (`localStorage`, chave `wtk-meet:soundboard`, ate 50 itens com titulo
   editavel) e disparo de efeitos para a sala inteira, sem votacao. O audio e

@@ -558,7 +558,14 @@ test('/health responde ok e o booleano de TURN, e nada além disso', async () =>
   const body = await res.json();
   // `configured` é booleano puro: não diz qual token, não valida credencial e
   // não chama a Cloudflare. Sem `CF_TURN_*` no ambiente do teste, é false.
-  assert.deepEqual(body, { ok: true, turn: { configured: false } });
+  assert.deepEqual(body, {
+    ok: true,
+    turn: { configured: false },
+    // Aditivo: `telemetry.enabled` entrou com a WTK-MEET-21. Booleano puro —
+    // nunca o endpoint do collector, nunca os headers. Sem
+    // `OTEL_EXPORTER_OTLP_ENDPOINT` no ambiente do teste, é false.
+    telemetry: { enabled: false },
+  });
 });
 
 test('/rooms/:id/occupancy responde só { occupied } — sem nomes e sem contagem', async () => {
