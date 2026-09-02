@@ -604,7 +604,7 @@ async function settle(turns = 8) {
 /**
  * Monta a sala num cenário limpo.
  *
- * `displayName` na `sessionStorage` é o que destrava o efeito de setup: sem
+ * `displayName` no `localStorage` é o que destrava o efeito de setup: sem
  * nome, o `Room` fica no lobby (`PreJoin`) e nada de rede acontece — que é
  * exatamente o caso do teste do lobby, e por isso é parametrizável.
  */
@@ -615,7 +615,7 @@ async function montarSala({ pathname = '/daily', hash = '#chave-de-teste', displ
   media.concedidas = [];
   sessionStorage.clear();
   localStorage.clear();
-  if (displayName) sessionStorage.setItem('displayName', displayName);
+  if (displayName) localStorage.setItem('wtk-meet:display-name', displayName);
 
   const view = renderComponent(Room);
   await settle();

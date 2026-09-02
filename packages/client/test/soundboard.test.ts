@@ -175,6 +175,7 @@ test('mute global persiste; nada mais além do que o esquema declara', () => {
     'favorites',
     'monitorVolume',
     'mutedAll',
+    'soundboardVolume',
     'version',
   ]);
 });
