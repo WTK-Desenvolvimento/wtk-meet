@@ -18,6 +18,7 @@
  */
 
 import { sanitizeEntry, sanitizePlayback } from './musicSession.js';
+import { MAX_SOUND_MS } from './soundboard.js';
 import { VOTE_DURATION_MS, isVoteKind, type VoteKind, type VoteResult, type VoteTarget } from './musicVote.js';
 import type { Playback, QueueEntry, SessionSnapshot } from './musicSession.js';
 
@@ -31,6 +32,11 @@ export const MUSIC_MESSAGE_TYPES = new Set([
   'music-playback',
   'music-command',
   'music-snapshot',
+  // O soundboard viaja pelo mesmo canal e pela mesma tabela: é o que faz um
+  // client antigo **ignorar** o tipo desconhecido em vez de quebrar, exatamente
+  // como já acontece com os `music-*`. Ele não tem estado replicado nem
+  // convergência — é um evento avulso, e a sanitização abaixo trata-o como tal.
+  'soundboard-play',
 ]);
 
 export const COMMAND_ACTIONS = new Set(['pause', 'resume', 'seek', 'play-entry']);
@@ -89,7 +95,15 @@ export type SanitizedMusicMessage =
       positionSec: number | null;
       byId: string;
     }
-  | { type: 'music-snapshot'; fromPeerId: string; snapshot: SanitizedSnapshot };
+  | { type: 'music-snapshot'; fromPeerId: string; snapshot: SanitizedSnapshot }
+  | {
+      type: 'soundboard-play';
+      /** Sempre o remetente da conexão, nunca o que o payload declarou. */
+      peerId: string;
+      soundId: string;
+      title: string;
+      durationMs: number;
+    };
 
 /**
  * O estado da sessão como ele **chega** de outro peer: já podado (200 entradas,
@@ -202,6 +216,29 @@ export function commandMessage({
 
 export function snapshotMessage(snapshot: SessionSnapshot): MusicMessage {
   return { type: 'music-snapshot', ...snapshot };
+}
+
+/**
+ * O anúncio de um efeito do soundboard, enviado **antes** de o áudio começar a
+ * tocar (mesmo tique).
+ *
+ * Nenhuma URL trafega: quem recebe não baixa nada, porque o áudio já vem mixado
+ * no canal de música de quem disparou. O `soundId` serve para atribuição e
+ * deduplicação na lista de atividade, não para buscar mídia.
+ *
+ * E, como em todas as mensagens deste módulo, **não há campo `from`**: a
+ * autoria é a conexão em que a mensagem chegou.
+ */
+export function soundboardPlayMessage({
+  soundId,
+  title,
+  durationMs,
+}: {
+  soundId: string;
+  title: string;
+  durationMs: number;
+}): MusicMessage {
+  return { type: 'soundboard-play', soundId, title, durationMs };
 }
 
 // ---------------------------------------------------------------- sanitização
@@ -350,6 +387,25 @@ export function sanitizeMusicMessage(
           tombstones,
           playback: payload.playback && typeof payload.playback === 'object' ? payload.playback : null,
         },
+      };
+    }
+
+    case 'soundboard-play': {
+      const soundId = str(payload.soundId, 80);
+      if (!soundId) return null;
+      // Duração fora da faixa não recusa a mensagem: ela vira o teto. O que a
+      // duração comanda do lado de cá é a janela de mute de quem silenciou
+      // aquele peer — um `durationMs` de 10 minutos plantado por um client
+      // modificado emudeceria o canal de música dele por 10 minutos.
+      const bruta = typeof payload.durationMs === 'number' && Number.isFinite(payload.durationMs)
+        ? payload.durationMs
+        : 0;
+      return {
+        type: 'soundboard-play',
+        peerId: fromPeerId,
+        soundId,
+        title: str(payload.title, 120).trim() || 'Efeito',
+        durationMs: Math.min(MAX_SOUND_MS, Math.max(0, bruta)),
       };
     }
 

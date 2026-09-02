@@ -251,7 +251,8 @@ notifications toggle (which moved out of the control bar).
   (`videoInputId`, `audioInputId`, `audioOutputId`, `soundsEnabled`, and
   `startCameraOff` — the latter is the pre-entry screen choice, and defaults to `true`
   when nothing is saved) — and noise
-  suppression, below, under `wtk-meet:audio`. **These are the only exceptions to the
+  suppression, below, under `wtk-meet:audio`, and the soundboard favorites under
+  `wtk-meet:soundboard`. **These are the only exceptions to the
   zero-persistence rule** — the rule applies to call content and metadata, not to which
   peripheral of your own equipment to use. Clearing site data erases the preference.
 - If the saved device no longer exists (different machine, undocked dock), the call
@@ -314,6 +315,29 @@ VITE_ENABLE_YOUTUBE=false   # removes the YouTube source from the UI and parser
 The default is on, with an explicit warning in the UI when adding the first YouTube track
 of the session. If the privacy promise is absolute in your deployment, turn it off.
 
+### Soundboard: effects for the whole room, no vote required
+
+The **Soundboard** button opens a panel on the left where you paste the URL of a short
+effect, save it as a favorite, and fire it with one click. The sound is mixed into
+**your** music channel and travels the same encrypted path as your voice — everyone
+hears it, with no queue and no vote.
+
+- **Favorites belong to this browser**, stored in `localStorage` under
+  `wtk-meet:soundboard` (up to 50, with an editable title). Nobody else sees your list.
+- **Firing is open, with a ceiling:** 3 shots every 5 seconds, enforced both when
+  sending (the button shows the remaining time) and when receiving. One effect at a
+  time, and effects longer than 15 seconds are cut at the end of the window.
+- **Firing an effect does not disturb the room's music:** both signals add up in the
+  same channel, the track does not pause and does not lose its position.
+- **You can mute the soundboard**, globally or for one specific person. The choice is
+  yours, applies only to you, and **is never sent to anyone**. Since on the wire that
+  person's effect and music are the same signal, while the effect lasts the music they
+  are streaming goes silent too — the panel says so.
+- **A URL without CORS is refused with a message**, not with silence. That is the case
+  of **MyInstants**: the site does not allow CORS, so the browser cannot capture that
+  audio into the call. Host the effect anywhere that answers with
+  `Access-Control-Allow-Origin` and it works. See "Known limitations" in
+  `ARCHITECTURE.md`.
 ## Telemetry
 
 The server exports **aggregated metrics** over OTLP to an OpenTelemetry Collector /

@@ -44,7 +44,7 @@ async function isRoomOccupied(path: string): Promise<boolean> {
 
 export default function Home() {
   const navigate = useNavigate();
-  const [displayName, setDisplayName] = useState(() => sessionStorage.getItem('displayName') || '');
+  const [displayName, setDisplayName] = useState(() => localStorage.getItem('wtk-meet:display-name') || '');
   const [inviteLink, setInviteLink] = useState('');
   // O campo guarda o endereço **já normalizado**: o que se vê é exatamente o
   // que vai para a barra de endereço, sem surpresa no meio do caminho.
@@ -85,7 +85,7 @@ export default function Home() {
 
   function saveDisplayName() {
     const trimmed = displayName.trim();
-    sessionStorage.setItem('displayName', trimmed);
+    localStorage.setItem('wtk-meet:display-name', trimmed);
     return trimmed;
   }
 

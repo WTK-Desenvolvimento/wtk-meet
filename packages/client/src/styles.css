@@ -1369,3 +1369,127 @@ button.primary {
 .prejoin-toggle + .hint {
   margin: -0.9rem 0 0;
 }
+
+/* --- soundboard --- */
+
+/* Painel à esquerda do palco. Ele é irmão do `.video-stage` dentro de um flex
+   row, então **empurra** a grade em vez de flutuar por cima dela: a página não
+   rola (§6.7) e o modo destaque continua medindo a caixa que sobrou. Largura
+   menor que a do chat porque a grade é o que importa na tela. */
+.soundboard-panel {
+  width: 260px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow-y: auto;
+}
+
+.soundboard-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.7rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.soundboard-subtitle {
+  display: block;
+  color: var(--muted-text);
+  font-size: 0.72rem;
+  margin-top: 0.15rem;
+}
+
+.soundboard-add {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.6rem 0.85rem;
+  flex: 0 0 auto;
+}
+
+.soundboard-add input {
+  flex: 1;
+  min-width: 0;
+}
+
+.soundboard-error,
+.soundboard-cooldown {
+  margin: 0 0.85rem 0.5rem;
+  font-size: 0.78rem;
+  color: var(--warning);
+}
+
+.soundboard-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0 0.85rem 0.6rem;
+}
+
+.soundboard-item {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+/* Botão grande: é o alvo de toque do disparo, e ele tem que ser óbvio. */
+.soundboard-play {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-height: 40px;
+}
+
+.soundboard-rename {
+  flex: 1;
+  min-width: 0;
+}
+
+.soundboard-empty,
+.soundboard-note {
+  color: var(--muted-text);
+  font-size: 0.75rem;
+  margin: 0.2rem 0;
+}
+
+.soundboard-mutes,
+.soundboard-activity {
+  padding: 0.6rem 0.85rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+
+.soundboard-people,
+.soundboard-activity ul {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.soundboard-flood {
+  color: var(--warning);
+  font-size: 0.72rem;
+  margin-left: 0.35rem;
+}
+
+@media (max-width: 720px) {
+  /* Com o palco em coluna, o painel vira uma faixa de altura limitada — nunca
+     um overlay: sobrepor a barra de controles deixaria a pessoa sem como sair
+     da sala nem desligar o microfone. */
+  .soundboard-panel {
+    width: 100%;
+    flex: 0 1 45%;
+    min-height: 0;
+  }
+}

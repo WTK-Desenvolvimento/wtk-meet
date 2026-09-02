@@ -14,6 +14,15 @@ export interface RemoteMusicAudioProps extends Omit<AudibleMediaOptions, 'stream
   /** Volume do player da sala, 0–1. */
   volume?: number;
   muted?: boolean;
+  /**
+   * Peers emudecidos **agora**, por decisão local de quem ouve: o mute do
+   * soundboard daquele participante, aplicado pela duração do efeito.
+   *
+   * É por peer, e não global, porque a escolha é por peer — e é temporal porque
+   * no fio o efeito e a música do player daquele peer são o mesmo sinal, e
+   * nenhum receptor consegue separá-los. Ver `lib/useMusicRoom.js`.
+   */
+  mutedPeerIds?: readonly string[];
 }
 
 /**
@@ -48,6 +57,7 @@ export default function RemoteMusicAudio({
   streams = [],
   volume = 1,
   muted = false,
+  mutedPeerIds = [],
   onBlocked,
   sinkId = '',
   onSinkError,
@@ -60,7 +70,7 @@ export default function RemoteMusicAudio({
           key={peerId}
           stream={stream}
           volume={volume}
-          muted={muted}
+          muted={muted || mutedPeerIds.includes(peerId)}
           onBlocked={onBlocked}
           sinkId={sinkId}
           onSinkError={onSinkError}

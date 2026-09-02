@@ -11,6 +11,8 @@
  *   S. modal de configurações: listagem, troca de câmera/mic em chamada,
  *      saída de áudio, cancelamento e devicechange
  *   N. player de música: votação, fila convergente e áudio no quarto canal
+ *   SB. soundboard: favorito local, disparo para a sala pelo canal de música e
+ *      recepção atribuída do outro lado
  *   F. saída da sala sem vazar tracks/AudioContext/rAF
  *
  * Rodar: node e2e/run.ts   (o próprio script builda o client e o servidor)
@@ -1474,6 +1476,142 @@ try {
 
   await alice.page.getByRole('button', { name: 'Cancelar' }).click();
   await alice.page.locator('.settings-modal').waitFor({ state: 'detached', timeout: 5000 });
+  // ------------------------------------------------------- SB. soundboard
+  // O roteiro roda **antes** da seção de música de propósito: com o player
+  // desligado, qualquer energia no quarto canal só pode ter vindo do efeito.
+  // É a prova que a máquina de quem dispara não dá — lá o monitor toca de
+  // qualquer jeito, inclusive quando a sala recebe silêncio digital.
+
+  /** Energia, duração e bytes do **quarto canal** (música) deste participante. */
+  async function musicChannelAudio(page: Page) {
+    return page.evaluate(async () => {
+      let energy = 0;
+      let duration = 0;
+      let bytes = 0;
+      for (const pc of window.__wtkPeers || []) {
+        if (pc.connectionState !== 'connected') continue;
+        // Mesma classificação por ordem de m-line do resto da suíte: mic,
+        // câmera, tela, música.
+        const music = pc.getTransceivers().filter((t) => t.currentDirection === 'recvonly')[3];
+        if (!music?.receiver.track) continue;
+        const stats = await pc.getStats(music.receiver.track);
+        stats.forEach((report) => {
+          if (report.type !== 'inbound-rtp' || report.kind !== 'audio') return;
+          energy += report.totalAudioEnergy || 0;
+          duration += report.totalSamplesDuration || 0;
+          bytes += report.bytesReceived || 0;
+        });
+      }
+      return { energy, duration, bytes };
+    });
+  }
+
+  const effectUrl = writeAudioFixture('sb-effect.wav', { seconds: 3, freq: 660 });
+
+  await alice.page.locator('.controls').getByRole('button', { name: 'Soundboard' }).click();
+  await alice.page.locator('.soundboard-panel').waitFor({ state: 'visible', timeout: 5000 });
+  const sbExpanded = await alice.page
+    .locator('.controls')
+    .getByRole('button', { name: 'Soundboard' })
+    .getAttribute('aria-expanded');
+  check(
+    'SB1. O botão da barra abre o painel e anuncia o estado em aria-expanded',
+    sbExpanded === 'true',
+    `aria-expanded=${sbExpanded}`,
+  );
+
+  const sbLayout = await roomLayout(alice.page);
+  const sbGeometry = await alice.page.evaluate(() => {
+    const panel = document.querySelector('.soundboard-panel')?.getBoundingClientRect() || null;
+    const stage = document.querySelector('.video-stage')?.getBoundingClientRect() || null;
+    const controls = document.querySelector('.controls')?.getBoundingClientRect() || null;
+    return {
+      // À esquerda: o painel termina onde o palco de vídeo começa.
+      leftOfStage: panel && stage ? panel.right <= stage.left + 1 : null,
+      // E acima dos controles: nunca por cima do botão de sair.
+      aboveControls: panel && controls ? panel.bottom <= controls.top + 1 : null,
+    };
+  });
+  check(
+    'SB2. O painel abre à esquerda sem quebrar a grade nem sobrepor os controles',
+    noPageScroll(sbLayout) &&
+      sbLayout.tileFitsStage === true &&
+      sbGeometry.leftOfStage === true &&
+      sbGeometry.aboveControls === true,
+    JSON.stringify({ ...sbGeometry, tileFitsStage: sbLayout.tileFitsStage, tiles: sbLayout.tiles }),
+  );
+
+  await setInputValue(alice.page.getByLabel('URL do efeito'), effectUrl);
+  await alice.page.locator('.soundboard-panel').getByRole('button', { name: 'Favoritar' }).click();
+  const sbTitle = await waitFor(
+    async () => {
+      const n = await alice.page.locator('.soundboard-play').count();
+      return n === 1 ? alice.page.locator('.soundboard-play').first().innerText() : false;
+    },
+    { timeout: 5000, label: 'o favorito aparecendo no painel' },
+  );
+  check(
+    'SB3. Colar a URL e favoritar cria o item, com título derivado do arquivo',
+    sbTitle.trim() === 'sb-effect',
+    `título="${sbTitle}"`,
+  );
+
+  // Esquema recusado: mensagem no painel, texto preservado no campo (para
+  // corrigir um caractere em vez de colar tudo de novo) e nenhum favorito novo.
+  await setInputValue(alice.page.getByLabel('URL do efeito'), 'javascript:alert(1)');
+  await alice.page.locator('.soundboard-panel').getByRole('button', { name: 'Favoritar' }).click();
+  const sbError = await alice.page.locator('.soundboard-error').innerText();
+  const sbDraft = await alice.page.getByLabel('URL do efeito').inputValue();
+  const sbCount = await alice.page.locator('.soundboard-play').count();
+  check(
+    'SB4. javascript: é recusado com mensagem, sem apagar o que a pessoa colou',
+    /http\(s\)/i.test(sbError) && sbDraft === 'javascript:alert(1)' && sbCount === 1,
+    `erro="${sbError}" campo="${sbDraft}" favoritos=${sbCount}`,
+  );
+  await setInputValue(alice.page.getByLabel('URL do efeito'), '');
+
+  // Bob abre o painel dele só para ver a atribuição chegar.
+  await bob.page.locator('.controls').getByRole('button', { name: 'Soundboard' }).click();
+  await bob.page.locator('.soundboard-panel').waitFor({ state: 'visible', timeout: 5000 });
+
+  const sbBefore = await musicChannelAudio(bob.page);
+  await alice.page.locator('.soundboard-play').first().click();
+
+  const sbActivity = await waitFor(
+    async () => {
+      const n = await bob.page.locator('.soundboard-activity li').count();
+      return n > 0 ? bob.page.locator('.soundboard-activity li').first().innerText() : false;
+    },
+    { timeout: 10000, label: 'o anúncio do efeito chegando em Bob' },
+  );
+  check(
+    'SB5. O disparo de Alice chega a Bob pelo data channel, atribuído pela conexão',
+    /Alice/.test(sbActivity) && /sb-effect/.test(sbActivity),
+    JSON.stringify(sbActivity),
+  );
+
+  await sleep(4000);
+  const sbAfter = await musicChannelAudio(bob.page);
+  const sbRms = rmsBetween(sbBefore, sbAfter);
+  check(
+    'SB6. O efeito é audível em Bob pelo canal de música já negociado',
+    (sbRms ?? 0) > 0 && sbAfter.bytes > sbBefore.bytes,
+    `rms=${sbRms} bytes ${sbBefore.bytes} → ${sbAfter.bytes}`,
+  );
+
+  // Nenhuma URL de efeito pode ter ido ao fio: quem ouve não baixa nada.
+  const sbWire = (await wire(alice.page)).filter((f) => /soundboard|sb-effect\.wav/i.test(f.data));
+  check(
+    'SB7. Nada do soundboard existe no protocolo Socket.IO',
+    sbWire.length === 0,
+    sbWire.slice(0, 2).map((f) => f.data.slice(0, 120)).join(' | '),
+  );
+
+  // Fecha os dois painéis: as seções seguintes medem o palco sem eles.
+  for (const p of [alice, bob]) {
+    await p.page.locator('.soundboard-panel').getByRole('button', { name: 'Fechar soundboard' }).click();
+  }
+
   // ----------------------------------------------------------- N. música
   // O roteiro cobre o caminho que só existe com três pessoas de verdade:
   // votação da sala, fila convergente e áudio saindo pelo quarto canal.

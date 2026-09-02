@@ -104,6 +104,26 @@ export class MusicEngine {
     return ctx;
   }
 
+  /**
+   * Garante o grafo de saída **sem carregar faixa nenhuma**, e devolve o ponto
+   * de mixagem do canal de música.
+   *
+   * Existe para o soundboard: o efeito sobe pelo mesmo quarto transceiver, mas
+   * disparar um efeito não depende de o player estar ligado (ligar o player é
+   * votado; disparar não é). Sem isto, o destination só nasceria no primeiro
+   * `load`, e o soundboard não teria onde se conectar com o player desligado.
+   *
+   * O destination continua sendo criado **uma vez** e vivendo enquanto o motor
+   * vive — quem chama aqui **não** vira dono dele e não deve pará-lo: `stop()`
+   * solta só a faixa, e `destroy()` (que é do `Room`, no desmonte) é o único
+   * lugar que encerra os tracks.
+   */
+  ensureOutput(): { context: AudioContext; destination: MediaStreamAudioDestinationNode } | null {
+    const ctx = this._ensureGraph();
+    if (!ctx || !this.destination) return null;
+    return { context: ctx, destination: this.destination };
+  }
+
   /** O track que vai para `mesh.setMusicTrack`. `null` enquanto não há grafo. */
   get track(): MediaStreamTrack | null {
     return this.destination?.stream.getAudioTracks()[0] || null;
