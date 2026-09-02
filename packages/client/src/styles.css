@@ -930,6 +930,33 @@ button.warning.audio-blocked strong {
   background: color-mix(in srgb, var(--color-accent) 20%, transparent);
 }
 
+/* Mic e câmera não são painéis — são o único par de botões do rail onde
+   "ligado" é o estado normal e o que precisa saltar aos olhos é o oposto:
+   muda ou sem câmera. Por isso invertem a lógica do resto do rail: neutro
+   quando ativos (mesma cor de um botão em repouso), vermelho de aviso
+   (`--color-danger`, o mesmo tom do ícone de mic cortado nos tiles) quando
+   desligados. Precisa de mais especificidade que o seletor genérico acima
+   para vencer o accent roxo nos dois estados. */
+.controls button.media-toggle[aria-pressed='true'] {
+  border-color: transparent;
+  color: var(--color-neutral-400);
+  background: transparent;
+}
+
+.controls button.media-toggle[aria-pressed='true']:hover {
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+}
+
+.controls button.media-toggle[aria-pressed='false'] {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
+}
+
+.controls button.media-toggle[aria-pressed='false']:hover {
+  background: color-mix(in srgb, var(--color-danger) 22%, transparent);
+}
+
 /* A keycap (M/V/S) — só existe em quem tem `data-key`, e é conteúdo gerado:
    não entra no `textContent` do botão, então não interfere nos roteiros de
    e2e que comparam o texto exato (`Silenciar`, `Ativar mic`…). */

@@ -1347,6 +1347,58 @@ export default function Room() {
     });
   }, [closeSoundboard, music.actions, music.enabled]);
 
+  /**
+   * As keycaps do rail (M/V/S/Q/B) não são só decoração: a tecla física faz o
+   * mesmo que o clique. Ignora quando o foco está num campo de texto (chat,
+   * URL da fila, busca do soundboard — digitar "vamos" não pode desligar a
+   * câmera), quando alguém segura um modificador (não sequestra atalho de
+   * navegador/SO) e quando um modal está aberto (ajustes, aprovação de
+   * entrada) — o foco ali é do modal, não do rail.
+   */
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (settingsOpen || pendingRequests.length > 0) return;
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) return;
+
+      switch (event.key.toLowerCase()) {
+        case 'm':
+          toggleMute();
+          break;
+        case 'v':
+          void toggleCamera();
+          break;
+        case 's':
+          void (sharingScreen ? stopScreenShare() : startScreenShare());
+          break;
+        case 'q':
+          toggleMusic();
+          break;
+        case 'b':
+          toggleSoundboard();
+          break;
+        default:
+          return;
+      }
+      event.preventDefault();
+    };
+
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [
+    settingsOpen,
+    pendingRequests.length,
+    toggleMute,
+    toggleCamera,
+    sharingScreen,
+    stopScreenShare,
+    startScreenShare,
+    toggleMusic,
+    toggleSoundboard,
+  ]);
+
   /** Quem pode ser silenciado no painel: os peers, nunca eu mesmo. */
   const soundboardPeople = useMemo(
     () =>
@@ -1699,12 +1751,12 @@ export default function Room() {
         <div className="controls">
           <span className="rail-mark" aria-hidden="true">w</span>
 
-          <button type="button" data-key="M" aria-pressed={!muted} onClick={toggleMute}>
-            <i className="ph ph-microphone" aria-hidden="true" />
+          <button type="button" data-key="M" className="media-toggle" aria-pressed={!muted} onClick={toggleMute}>
+            <i className={`ph ${muted ? 'ph-microphone-slash' : 'ph-microphone'}`} aria-hidden="true" />
             <span className="sr-only">{muted ? 'Ativar mic' : 'Silenciar'}</span>
           </button>
 
-          <button type="button" data-key="V" aria-pressed={!cameraOff} onClick={toggleCamera}>
+          <button type="button" data-key="V" className="media-toggle" aria-pressed={!cameraOff} onClick={toggleCamera}>
             <i className={`ph ${cameraOff ? 'ph-video-camera-slash' : 'ph-video-camera'}`} aria-hidden="true" />
             <span className="sr-only">{cameraOff ? 'Ativar câmera' : 'Desligar câmera'}</span>
           </button>
@@ -1733,6 +1785,7 @@ export default function Room() {
               `textContent` exato de botões desta barra. */}
           <button
             type="button"
+            data-key="Q"
             onClick={toggleMusic}
             className={`music-button${music.currentEntry ? ' has-track' : ''}`}
             aria-pressed={musicOpen}
@@ -1756,6 +1809,7 @@ export default function Room() {
               desta barra por `textContent` exato e por prefixo. */}
           <button
             type="button"
+            data-key="B"
             className={`soundboard-button${soundboardOpen ? ' rail-on' : ''}`}
             onClick={toggleSoundboard}
             aria-label="Soundboard"
