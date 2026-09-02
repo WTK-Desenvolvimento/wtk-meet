@@ -1650,6 +1650,7 @@ export default function Room() {
               selfId={selfId}
               onClose={closeSoundboard}
               onAdd={soundboard.add}
+              onAddFile={soundboard.addFile}
               onRemove={soundboard.remove}
               onRename={soundboard.rename}
               onPlay={playSound}

@@ -51,9 +51,22 @@ export { MAX_SOURCE_REF, MAX_TITLE };
 export interface Favorite {
   id: string;
   title: string;
-  /** URL `http(s)` do áudio, já validada por `parseSource`. */
+  /**
+   * URL `http(s)` do áudio (quando `kind` é `'url'` ou `undefined`).
+   * Vazio (`''`) quando `kind` é `'file'` — o conteúdo fica no IndexedDB.
+   */
   sourceRef: string;
   addedAt: number;
+  /**
+   * Origem do efeito. `undefined` equivale a `'url'` (retrocompatibilidade
+   * com favoritos gravados antes desta versão).
+   */
+  kind?: 'url' | 'file';
+  /**
+   * Chave no IndexedDB (`audioFileStorage`). Presente apenas quando
+   * `kind === 'file'`.
+   */
+  fileId?: string;
 }
 
 /** O que fica em `localStorage` sob `wtk-meet:soundboard`. */
@@ -143,17 +156,34 @@ export function parseFavoriteInput(raw: unknown): ParsedFavorite {
 function sanitizeFavorite(candidate: unknown): Favorite | null {
   if (!candidate || typeof candidate !== 'object') return null;
   const bruto = candidate as Partial<Record<keyof Favorite, unknown>>;
+
+  const id = typeof bruto.id === 'string' && bruto.id ? bruto.id.slice(0, 80) : '';
+  if (!id) return null;
+
+  const addedAt =
+    typeof bruto.addedAt === 'number' && Number.isFinite(bruto.addedAt) && bruto.addedAt >= 0
+      ? Math.floor(bruto.addedAt)
+      : 0;
+
+  // Favorito de arquivo local: não valida sourceRef pela URL, mas exige fileId.
+  if (bruto.kind === 'file') {
+    const fileId = typeof bruto.fileId === 'string' && bruto.fileId ? bruto.fileId : '';
+    if (!fileId) return null;
+    return {
+      id,
+      title: clampTitle(bruto.title, 'Efeito'),
+      sourceRef: '',
+      addedAt,
+      kind: 'file',
+      fileId,
+    };
+  }
+
   const sourceRef = typeof bruto.sourceRef === 'string' ? bruto.sourceRef : '';
   // Revalidado na leitura, não só na gravação: o que está no storage pode ter
   // sido escrito por outra versão do produto — ou à mão, pelo console.
   const parsed = parseFavoriteInput(sourceRef);
   if (!parsed.ok) return null;
-  const id = typeof bruto.id === 'string' && bruto.id ? bruto.id.slice(0, 80) : '';
-  if (!id) return null;
-  const addedAt =
-    typeof bruto.addedAt === 'number' && Number.isFinite(bruto.addedAt) && bruto.addedAt >= 0
-      ? Math.floor(bruto.addedAt)
-      : 0;
   return { id, title: clampTitle(bruto.title, parsed.title), sourceRef: parsed.sourceRef, addedAt };
 }
 
@@ -176,8 +206,10 @@ function sanitize(candidate: unknown): SoundboardPreferences {
   for (const item of lista) {
     if (out.favorites.length >= MAX_FAVORITES) break;
     const favorite = sanitizeFavorite(item);
-    if (!favorite || vistos.has(favorite.sourceRef)) continue;
-    vistos.add(favorite.sourceRef);
+    // Chave de deduplicação: para arquivos usa o fileId; para URLs usa a URL.
+    const dedupKey = favorite?.kind === 'file' ? `file:${favorite.fileId}` : favorite?.sourceRef;
+    if (!favorite || !dedupKey || vistos.has(dedupKey)) continue;
+    vistos.add(dedupKey);
     out.favorites.push(favorite);
   }
 
@@ -252,6 +284,35 @@ export function addFavorite(
   return { ok: true, favorite, prefs: { ...base, favorites: [...base.favorites, favorite] } };
 }
 
+/**
+ * Acrescenta um favorito de **arquivo local** às preferências em memória.
+ *
+ * Não valida URL — o arquivo já está na máquina do usuário. Deriva o título
+ * do nome do arquivo (remove extensão, trunca em `MAX_TITLE`).
+ */
+export function addFileFavorite(
+  prefs: SoundboardPreferences | null | undefined,
+  file: { name: string },
+  { id = '', fileId, now = 0 }: { id?: string; fileId: string; now?: number },
+): FavoriteWriteResult {
+  const base = sanitize(prefs);
+  if (base.favorites.length >= MAX_FAVORITES) {
+    return { ok: false, prefs: base, reason: 'full' };
+  }
+  // Deriva título: retira extensão e trunca.
+  const nameWithoutExt = file.name.replace(/\.[^.]+$/, '').trim() || 'Efeito';
+  const title = clampTitle(nameWithoutExt, 'Efeito');
+  const favorite: Favorite = {
+    id: id || `sf-${Math.random().toString(36).slice(2)}-${Math.floor(now)}`,
+    title,
+    sourceRef: '',
+    addedAt: Math.max(0, Math.floor(now)),
+    kind: 'file',
+    fileId,
+  };
+  return { ok: true, favorite, prefs: { ...base, favorites: [...base.favorites, favorite] } };
+}
+
 /** Remove por `id`. Id inexistente devolve o estado intacto, sem recusa. */
 export function removeFavorite(
   prefs: SoundboardPreferences | null | undefined,
@@ -290,4 +351,6 @@ export const SOUNDBOARD_ERRORS: Record<string, string> = {
   'fetch-failed': 'Não consegui baixar esse efeito.',
   'decode-failed': 'Não consegui decodificar esse áudio.',
   'rate-limited': 'Espere um instante antes de disparar de novo.',
+  // Arquivo local.
+  'file-pick-failed': 'Não consegui abrir o arquivo.',
 };

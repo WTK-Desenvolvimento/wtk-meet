@@ -24,11 +24,14 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   SOUNDBOARD_ERRORS,
   addFavorite as addFavoritePure,
+  addFileFavorite,
   readSoundboard,
   removeFavorite as removeFavoritePure,
   renameFavorite as renameFavoritePure,
   writeSoundboard,
 } from './soundboard.js';
+
+import { removeAudioFile, saveAudioFile } from './audioFileStorage.js';
 
 import type { Favorite, PreferenceStorage, SoundboardPreferences } from './soundboard.js';
 
@@ -78,7 +81,38 @@ export function useSoundboard({ storage }: UseSoundboardOptions = {}) {
   const remove = useCallback(
     (id: string) => {
       setError(null);
+      // Se for favorito de arquivo, limpa do IndexedDB (fire-and-forget).
+      const fav = prefs.favorites.find((f) => f.id === id);
+      if (fav?.kind === 'file' && fav.fileId) {
+        removeAudioFile(fav.fileId).catch(() => {});
+      }
       commit(removeFavoritePure(prefs, id));
+    },
+    [commit, prefs],
+  );
+
+  /**
+   * Adiciona um arquivo de áudio local como favorito.
+   * Persiste o `File` no IndexedDB e registra o favorito no localStorage.
+   * Retorna `true` apenas quando entrou com sucesso.
+   */
+  const addFile = useCallback(
+    async (file: File): Promise<boolean> => {
+      const fileId = `sf-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      try {
+        await saveAudioFile(fileId, file);
+      } catch {
+        setError(mensagem('file-pick-failed'));
+        return false;
+      }
+      const result = addFileFavorite(prefs, file, { fileId, now: Date.now() });
+      if (!result.ok) {
+        setError(mensagem(result.reason));
+        return false;
+      }
+      setError(null);
+      commit(result.prefs);
+      return true;
     },
     [commit, prefs],
   );
@@ -126,6 +160,7 @@ export function useSoundboard({ storage }: UseSoundboardOptions = {}) {
     error,
     clearError: useCallback(() => setError(null), []),
     add,
+    addFile,
     remove,
     rename,
     toggleMutedAll,

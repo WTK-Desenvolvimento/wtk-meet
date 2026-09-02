@@ -149,6 +149,48 @@ export class SoundboardPlayer {
   }
 
   /**
+   * Lê e decodifica um `File` local, com cache. Não sonda CORS — o arquivo
+   * está na máquina do usuário e não trafega pelo network stack.
+   *
+   * A chave de cache é `file:<nome>:<tamanho>`: boa o suficiente para evitar
+   * redecodificação do mesmo arquivo na mesma sessão.
+   */
+  async loadFromFile(file: File): Promise<AudioBuffer> {
+    const cacheKey = `file:${file.name}:${file.size}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached) {
+      // LRU pobre: reinserir põe no fim da ordem de iteração do Map.
+      this.cache.delete(cacheKey);
+      this.cache.set(cacheKey, cached);
+      return cached;
+    }
+
+    const output = this.getOutput();
+    if (!output) throw new SoundboardError('no-audio-context');
+
+    let raw: ArrayBuffer;
+    try {
+      raw = await file.arrayBuffer();
+    } catch {
+      throw new SoundboardError('fetch-failed');
+    }
+
+    let buffer: AudioBuffer;
+    try {
+      buffer = await output.context.decodeAudioData(raw);
+    } catch {
+      throw new SoundboardError('decode-failed');
+    }
+
+    this.cache.set(cacheKey, buffer);
+    if (this.cache.size > CACHE_LIMIT) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest !== undefined) this.cache.delete(oldest);
+    }
+    return buffer;
+  }
+
+  /**
    * Quanto tempo o efeito vai durar de fato — a duração do áudio, cortada em
    * `MAX_SOUND_MS`. Vai no anúncio, e é o que dimensiona a janela de mute de
    * quem tiver silenciado quem disparou.

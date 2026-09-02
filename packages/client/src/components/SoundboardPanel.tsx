@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 
+import { pickAudioFile } from '../lib/audioFileStorage.js';
 import type { Favorite } from '../lib/soundboard.js';
 import type { SoundboardActivity } from '../lib/useMusicRoom.js';
 
@@ -22,6 +23,7 @@ export interface SoundboardPanelProps {
   selfId: string;
   onClose: () => void;
   onAdd: (input: string) => boolean;
+  onAddFile: (file: File) => Promise<boolean>;
   onRemove: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onPlay: (favorite: Favorite) => void;
@@ -62,6 +64,7 @@ export default function SoundboardPanel({
   selfId,
   onClose,
   onAdd,
+  onAddFile,
   onRemove,
   onRename,
   onPlay,
@@ -71,6 +74,7 @@ export default function SoundboardPanel({
   const [draft, setDraft] = useState('');
   const [editing, setEditing] = useState<string | null>(null);
   const [titleDraft, setTitleDraft] = useState('');
+  const [uploading, setUploading] = useState(false);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -79,6 +83,17 @@ export default function SoundboardPanel({
     // O texto só sai do campo quando entrou de verdade: numa recusa, corrigir
     // um caractere é melhor que colar tudo de novo.
     if (onAdd(value)) setDraft('');
+  }
+
+  async function handleFileClick() {
+    const file = await pickAudioFile();
+    if (!file) return;
+    setUploading(true);
+    try {
+      await onAddFile(file);
+    } finally {
+      setUploading(false);
+    }
   }
 
   function commitTitle(favorite: Favorite) {
@@ -113,6 +128,9 @@ export default function SoundboardPanel({
           aria-label="URL do efeito"
         />
         <button type="submit">Favoritar</button>
+        <button type="button" onClick={handleFileClick} disabled={uploading}>
+          {uploading ? 'Carregando…' : 'Upload'}
+        </button>
       </form>
 
       {error && (

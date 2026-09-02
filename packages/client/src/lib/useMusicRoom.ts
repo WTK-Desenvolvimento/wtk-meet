@@ -29,6 +29,7 @@ import { MusicEngine } from './musicEngine.js';
 import { SoundboardError, SoundboardPlayer } from './soundboardPlayer.js';
 import { MAX_SOUND_MS } from './soundboard.js';
 import { consume, createRateState, retryInMs } from './soundboardRate.js';
+import { loadAudioFile } from './audioFileStorage.js';
 import type { Favorite } from './soundboard.js';
 import type { RateState } from './soundboardRate.js';
 import type { WebRTCMesh } from './webrtcMesh.js';
@@ -928,7 +929,13 @@ export function useMusicRoom({
       const player = ensureSoundboard();
       let buffer: AudioBuffer;
       try {
-        buffer = await player.load(favorite.sourceRef);
+        if (favorite.kind === 'file') {
+          const file = favorite.fileId ? await loadAudioFile(favorite.fileId) : null;
+          if (!file) return { ok: false, reason: 'fetch-failed' };
+          buffer = await player.loadFromFile(file);
+        } else {
+          buffer = await player.load(favorite.sourceRef);
+        }
       } catch (err) {
         return { ok: false, reason: err instanceof SoundboardError ? err.reason : 'fetch-failed' };
       }
