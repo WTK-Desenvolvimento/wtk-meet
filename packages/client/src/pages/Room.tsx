@@ -409,6 +409,7 @@ export default function Room() {
     displayName,
     pushToast,
     isSoundboardMuted: soundboard.isMuted,
+    soundboardVolume: soundboard.volume,
   });
   // Callbacks estáveis do hook: extraídos para as deps abaixo não mudarem a
   // cada render (o objeto `music.soundboard` é remontado a cada um).
@@ -1645,6 +1646,7 @@ export default function Room() {
               floodingPeerIds={music.soundboard.floodingPeerIds}
               mutedAll={soundboard.mutedAll}
               mutedPeerIds={soundboard.mutedPeerIds}
+              volume={soundboard.volume}
               cooldownMs={music.soundboard.cooldownMs}
               error={soundboard.error}
               selfId={selfId}
@@ -1654,6 +1656,7 @@ export default function Room() {
               onRemove={soundboard.remove}
               onRename={soundboard.rename}
               onPlay={playSound}
+              onVolume={soundboard.setVolume}
               onToggleMutedAll={soundboard.toggleMutedAll}
               onTogglePeerMuted={soundboard.togglePeerMuted}
             />

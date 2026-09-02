@@ -209,6 +209,8 @@ export interface UseMusicRoomOptions {
    * publicado e não altera o volume nem o mic de ninguém.
    */
   isSoundboardMuted?: (peerId: string) => boolean;
+  /** Volume de saída do soundboard (0–1). Nunca trafega como mensagem. */
+  soundboardVolume?: number;
 }
 
 export function useMusicRoom({
@@ -218,6 +220,7 @@ export function useMusicRoom({
   displayName,
   pushToast,
   isSoundboardMuted,
+  soundboardVolume = 1,
 }: UseMusicRoomOptions) {
   const [session, setSession] = useState(createSession);
   const [vote, setVote] = useState<Vote | null>(null);
@@ -813,6 +816,10 @@ export function useMusicRoom({
     soundboardRef.current?.setMonitorVolume(volume);
   }, [volume]);
 
+  useEffect(() => {
+    soundboardRef.current?.setNetworkVolume(soundboardVolume);
+  }, [soundboardVolume]);
+
   // -------------------------------------------------------------- soundboard
 
   const ensureSoundboard = useCallback(() => {
@@ -824,6 +831,7 @@ export function useMusicRoom({
         getOutput: () => ensureEngine().ensureOutput(),
       });
       soundboardRef.current.setMonitorVolume(volumeRef.current);
+      soundboardRef.current.setNetworkVolume(soundboardVolume);
     }
     return soundboardRef.current;
   }, [ensureEngine]);

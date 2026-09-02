@@ -70,6 +70,8 @@ export class SoundboardPlayer {
   /** Ganho de monitoração: só o que **quem dispara** ouve de si. */
   monitorGain: GainNode | null;
   monitorVolume: number;
+  /** Ganho de rede: controla o volume do efeito no canal enviado à sala. */
+  networkVolume: number;
   destroyed: boolean;
 
   constructor({ getOutput, fetchImpl }: SoundboardPlayerOptions) {
@@ -79,6 +81,7 @@ export class SoundboardPlayer {
     this.current = null;
     this.monitorGain = null;
     this.monitorVolume = 1;
+    this.networkVolume = 1;
     this.destroyed = false;
   }
 
@@ -215,10 +218,10 @@ export class SoundboardPlayer {
     const source = ctx.createBufferSource();
     source.buffer = buffer;
 
-    // Ramo de rede: ganho fixo + compressor, para o efeito somado à música não
-    // saturar do outro lado. Nunca no caminho do player.
+    // Ramo de rede: ganho configurável + compressor, para o efeito somado à
+    // música não saturar do outro lado. Nunca no caminho do player.
     const networkGain = ctx.createGain();
-    networkGain.gain.value = 1;
+    networkGain.gain.value = this.networkVolume;
     const compressor = ctx.createDynamicsCompressor();
     source.connect(networkGain);
     networkGain.connect(compressor);
@@ -259,6 +262,14 @@ export class SoundboardPlayer {
     );
     this.monitorVolume = volume;
     if (this.monitorGain) this.monitorGain.gain.value = volume;
+  }
+
+  /** Volume de saída para a sala. Aplicado no próximo disparo. */
+  setNetworkVolume(value: unknown): void {
+    this.networkVolume = Math.min(
+      1,
+      Math.max(0, typeof value === 'number' && Number.isFinite(value) ? value : 1),
+    );
   }
 
   /** Corta o efeito corrente. Um disparo novo chama isto antes de começar. */

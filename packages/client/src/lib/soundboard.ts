@@ -77,6 +77,12 @@ export interface SoundboardPreferences {
   mutedAll: boolean;
   /** Volume de monitoração: só o que **quem dispara** ouve de si. */
   monitorVolume: number;
+  /**
+   * Volume de saída do soundboard: controla o `networkGain` de cada disparo,
+   * ou seja, o quão alto o efeito chega para a sala. É local — a preferência
+   * não trafega, mas o ganho que ela impõe entra no sinal enviado.
+   */
+  soundboardVolume: number;
 }
 
 /** Uma `Storage` mínima: só o que este módulo chama, e tudo opcional. */
@@ -113,6 +119,7 @@ export const DEFAULT_PREFERENCES: SoundboardPreferences = {
   favorites: [],
   mutedAll: false,
   monitorVolume: 1,
+  soundboardVolume: 1,
 };
 
 function defaults(): SoundboardPreferences {
@@ -216,6 +223,9 @@ function sanitize(candidate: unknown): SoundboardPreferences {
   if (typeof bruto.mutedAll === 'boolean') out.mutedAll = bruto.mutedAll;
   if (typeof bruto.monitorVolume === 'number' && Number.isFinite(bruto.monitorVolume)) {
     out.monitorVolume = Math.min(1, Math.max(0, bruto.monitorVolume));
+  }
+  if (typeof bruto.soundboardVolume === 'number' && Number.isFinite(bruto.soundboardVolume)) {
+    out.soundboardVolume = Math.min(1, Math.max(0, bruto.soundboardVolume));
   }
   return out;
 }

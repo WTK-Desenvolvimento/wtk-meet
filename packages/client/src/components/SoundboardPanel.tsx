@@ -18,6 +18,7 @@ export interface SoundboardPanelProps {
   floodingPeerIds: readonly string[];
   mutedAll: boolean;
   mutedPeerIds: readonly string[];
+  volume: number;
   cooldownMs: number;
   error: string | null;
   selfId: string;
@@ -27,6 +28,7 @@ export interface SoundboardPanelProps {
   onRemove: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onPlay: (favorite: Favorite) => void;
+  onVolume: (value: number) => void;
   onToggleMutedAll: () => void;
   onTogglePeerMuted: (peerId: string) => void;
 }
@@ -43,9 +45,8 @@ export interface SoundboardPanelProps {
  *    e pelos elementos do `RemoteMusicAudio`, que ficam fora de qualquer painel.
  *    Um elemento de áudio aqui dentro emudeceria a sala ao fechar o painel, e o
  *    sintoma pareceria rede.
- * 2. **Nenhum controle do volume que a sala ouve.** Volume é sempre local
- *    (§6.9). Um slider que muda o que os outros escutam é a guerra de cliques
- *    que aquela decisão evitou.
+ * 2. **Nenhum `<audio>` de monitoração.** O som já chega pelo `RemoteMusicAudio`
+ *    e pelo ramo de monitor do `SoundboardPlayer`; um elemento extra duplicaria.
  *
  * O aviso do mute por participante não é enfeite: no fio, o efeito e a música do
  * player vêm mixados no **mesmo** sinal daquele peer, e nenhum receptor consegue
@@ -59,6 +60,7 @@ export default function SoundboardPanel({
   floodingPeerIds,
   mutedAll,
   mutedPeerIds,
+  volume,
   cooldownMs,
   error,
   selfId,
@@ -68,6 +70,7 @@ export default function SoundboardPanel({
   onRemove,
   onRename,
   onPlay,
+  onVolume,
   onToggleMutedAll,
   onTogglePeerMuted,
 }: SoundboardPanelProps) {
@@ -202,6 +205,18 @@ export default function SoundboardPanel({
       </section>
 
       <section className="soundboard-mutes" aria-label="Silenciar">
+        <label className="soundboard-volume">
+          Volume
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value={volume}
+            onChange={(event) => onVolume(Number(event.target.value))}
+            aria-label="Volume do soundboard para a sala"
+          />
+        </label>
         <label className="soundboard-mute-all">
           <input type="checkbox" checked={mutedAll} onChange={onToggleMutedAll} />
           Silenciar o soundboard de todo mundo (só para mim)

@@ -124,6 +124,14 @@ export function useSoundboard({ storage }: UseSoundboardOptions = {}) {
     [commit, prefs],
   );
 
+  /** Volume de saída do soundboard para a sala. Persiste. */
+  const setVolume = useCallback(
+    (value: number) => {
+      commit({ ...prefs, soundboardVolume: Math.min(1, Math.max(0, value)) });
+    },
+    [commit, prefs],
+  );
+
   /** Mute global do ouvinte. Persiste (é preferência de UI, não de sala). */
   const toggleMutedAll = useCallback(() => {
     commit({ ...prefs, mutedAll: !prefs.mutedAll });
@@ -157,12 +165,14 @@ export function useSoundboard({ storage }: UseSoundboardOptions = {}) {
     favorites: prefs.favorites as readonly Favorite[],
     mutedAll: prefs.mutedAll,
     mutedPeerIds: mutedPeers,
+    volume: prefs.soundboardVolume,
     error,
     clearError: useCallback(() => setError(null), []),
     add,
     addFile,
     remove,
     rename,
+    setVolume,
     toggleMutedAll,
     togglePeerMuted,
     isMuted,
