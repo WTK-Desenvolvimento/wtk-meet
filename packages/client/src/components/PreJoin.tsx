@@ -37,6 +37,7 @@ const PREVIEW_ERROR =
  * todos os cenários da suíte, inclusive os que nada têm a ver com o lobby.
  */
 export default function PreJoin({
+  roomId = '',
   preferences = DEFAULT_PREFERENCES,
   nameInput = '',
   onNameChange,
@@ -48,6 +49,8 @@ export default function PreJoin({
   onPreviewError,
   previewError = null,
 }: {
+  /** Só para a legenda ("Sala X") — a lógica de roteamento não passa por aqui. */
+  roomId?: string;
   preferences?: Partial<DevicePreferences> | null;
   nameInput?: string;
   onNameChange: (value: string) => void;
@@ -121,59 +124,70 @@ export default function PreJoin({
 
   return (
     <main className="home prejoin">
-      <h1>wtk-meet</h1>
-      <p className="tagline">Você foi convidado para uma sala. Escolha um nome para entrar.</p>
+      <div className="prejoin-card">
+        <div className="prejoin-media">
+          {/* Linha de aviso, não bloqueio: uma câmera que não abre no preview
+              não pode impedir ninguém de entrar — dá para ligar a câmera lá
+              dentro. Sem renderizar aqui, `onPreviewError` seria engolido em
+              silêncio (o `mediaError` do `Room` só aparece no ramo da chamada). */}
+          {previewError && <p className="warning" style={{ marginBottom: 8 }}>{previewError}</p>}
 
-      {/* Linha de aviso, não bloqueio: uma câmera que não abre no preview não
-          pode impedir ninguém de entrar — dá para ligar a câmera lá dentro.
-          Sem renderizar aqui, `onPreviewError` seria engolido em silêncio (o
-          `mediaError` do `Room` só aparece no ramo da chamada). */}
-      {previewError && <p className="warning">{previewError}</p>}
-
-      <div className="local-preview prejoin-preview">
-        {/* `cameraOff` segue o preview, não o toggle: com o modal aberto o
-            stream foi parado, e o tile precisa mostrar o placeholder — não o
-            último quadro congelado. */}
-        <VideoTile
-          stream={previewStream}
-          label={trimmed || 'Você'}
-          mirrored
-          cameraOff={!previewOn}
-        />
-      </div>
-
-      <label className="prejoin-toggle">
-        <input
-          type="checkbox"
-          checked={cameraOn}
-          onChange={(event) => onToggleCamera?.(event.target.checked)}
-        />
-        Entrar com a câmera ligada
-      </label>
-      <p className="hint">
-        Sua escolha fica gravada neste navegador. O padrão é entrar com a câmera desligada.
-      </p>
-
-      <form onSubmit={handleSubmit}>
-        <label className="field">
-          Seu nome
-          <input
-            value={nameInput}
-            onChange={(e) => onNameChange?.(e.target.value)}
-            placeholder="Como te chamam"
-            maxLength={40}
-            autoFocus
-          />
-        </label>
-        <div className="actions">
-          <button type="submit" disabled={!trimmed}>
-            Entrar na sala
-          </button>
-          <button type="button" className="secondary" onClick={() => onOpenSettings?.()}>
-            Configurações
-          </button>
+          <div className="local-preview prejoin-preview">
+            {/* `cameraOff` segue o preview, não o toggle: com o modal aberto o
+                stream foi parado, e o tile precisa mostrar o placeholder — não
+                o último quadro congelado. */}
+            <VideoTile
+              stream={previewStream}
+              label={trimmed || 'Você'}
+              mirrored
+              cameraOff={!previewOn}
+            />
+          </div>
         </div>
-      </form>
+
+        <div className="prejoin-info">
+          {roomId && <div className="prejoin-kicker">Sala {roomId}</div>}
+          <h1>Ninguém te vê ainda</h1>
+          <p className="tagline">
+            Abrir o link não acende sua webcam. Você decide o que entra ligado — e a escolha
+            fica gravada pra próxima.
+          </p>
+
+          <form onSubmit={handleSubmit}>
+            <label className="prejoin-toggle">
+              <input
+                type="checkbox"
+                checked={cameraOn}
+                onChange={(event) => onToggleCamera?.(event.target.checked)}
+              />
+              Entrar com a câmera ligada
+            </label>
+            <p className="hint">
+              Sua escolha fica gravada neste navegador. O padrão é entrar com a câmera desligada.
+            </p>
+
+            <label className="field">
+              Seu nome
+              <input
+                value={nameInput}
+                onChange={(e) => onNameChange?.(e.target.value)}
+                placeholder="Como te chamam"
+                maxLength={40}
+                autoFocus
+              />
+            </label>
+            <div className="actions">
+              <button type="submit" disabled={!trimmed}>
+                Entrar na sala
+              </button>
+              <button type="button" className="secondary" onClick={() => onOpenSettings?.()}>
+                Configurações
+              </button>
+            </div>
+            <p className="hint">Quem já está lá dentro precisa te aprovar.</p>
+          </form>
+        </div>
+      </div>
     </main>
   );
 }

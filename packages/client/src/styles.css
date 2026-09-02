@@ -1,14 +1,96 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css');
+
+/* ═══════════════════════════════════════════════════════════════════════
+   wtk·meet — direção "Rail", sobre o design system Nocturne.
+
+   Rail mata a barra de rodapé do Meet: um rail vertical à esquerda com
+   keycaps, painéis que encaixam como coluna à direita, densidade alta. A
+   privacidade virou marca na impressão da chave (`KeyFingerprint.tsx` +
+   `lib/keyFingerprint.js`): os 128 bits da passphrase, desenhados em 8
+   cores, iguais para todo mundo que abriu o mesmo link.
+
+   Esta é a única folha de estilo do client — sem CSS-in-JS, sem módulo por
+   componente. As classes abaixo são as mesmas que `pages/` e `components/`
+   já usavam antes desta direção: o roteiro de e2e (`packages/e2e/run.ts`)
+   depende de várias delas por nome (`.controls`, `.video-tile`,
+   `.chat-panel`, `.modal-backdrop`, os textos exatos dos botões de ação…) —
+   ver os comentários junto de cada uma. Esta entrega troca a pele inteira
+   sem tocar nesses contratos: nenhuma classe testada muda de nome, nenhum
+   texto de botão testado muda de palavra.
+   ═══════════════════════════════════════════════════════════════════════ */
+
 :root {
   color-scheme: dark;
-  --bg: #0f1115;
-  --surface: #1a1d24;
-  --border: #2a2e38;
-  --text: #e8e9ed;
-  --muted-text: #9a9fac;
-  --accent: #4f7cff;
-  --danger: #e5484d;
-  --warning: #caa53d;
-  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  /* — tokens Nocturne — */
+  --color-bg: #161826;
+  --color-surface: #232532;
+  --color-surface-raised: #1a1c28;
+  --color-text: #e9e9ed;
+  --color-accent: #9184d9;
+  --color-divider: color-mix(in srgb, #e9e9ed 16%, transparent);
+
+  --color-neutral-100: #f3f5fe;
+  --color-neutral-200: #e4e7f5;
+  --color-neutral-300: #cfd3e5;
+  --color-neutral-400: #b2b6ca;
+  --color-neutral-500: #9397ab;
+  --color-neutral-600: #75798c;
+  --color-neutral-700: #595d6c;
+  --color-neutral-800: #3f424d;
+  --color-neutral-900: #292b31;
+
+  --color-accent-100: #f5f4ff;
+  --color-accent-200: #e7e5fe;
+  --color-accent-300: #d2cefd;
+  --color-accent-400: #b5abfc;
+  --color-accent-500: #968ae0;
+  --color-accent-600: #796cbf;
+  --color-accent-700: #5d5294;
+  --color-accent-800: #423a6a;
+  --color-accent-900: #2b2741;
+
+  --color-danger: #e07a7a;
+  --color-warning: #d9b47a;
+  --color-warning-bg: #231f1a;
+  --color-warning-border: #4a3d28;
+
+  --font-heading: 'Inter', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+
+  --space-1: 2.8px;
+  --space-2: 5.6px;
+  --space-3: 8.4px;
+  --space-4: 11.2px;
+  --space-6: 16.8px;
+  --space-8: 22.4px;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 14px;
+
+  --shadow-sm: 0 0 0 1px var(--color-neutral-800);
+  --shadow-md: 0 0 0 1px var(--color-neutral-700), 0 6px 18px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 0 0 1px var(--color-neutral-500), 0 16px 40px rgba(0, 0, 0, 0.65);
+
+  /* Aliases dos tokens antigos: mantidos porque simplificam as regras
+     abaixo sem reintroduzir cor solta — todos apontam para um token acima. */
+  --bg: var(--color-bg);
+  --surface: var(--color-surface);
+  --border: var(--color-divider);
+  --text: var(--color-text);
+  --muted-text: var(--color-neutral-500);
+  --accent: var(--color-accent);
+  --danger: var(--color-danger);
+  --warning: var(--color-warning);
+
+  font-family: var(--font-body);
+}
+
+@keyframes noct-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
 }
 
 * {
@@ -17,146 +99,526 @@
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-heading);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  margin: 0 0 var(--space-2);
+}
+
+/* Nunca some — só fica invisível a olho nu, sem sair da árvore de
+   acessibilidade nem do `textContent`. É assim que os botões do rail (ícone
+   + keycap) continuam com o nome exato que o e2e espera (`Silenciar`,
+   `Ativar mic`, `Música`…) sem mostrar o rótulo por escrito. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 button {
   font: inherit;
   cursor: pointer;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  padding: 0.6rem 1.1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-text);
+  padding: 8px 14px;
+  font-weight: 500;
+  transition: background 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out;
 }
 
-button:hover {
-  border-color: var(--accent);
+/* O primário da app é o mesmo `.btn-primary` do design system: contorno de
+   accent, nunca uma flood — "botões nunca sólidos" é regra de sistema. */
+button:not(.secondary):not(.leave):not(.icon-button):not(.primary) {
+  border-color: var(--color-accent);
+  color: var(--color-accent-300);
+}
+button:not(.secondary):not(.leave):not(.icon-button):not(.primary):hover {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+button:not(.secondary):not(.leave):not(.icon-button):not(.primary):active {
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
 }
 
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+button.secondary {
+  border-color: var(--color-divider);
+  color: var(--color-text);
+}
+button.secondary:hover {
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+}
+
+button.primary {
+  border-color: var(--color-accent);
+  color: var(--color-accent-300);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+button.primary:hover {
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
 }
 
 button.leave {
-  background: var(--danger);
-  border-color: var(--danger);
-  color: white;
+  border-color: color-mix(in srgb, var(--color-danger) 55%, transparent);
+  color: var(--color-danger);
+}
+button.leave:hover {
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
 }
 
-input {
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+input, select {
   font: inherit;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  padding: 0.55rem 0.8rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: 8px 11px;
+  caret-color: var(--color-accent);
+}
+
+input:hover, select:hover {
+  border-color: color-mix(in srgb, var(--color-text) 45%, transparent);
+}
+
+input:focus-visible {
+  outline-offset: 0;
 }
 
 code {
-  background: var(--surface);
+  background: var(--color-surface);
   padding: 0.15rem 0.4rem;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   word-break: break-all;
+  font-size: 0.9em;
 }
 
-/* Home */
+a {
+  color: var(--color-accent-300);
+}
+a:hover {
+  color: var(--color-accent-200);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   Impressão da chave — a marca de privacidade (ver KeyFingerprint.tsx).
+   ───────────────────────────────────────────────────────────────────── */
+
+.key-fingerprint {
+  display: flex;
+  gap: 4px;
+}
+
+.key-fingerprint-chip {
+  background: var(--color-neutral-800);
+  border-radius: 3px;
+}
+
+.key-fingerprint-lg .key-fingerprint-chip {
+  width: 26px;
+  height: 44px;
+}
+
+.key-fingerprint-sm {
+  gap: 2px;
+}
+
+.key-fingerprint-sm .key-fingerprint-chip {
+  width: 9px;
+  height: 16px;
+  border-radius: 2px;
+}
+
+.key-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  background: var(--color-surface-raised);
+  box-shadow: inset 0 0 0 1px var(--color-neutral-800);
+}
+
+.key-chip-label {
+  font: 600 9px/1 var(--font-heading);
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--color-neutral-600);
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   Home & pré-entrada — hero de duas colunas, flush-left, a marca é a chave.
+   `.home` também é o nome da classe que o e2e usa para achar a página
+   (`main.home`) e o campo "Configurações" dentro dela — só a aparência muda.
+   ───────────────────────────────────────────────────────────────────── */
 
 .home {
-  max-width: 480px;
-  margin: 4rem auto;
-  padding: 0 1.5rem;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  background: var(--color-bg);
+}
+
+.home-copy {
+  padding: clamp(28px, 6vh, 72px) clamp(24px, 5vw, 72px);
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  justify-content: center;
+  gap: var(--space-6);
+  max-width: 560px;
+}
+
+.home-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.home-mark {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: var(--radius-md);
+  background: var(--color-accent);
+  display: grid;
+  place-items: center;
+  font: 700 15px/1 var(--font-heading);
+  color: var(--color-bg);
+}
+
+.home-wordmark {
+  font: 700 19px/1 var(--font-heading);
+  letter-spacing: -0.03em;
+}
+
+.home-wordmark em {
+  font-style: normal;
+  color: var(--color-accent);
+}
+
+.home h1 {
+  font-size: clamp(34px, 4.4vw, 56px);
+  letter-spacing: -0.04em;
+  margin: 0 0 10px;
 }
 
 .tagline {
-  color: var(--muted-text);
-  margin-top: -0.75rem;
+  color: var(--color-neutral-400);
+  margin: 0;
+  font-size: 16px;
+  max-width: 46ch;
+}
+
+.home-form,
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 440px;
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: 5px;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
 }
 
-.actions {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
+.field input {
+  font-size: 15px;
+  height: 42px;
 }
 
 .join-block {
   display: flex;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .join-block input {
   flex: 1;
+  min-width: 0;
 }
 
 .hint {
-  color: var(--muted-text);
-  font-size: 0.85rem;
+  color: var(--color-neutral-600);
+  font-size: 11.5px;
 }
 
 .error {
-  color: var(--danger);
+  color: var(--color-danger);
   margin: 0;
+  font-size: 13px;
 }
 
 .optional {
-  color: var(--muted-text);
-  font-weight: normal;
+  color: var(--color-neutral-600);
+  font-weight: 400;
 }
 
-/* O preview do endereço fica sob o campo e muda a cada tecla: reservar a altura
-   evita que a página inteira pule entre "sorteamos um endereço" e o link. */
 .field .hint {
   display: block;
   min-height: 2.4em;
 }
 
 .field input[aria-invalid='true'] {
-  border-color: var(--danger);
+  border-color: var(--color-danger);
 }
 
-/* Aviso de sala ocupada: não bloqueia a criação, oferece as duas saídas
-   (entrar junto ou trocar de endereço) lado a lado. */
 .occupied-room {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-warning-bg);
+  box-shadow: inset 0 0 0 1px var(--color-warning-border);
 }
 
 .occupied-room p {
   margin: 0;
+  font-size: 13px;
+  color: var(--color-warning);
 }
 
 .occupied-actions {
   display: flex;
-  gap: 0.5rem;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
-/* Room */
+/* A coluna direita: fundo em degradê, o glow, a impressão da chave e as
+   três estatísticas de privacidade. Existe só na Home — o lobby usa a
+   mesma ideia de card, mas em outro layout (ver `.prejoin-*` abaixo). */
+.home-side {
+  position: relative;
+  background: linear-gradient(155deg, #1c1f31, #141622 55%, #191b28);
+  box-shadow: inset 1px 0 0 var(--color-divider);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-8);
+  padding: clamp(24px, 4vw, 56px);
+  overflow: hidden;
+}
 
-/* A sala ocupa exatamente o viewport e nunca rola: os controles e o modal de
-   aprovação precisam estar sempre alcançáveis. `dvh` vem depois de `vh` de
-   propósito — em mobile, `vh` ignora a barra de endereço retrátil e esconderia
-   o rodapé debaixo dela; onde `dvh` é suportado, a segunda declaração vence. */
+.home-side-glow {
+  position: absolute;
+  top: -80px;
+  right: -80px;
+  width: 320px;
+  height: 320px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(145, 132, 217, 0.2), transparent 65%);
+  pointer-events: none;
+}
+
+.home-fingerprint-block {
+  position: relative;
+}
+
+.home-fingerprint-kicker {
+  font: 600 10px/1 var(--font-heading);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-accent-400);
+  margin-bottom: 12px;
+}
+
+.home-fingerprint-block .key-fingerprint {
+  margin-bottom: 14px;
+}
+
+.home-fingerprint-block p {
+  font-size: 14px;
+  max-width: 38ch;
+  color: var(--color-neutral-400);
+  margin: 0;
+}
+
+.home-stats {
+  position: relative;
+  display: grid;
+  gap: var(--space-3);
+}
+
+.home-stat {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.home-stat-figure {
+  font: 700 26px/1 var(--font-heading);
+  color: var(--color-accent-300);
+  min-width: 56px;
+}
+
+.home-stat-text {
+  font-size: 13px;
+  color: var(--color-neutral-400);
+}
+
+@media (max-width: 860px) {
+  .home {
+    grid-template-columns: 1fr;
+  }
+  .home-side {
+    order: -1;
+    padding: var(--space-6) clamp(20px, 5vw, 56px);
+  }
+  .home-copy {
+    max-width: none;
+  }
+}
+
+/* ─── Lobby (PreJoin) ─── */
+
+.home.prejoin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  grid-template-columns: none;
+}
+
+.prejoin-card {
+  width: min(760px, 100%);
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: var(--space-8);
+  align-items: center;
+}
+
+.prejoin-media {
+  position: relative;
+}
+
+.prejoin-preview {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: 0 0 0 1px var(--color-neutral-800);
+  width: 100%;
+}
+
+.prejoin-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.prejoin-kicker {
+  font: 600 10px/1 var(--font-heading);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-accent-400);
+  margin-bottom: 10px;
+}
+
+.prejoin-info h1 {
+  font-size: 30px;
+  margin: 0 0 8px;
+}
+
+.prejoin-info .tagline {
+  font-size: 14px;
+  max-width: 34ch;
+}
+
+.prejoin-info form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+  max-width: 360px;
+}
+
+.prejoin-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.prejoin-toggle input {
+  width: 1.1rem;
+  height: 1.1rem;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.prejoin-toggle + .hint {
+  margin: -6px 0 0;
+}
+
+.prejoin-info .actions {
+  max-width: none;
+  flex-direction: row;
+  gap: var(--space-2);
+}
+
+.prejoin-info .actions button[type='submit'] {
+  flex: 1;
+}
+
+@media (max-width: 720px) {
+  .prejoin-card {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Sala — o rail substitui a barra de rodapé do Meet.
+
+   `.room` continua sendo o wrapper de viewport fixo (§ invariante: a
+   página nunca rola). Nas fases textuais (`waiting`/`denied`) ele continua
+   centralizando um único bloco, como antes. Em `in-call` ele vira uma
+   linha: o rail (`.controls`) à esquerda, e `.room-main` — tudo que era
+   filho direto de `.room` antes desta direção — ocupando o resto.
+   ═══════════════════════════════════════════════════════════════════════ */
+
 .room {
   height: 100vh;
   height: 100dvh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  padding: 1.5rem;
-  gap: 1rem;
+  background: var(--color-bg);
+  color: var(--color-text);
 }
 
 .room.waiting,
@@ -164,64 +626,370 @@ code {
   align-items: center;
   justify-content: center;
   text-align: center;
+  padding: 24px;
 }
 
-/* Nas fases textuais o scroll é interno ao bloco, nunca da página: sem isto,
-   uma mensagem longa em janela baixa sumiria atrás do `overflow: hidden`. */
+.room.in-call {
+  flex-direction: row;
+}
+
+.room-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-4) var(--space-3);
+}
+
 .phase-content {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1.5rem;
+  gap: var(--space-6);
   max-height: 100%;
   overflow-y: auto;
+}
+
+.phase-content h2 {
+  font-size: 22px;
 }
 
 .local-preview {
   width: 320px;
   max-width: 90vw;
   flex: 0 0 auto;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: 0 0 0 1px var(--color-neutral-800);
+}
+
+/* Halo pulsante da tela "Abrindo os canais" — ver Room.tsx, fase
+   `connecting`. Puramente decorativo (`aria-hidden`), então fica livre para
+   usar a mesma animação do resto do sistema. */
+.phase-orb {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto;
+}
+
+.phase-orb::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--color-accent);
+  filter: blur(16px);
+  animation: noct-pulse 1.6s ease-in-out infinite;
+}
+
+.phase-orb::after {
+  content: '';
+  position: absolute;
+  inset: 14px;
+  border-radius: 50%;
+  background: var(--color-surface-raised);
+  box-shadow: inset 0 0 0 1px var(--color-accent-700);
+}
+
+.phase-pulse-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--color-neutral-600);
+}
+
+.phase-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  animation: noct-pulse 1.4s ease-in-out infinite;
+}
+
+.phase-avatars {
+  display: flex;
+  justify-content: center;
+}
+
+.phase-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--color-neutral-900);
+  box-shadow: 0 0 0 2px var(--color-bg);
+  display: grid;
+  place-items: center;
+  font: 500 17px/1 var(--font-heading);
+  color: var(--color-neutral-500);
+  margin-left: -10px;
+}
+
+.phase-avatar:first-child {
+  margin-left: 0;
+}
+
+.denied-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: min(420px, 100%);
+  text-align: left;
+}
+
+.denied-card {
+  padding: var(--space-6);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.denied-card h2,
+.denied-card h3 {
+  margin: 0 0 6px;
+}
+
+.denied-card h3 {
+  font-size: 15px;
+  color: var(--color-neutral-300);
+}
+
+.denied-card p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-neutral-500);
+}
+
+.denied-card.muted {
+  background: var(--color-surface-raised);
+  box-shadow: inset 0 0 0 1px var(--color-neutral-800);
+}
+
+.denied-actions {
+  display: flex;
+  gap: var(--space-3);
 }
 
 .warning {
-  background: rgba(202, 165, 61, 0.15);
-  border: 1px solid var(--warning);
-  color: var(--warning);
+  background: color-mix(in srgb, var(--color-warning) 15%, transparent);
+  border: 1px solid var(--color-warning);
+  color: var(--color-warning);
   padding: 0.6rem 1rem;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   margin: 0;
   flex: 0 0 auto;
+  font-size: 13px;
 }
 
-/* O aviso de som bloqueado é um `<button>` (o clique é a única forma de
-   destravar o áudio, e isso precisa existir para teclado e leitor de tela), mas
-   se parece com o `<p class="warning">` que fica logo acima: o botão herda
-   fonte e alinhamento em vez do padrão do agente de usuário. */
 button.warning.audio-blocked {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
   text-align: left;
   font: inherit;
   cursor: pointer;
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  color: var(--color-text);
 }
 
 button.warning.audio-blocked:hover {
-  background: rgba(202, 165, 61, 0.25);
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
 }
 
-/* Palco: a faixa elástica entre o banner e o rodapé. `min-height: 0` aqui e no
-   filho é o que impede o conteúdo de empurrar a coluna — basta um nível sem ele
-   para o scroll de página voltar, agora invisível atrás do `overflow: hidden`. */
+button.warning.audio-blocked strong {
+  color: var(--color-accent-300);
+}
+
+/* ── cabeçalho da sala ── */
+
+.room-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: 9px 4px;
+  box-shadow: inset 0 -1px 0 var(--color-divider);
+}
+
+.room-header-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.room-name {
+  font: 500 14px/1 var(--font-heading);
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-size {
+  font-size: 11px;
+  color: var(--color-neutral-600);
+  flex: none;
+}
+
+.room-header-spacer {
+  flex: 1;
+}
+
+.room-privacy {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--color-accent-300);
+  white-space: nowrap;
+}
+
+.room-privacy-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  animation: noct-pulse 2.4s ease-in-out infinite;
+  flex: none;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   O rail. É a mesma `.controls` que o e2e mede (`.controls button`,
+   textContent exato de cada botão) e cujo bounding box tem que caber no
+   viewport — uma coluna alta e estreita cumpre isso com folga maior que a
+   barra horizontal antiga. Os rótulos ficam em `.sr-only`: o botão continua
+   com o nome/`textContent` de sempre, só não aparece por escrito — quem
+   aparece é o ícone Phosphor e, nos toggles de mídia, a keycap desenhada por
+   `::after` (nunca texto de verdade, para não entrar no `textContent`).
+   ───────────────────────────────────────────────────────────────────── */
+
+.controls {
+  flex: none;
+  width: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0;
+  background: #12141f;
+  box-shadow: inset -1px 0 0 var(--color-divider);
+}
+
+.controls .rail-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--color-accent);
+  display: grid;
+  place-items: center;
+  font: 700 16px/1 var(--font-heading);
+  color: var(--color-bg);
+  margin-bottom: 6px;
+}
+
+.controls button {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  position: relative;
+  border-color: transparent;
+  color: var(--color-neutral-400);
+}
+
+.controls button .ph {
+  font-size: 20px;
+  line-height: 1;
+}
+
+/* Estado "ligado" de um toggle do rail (mic ativo, câmera ativa, tela
+   compartilhada, painel aberto): mesmo tratamento do `.btn-primary` do
+   design system — contorno de accent, nunca uma flood. */
+.controls button[aria-pressed='true'],
+.controls button.rail-on {
+  border-color: var(--color-accent);
+  color: var(--color-accent-300);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.controls button:hover {
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+}
+
+.controls button[aria-pressed='true']:hover,
+.controls button.rail-on:hover {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+/* A keycap (M/V/S) — só existe em quem tem `data-key`, e é conteúdo gerado:
+   não entra no `textContent` do botão, então não interfere nos roteiros de
+   e2e que comparam o texto exato (`Silenciar`, `Ativar mic`…). */
+.controls button[data-key]::after {
+  content: attr(data-key);
+  position: absolute;
+  right: 3px;
+  bottom: 1px;
+  font: 600 8px/1 var(--font-heading);
+  color: var(--color-neutral-600);
+}
+
+.controls .rail-divider {
+  width: 26px;
+  height: 1px;
+  background: var(--color-divider);
+  margin: 6px 0;
+  flex: none;
+}
+
+.controls .rail-spacer {
+  flex: 1;
+}
+
+.controls .rail-unread {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--color-accent);
+  color: var(--color-bg);
+  font: 700 9px/15px var(--font-heading);
+  text-align: center;
+}
+
+/* `.badge` continua existindo com o mesmo nome — é lido por
+   `controlButtons`/`allTextContents()` como parte do texto do botão
+   (`"Chat3"`, hoje) e este redesenho não muda essa mecânica, só a pele. No
+   rail o badge do rótulo escondido reaparece visualmente como
+   `.rail-unread`, que é decoração pura (`aria-hidden`). */
+.badge {
+  display: inline-block;
+}
+
+.controls .leave {
+  color: var(--color-danger);
+}
+
+/* ── palco ── */
+
 .stage {
   flex: 1;
   display: flex;
-  gap: 0.75rem;
+  gap: var(--space-3);
   min-height: 0;
 }
 
-/* O elemento medido pelo ResizeObserver. O tamanho vem do pai, nunca do
-   conteúdo: a grade lá dentro é absoluta justamente para não ter como empurrar
-   a caixa que está sendo medida (seria o clássico "ResizeObserver loop"). */
 .video-stage {
   flex: 1;
   min-width: 0;
@@ -229,8 +997,6 @@ button.warning.audio-blocked:hover {
   position: relative;
 }
 
-/* Colunas e largura do tile são escritas pelo `VideoGrid` como custom
-   properties (ver `lib/gridLayout.js`); os tiles não recebem estilo inline. */
 .video-grid {
   position: absolute;
   inset: 0;
@@ -241,24 +1007,15 @@ button.warning.audio-blocked:hover {
   align-content: center;
 }
 
-/* Primeiro render, antes da medição: os tiles ficam montados (o <video> é o que
-   reproduz o áudio do peer) mas não são pintados com um tamanho errado. */
 .video-grid.unmeasured {
   visibility: hidden;
 }
 
-/* Escape de estouro: quando nem no menor tile legível o conjunto cabe, quem
-   rola é a grade — a página continua parada e os controles, visíveis. */
 .video-grid.overflowing {
   overflow-y: auto;
   align-content: start;
 }
 
-/* Modo destaque: uma tela compartilhada ocupando ~80% do palco e a coluna de
-   miniaturas nos ~20% restantes. Como na grade, todas as dimensões vêm de custom
-   properties escritas pelo `SpotlightStage` (ver `lib/spotlightLayout.js`) — o
-   destaque precisa ser 16:9 *e* caber na altura, e `flex: 4 / flex: 1` não sabe
-   disso: numa janela achatada o destaque estouraria o palco para baixo. */
 .spotlight-layout {
   position: absolute;
   inset: 0;
@@ -269,8 +1026,6 @@ button.warning.audio-blocked:hover {
   min-height: 0;
 }
 
-/* Mesmo motivo do `.video-grid.unmeasured`: antes da primeira medição os tiles
-   ficam montados, só não são pintados com um tamanho errado por um frame. */
 .spotlight-layout.unmeasured {
   visibility: hidden;
 }
@@ -284,17 +1039,12 @@ button.warning.audio-blocked:hover {
   min-height: 0;
 }
 
-/* A altura calculada manda; sem isto o `aspect-ratio` do tile recalcularia uma
-   altura ligeiramente diferente da que coube na conta. */
 .spotlight-main .video-tile {
   width: 100%;
   height: 100%;
   aspect-ratio: auto;
 }
 
-/* Quem rola é a coluna — nunca o destaque, nunca a página. `min-height: 0` em
-   todos os níveis, senão a pilha de miniaturas empurra a altura e ressuscita o
-   scroll de documento que o layout de viewport fixo eliminou. */
 .thumb-rail {
   flex: 0 0 auto;
   width: var(--rail-w, auto);
@@ -309,16 +1059,13 @@ button.warning.audio-blocked:hover {
   gap: var(--grid-gap, 12px);
 }
 
-/* Largura *e* altura vêm da conta do módulo puro, como no destaque: deixar a
-   altura para o `aspect-ratio` do tile faria o navegador chegar a um número
-   ligeiramente diferente do que entrou no cálculo de "a pilha cabe?". */
 .thumb-item {
   flex: 0 0 auto;
   width: var(--thumb-w, 100%);
   height: var(--thumb-h, auto);
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: transparent;
   display: block;
 }
@@ -334,20 +1081,16 @@ button.thumb-item {
 }
 
 button.thumb-item:hover .video-tile {
-  outline-color: var(--accent);
+  outline-color: var(--color-accent);
 }
 
 button.thumb-item:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--color-accent);
   outline-offset: 3px;
 }
 
-/* Com duas ou mais telas ativas a coluna é um grupo de escolha, e a que está em
-   destaque continua nele como botão pressionado — sem stream, para não pagar a
-   decodificação da mesma imagem duas vezes (o tile cai no placeholder). É o
-   marcador de "é esta que você está vendo", em cima do `aria-pressed`. */
 button.thumb-item[aria-pressed='true'] .video-tile {
-  outline-color: var(--accent);
+  outline-color: var(--color-accent);
 }
 
 button.thumb-item.spotlighted {
@@ -358,9 +1101,6 @@ button.thumb-item.spotlighted .video-tile {
   opacity: 0.75;
 }
 
-/* Modo estreito: o destaque toma a largura inteira e a lista vira um painel sob
-   demanda, **sobreposto** ao destaque. Como faixa de fluxo, em 400px de palco
-   não sobraria nada para o que interessa. */
 .participants-toggle {
   position: absolute;
   top: 0.5rem;
@@ -368,7 +1108,8 @@ button.thumb-item.spotlighted .video-tile {
   z-index: 15;
   padding: 0.35rem 0.7rem;
   font-size: 0.85rem;
-  background: rgba(26, 29, 36, 0.9);
+  border-color: var(--color-divider);
+  background: rgba(18, 20, 31, 0.85);
 }
 
 .participants-panel {
@@ -376,49 +1117,42 @@ button.thumb-item.spotlighted .video-tile {
   top: 0;
   right: 0;
   bottom: 0;
-  /* Abaixo dos toasts (20) e do modal de aprovação (30): nada aqui é decisão
-     que outra pessoa esteja esperando. */
   z-index: 15;
   width: min(calc(var(--thumb-w, 160px) + 1.5rem), 80%);
   padding: 2.75rem 0.5rem 0.5rem;
   background: rgba(15, 17, 21, 0.94);
-  border-left: 1px solid var(--border);
-  border-radius: 12px 0 0 12px;
+  border-left: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
   display: flex;
   min-height: 0;
 }
 
+/* ── tile de vídeo ── */
+
 .video-tile {
   position: relative;
-  background: var(--surface);
-  border-radius: 12px;
+  background: linear-gradient(160deg, #2a2d3a, #191b25);
+  border-radius: var(--radius-lg);
   overflow: hidden;
   aspect-ratio: 16 / 9;
-  /* Anel de "está falando": a borda existe sempre (transparente) para não
-     empurrar o layout quando acende. */
-  outline: 3px solid transparent;
-  outline-offset: -3px;
+  box-shadow: 0 0 0 1px var(--color-neutral-800);
+  outline: 2px solid transparent;
+  outline-offset: -2px;
   transition: outline-color 120ms ease-out, box-shadow 120ms ease-out;
 }
 
 .video-tile.speaking {
-  outline-color: var(--accent);
-  /* O halo cresce com o volume medido localmente (--speak-level: 0 → 1). */
-  box-shadow: 0 0 calc(4px + var(--speak-level, 0) * 18px) rgba(79, 124, 255, 0.75);
+  outline-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-neutral-800), 0 0 calc(6px + var(--speak-level, 0) * 20px) rgba(145, 132, 217, 0.5);
 }
 
-/* Letterbox, nunca corte nem deformação: `cover` cortava rosto de câmeras cuja
-   proporção não bate com a do tile, e `fill` esticaria a imagem. A barra
-   resultante é o preço aceito pelo requisito. */
 .video-tile video {
   width: 100%;
   height: 100%;
   object-fit: contain;
-  background: var(--surface);
+  background: transparent;
 }
 
-/* `contain` já é o padrão acima; a classe permanece só pelo fundo preto, que
-   fica melhor nas bordas de um compartilhamento de tela. */
 .video-tile.contain video {
   background: #000;
 }
@@ -433,104 +1167,105 @@ button.thumb-item.spotlighted .video-tile {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--surface);
+  background: radial-gradient(circle at 50% 40%, #2b2e40, #15171f);
 }
 
 .avatar-initial {
   width: 4.5rem;
   height: 4.5rem;
   border-radius: 50%;
-  background: var(--border);
-  color: var(--text);
+  background: #22242f;
+  color: var(--color-neutral-500);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.9rem;
-  font-weight: 600;
+  font: 500 1.75rem/1 var(--font-heading);
 }
 
 .video-label {
   position: absolute;
-  left: 0.6rem;
-  bottom: 0.5rem;
+  left: 10px;
+  bottom: 9px;
   display: flex;
   align-items: center;
-  gap: 0.35rem;
-  background: rgba(0, 0, 0, 0.55);
-  padding: 0.15rem 0.55rem;
+  gap: 6px;
+  background: rgba(18, 20, 31, 0.72);
+  padding: 4px 9px;
   border-radius: 6px;
-  font-size: 0.85rem;
+  font-size: 12px;
 }
 
 .mic-off {
   font-size: 0.8rem;
   line-height: 1;
+  color: var(--color-danger);
 }
 
-/* Estado da conexão daquele peer. Irmão do `.video-label`, nunca dentro dele:
-   vários roteiros do e2e comparam o `textContent` do rótulo, e o nome do
-   participante não é lugar para "Sem conexão". Fica no canto oposto ao badge de
-   tela, que já ocupa o topo esquerdo. */
 .tile-connection {
   position: absolute;
-  top: 0.5rem;
-  right: 0.6rem;
-  font-size: 0.7rem;
+  top: 9px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
   letter-spacing: 0.02em;
-  padding: 0.1rem 0.45rem;
+  padding: 3px 8px;
   border-radius: 5px;
-  background: rgba(0, 0, 0, 0.6);
-  border: 1px solid currentColor;
-  color: var(--warning);
+  background: rgba(18, 20, 31, 0.82);
+  color: var(--color-warning);
+}
+
+.tile-connection::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .tile-connection.bad {
-  color: var(--danger);
+  color: var(--color-danger);
 }
 
-/* A borda do tile inteiro acompanha: num palco com muita gente, um chip de
-   0.7rem é fácil de não ver, e `failed` precisa ser legível sem procurar. */
 .video-tile.conn-warn {
-  outline: 2px solid rgba(202, 165, 61, 0.5);
+  outline: 2px solid color-mix(in srgb, var(--color-warning) 55%, transparent);
   outline-offset: -2px;
 }
 
 .video-tile.conn-bad {
-  outline: 2px solid var(--danger);
+  outline: 2px solid var(--color-danger);
   outline-offset: -2px;
 }
 
 .tile-badge {
   position: absolute;
-  top: 0.5rem;
-  left: 0.6rem;
-  background: var(--accent);
-  color: white;
+  top: 9px;
+  left: 10px;
+  background: rgba(18, 20, 31, 0.8);
+  box-shadow: inset 0 0 0 1px var(--color-accent-800);
+  color: var(--color-text);
   font-size: 0.7rem;
   letter-spacing: 0.03em;
-  text-transform: uppercase;
-  padding: 0.1rem 0.45rem;
-  border-radius: 5px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
 }
 
-/* Variante compacta (miniaturas da coluna, ~150px de largura): os mesmos
-   elementos, em escala que ainda cabe. Em tamanho cheio o rótulo cobriria
-   metade da miniatura e o halo de fala vazaria por cima da vizinha. */
 .video-tile.compact {
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   outline-width: 2px;
   outline-offset: -2px;
 }
 
 .video-tile.compact.speaking {
-  box-shadow: 0 0 calc(2px + var(--speak-level, 0) * 8px) rgba(79, 124, 255, 0.75);
+  box-shadow: 0 0 0 1px var(--color-neutral-800), 0 0 calc(2px + var(--speak-level, 0) * 8px) rgba(145, 132, 217, 0.5);
 }
 
 .video-tile.compact .video-label {
-  left: 0.3rem;
-  bottom: 0.25rem;
-  font-size: 0.7rem;
-  padding: 0.05rem 0.35rem;
+  left: 5px;
+  bottom: 4px;
+  font-size: 10px;
+  padding: 2px 6px;
   max-width: calc(100% - 0.6rem);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -538,17 +1273,17 @@ button.thumb-item.spotlighted .video-tile {
 }
 
 .video-tile.compact .tile-badge {
-  top: 0.25rem;
-  left: 0.3rem;
+  top: 4px;
+  left: 5px;
   font-size: 0.6rem;
-  padding: 0.05rem 0.3rem;
+  padding: 1px 6px;
 }
 
 .video-tile.compact .tile-connection {
-  top: 0.25rem;
-  right: 0.3rem;
+  top: 4px;
+  right: 5px;
   font-size: 0.6rem;
-  padding: 0.05rem 0.3rem;
+  padding: 1px 6px;
   max-width: calc(100% - 0.6rem);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -561,66 +1296,93 @@ button.thumb-item.spotlighted .video-tile {
   font-size: 1.05rem;
 }
 
-/* Dentro do painel do modo estreito a coluna ocupa o painel inteiro. */
 .thumb-rail.in-panel {
   flex: 1;
   width: 100%;
   max-height: 100%;
 }
 
-/* Sink de áudio dos peers: nenhuma caixa de layout, nenhum `display: none` (o
-   elemento precisa continuar sendo mídia ativa para tocar). */
 .peer-audio-sinks {
   display: contents;
 }
 
-/* Chat */
+/* ─────────────────────────────────────────────────────────────────────
+   Painéis à direita (chat, música, soundboard) — irmãos do `.video-stage`
+   dentro de `.stage`, que é flex row: eles empurram o palco em vez de
+   flutuar por cima. Mesmo raciocínio de antes desta direção, só a pele
+   muda (fundo elevado, cantos maiores).
+   ───────────────────────────────────────────────────────────────────── */
 
-.chat-panel {
-  width: 320px;
+.chat-panel,
+.music-panel,
+.soundboard-panel {
+  width: 318px;
   max-width: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  min-height: 0;
+  background: var(--color-surface-raised);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 0 0 1px var(--color-neutral-800);
   overflow: hidden;
 }
 
-.chat-header {
+.soundboard-panel {
+  width: 260px;
+  overflow-y: auto;
+}
+
+.chat-header,
+.music-header,
+.soundboard-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.5rem;
-  padding: 0.7rem 0.85rem;
-  border-bottom: 1px solid var(--border);
+  padding: 12px 14px;
+  box-shadow: inset 0 -1px 0 var(--color-divider);
+  flex: 0 0 auto;
 }
 
-.chat-subtitle {
+.chat-header strong,
+.music-header strong,
+.soundboard-header strong {
+  font: 500 15px/1.2 var(--font-heading);
+}
+
+.chat-subtitle,
+.music-subtitle,
+.soundboard-subtitle {
   display: block;
-  color: var(--muted-text);
-  font-size: 0.72rem;
-  margin-top: 0.15rem;
+  color: var(--color-neutral-600);
+  font-size: 11px;
+  margin-top: 2px;
 }
 
 .icon-button {
   background: transparent;
   border-color: transparent;
-  padding: 0.15rem 0.45rem;
+  width: 26px;
+  height: 26px;
+  padding: 0;
   line-height: 1;
+  color: var(--color-neutral-500);
+  display: grid;
+  place-items: center;
+  flex: none;
 }
 
 .chat-messages {
   flex: 1;
   overflow-y: auto;
-  padding: 0.75rem 0.85rem;
+  padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 0.65rem;
+  gap: 14px;
 }
 
 .chat-empty {
-  color: var(--muted-text);
+  color: var(--color-neutral-600);
   font-size: 0.85rem;
   margin: 0;
 }
@@ -628,124 +1390,111 @@ button.thumb-item.spotlighted .video-tile {
 .chat-message {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 3px;
 }
 
 .chat-meta {
   display: flex;
-  gap: 0.45rem;
+  gap: 7px;
   align-items: baseline;
-  font-size: 0.75rem;
+  font-size: 12px;
 }
 
 .chat-author {
-  font-weight: 600;
-}
-
-.chat-message.mine .chat-author {
-  color: var(--accent);
+  font: 500 12px/1 var(--font-heading);
+  color: var(--color-accent-300);
 }
 
 .chat-time {
-  color: var(--muted-text);
+  color: var(--color-neutral-700);
+  font-size: 10px;
 }
 
 .chat-text {
-  font-size: 0.9rem;
+  font-size: 13.5px;
+  color: var(--color-neutral-300);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.chat-composer {
+.chat-composer,
+.music-composer,
+.soundboard-add {
   display: flex;
-  gap: 0.4rem;
-  padding: 0.6rem 0.7rem;
-  border-top: 1px solid var(--border);
+  gap: var(--space-2);
+  padding: 10px 12px;
+  box-shadow: inset 0 1px 0 var(--color-divider);
+  flex: 0 0 auto;
 }
 
 .chat-composer input {
   flex: 1;
   min-width: 0;
+  height: 38px;
 }
 
-/* Toasts de entrada/saída */
+/* Toasts */
 
 .toasts {
   position: fixed;
-  top: 1rem;
-  right: 1rem;
+  top: 16px;
+  right: 16px;
   z-index: 20;
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: 8px;
+  width: 250px;
   pointer-events: none;
 }
 
 .toast {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  border-radius: 8px;
-  padding: 0.55rem 0.9rem;
-  font-size: 0.88rem;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  gap: 9px;
+  padding: 9px 12px;
+  border-radius: var(--radius-md);
+  background: rgba(27, 30, 44, 0.96);
+  box-shadow: var(--shadow-md);
+  font-size: 12.5px;
   animation: toast-in 160ms ease-out;
 }
 
+.toast-join {
+  color: var(--color-text);
+}
+
 .toast-leave {
-  border-left-color: var(--muted-text);
+  color: var(--color-neutral-400);
 }
 
 .toast-icon {
-  color: var(--muted-text);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  flex: none;
+  /* O glifo (→ ←) vira só espaço para o dot: o desenho já diz a direção. */
+  font-size: 0;
+  color: transparent;
+  overflow: hidden;
+}
+
+.toast-leave .toast-icon {
+  background: var(--color-neutral-600);
 }
 
 @keyframes toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
+  from { opacity: 0; transform: translateY(-6px); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .toast {
+  .toast, .video-tile, .phase-orb::before, .phase-dot, .room-privacy-dot {
     animation: none;
   }
-
-  .video-tile {
-    transition: none;
-  }
-}
-
-/* Faixa de fluxo, não `position: fixed`: o palco cede a altura que o rodapé
-   precisa e a grade se recalcula sozinha (o ResizeObserver vê a mudança). Um
-   rodapé fixo exigiria um padding mágico sincronizado à mão com a altura real
-   da barra, que muda quando os botões quebram linha. */
-.controls {
-  display: flex;
-  gap: 0.75rem;
-  justify-content: center;
-  flex-wrap: wrap;
-  flex: 0 0 auto;
-}
-
-.badge {
-  display: inline-block;
-  margin-left: 0.4rem;
-  min-width: 1.15rem;
-  padding: 0 0.3rem;
-  border-radius: 999px;
-  background: var(--accent);
-  color: white;
-  font-size: 0.72rem;
-  line-height: 1.15rem;
-  text-align: center;
 }
 
 /* Botão de música com título da faixa */
+
 .music-button {
   position: relative;
 }
@@ -765,56 +1514,55 @@ button.thumb-item.spotlighted .video-tile {
   text-overflow: ellipsis;
 }
 
-/* Indicador flutuante de "tocando agora" */
+/* No rail o botão de música é um quadrado de ícone: o título da faixa (que
+   em telas largas apareceria como legenda) fica só no `title=""` do botão e
+   na barra "tocando agora" abaixo do palco. */
+.controls .music-button-track {
+  display: none;
+}
+
 .now-playing-bar {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  justify-content: center;
-  padding: 0.3rem 1rem;
-  background: var(--card-bg, #23272e);
-  border-radius: 999px;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--color-surface-raised);
+  box-shadow: inset 0 0 0 1px var(--color-neutral-800);
+  border-radius: var(--radius-md);
   cursor: pointer;
-  align-self: center;
-  max-width: 28rem;
+  flex: none;
+  max-width: 100%;
   overflow: hidden;
 }
 .now-playing-bar:hover {
-  opacity: 0.85;
+  box-shadow: inset 0 0 0 1px var(--color-neutral-700);
 }
 .now-playing-label {
-  font-size: 0.7rem;
+  font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--accent, #5b8def);
+  letter-spacing: 0.08em;
+  color: var(--color-neutral-600);
   flex-shrink: 0;
 }
 .now-playing-title {
-  font-size: 0.8rem;
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .now-playing-pulse {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--accent, #5b8def);
+  background: var(--color-accent);
   flex-shrink: 0;
-  animation: pulse-dot 1.5s ease-in-out infinite;
-}
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+  animation: noct-pulse 1.6s ease-in-out infinite;
 }
 
-/* Linha única de altura previsível: com a URL quebrando em 3–4 linhas, esta
-   faixa roubava altura do palco a cada resize. A URL inteira continua acessível
-   pelo `title` do parágrafo. */
 .invite-hint {
   text-align: center;
-  color: var(--muted-text);
-  font-size: 0.85rem;
+  color: var(--color-neutral-600);
+  font-size: 11px;
   margin: 0;
   flex: 0 0 auto;
   white-space: nowrap;
@@ -826,120 +1574,97 @@ button.thumb-item.spotlighted .video-tile {
   word-break: normal;
 }
 
-/* Player de música
-
-   O painel é irmão do chat: `aside` dentro do palco, com a fila em
-   `overflow-y: auto` e `min-height: 0` na cadeia flex. Uma lista com altura de
-   conteúdo aqui ressuscitaria o scroll de página, que esta aplicação não tem. */
-
-.music-panel {
-  width: 340px;
-  max-width: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-.music-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.7rem 0.85rem;
-  border-bottom: 1px solid var(--border);
-  flex: 0 0 auto;
-}
-
-.music-subtitle {
-  display: block;
-  color: var(--muted-text);
-  font-size: 0.72rem;
-  margin-top: 0.15rem;
-}
+/* Player de música */
 
 .music-unlock {
-  margin: 0.6rem 0.85rem 0;
-  border-color: var(--warning);
-  color: var(--warning);
+  margin: 10px 14px 0;
+  border-color: var(--color-warning);
+  color: var(--color-warning);
   flex: 0 0 auto;
 }
 
 .music-notice {
-  margin: 0.6rem 0.85rem 0;
-  padding: 0.5rem 0.6rem;
-  border-radius: 8px;
-  background: rgba(202, 165, 61, 0.12);
-  border: 1px solid rgba(202, 165, 61, 0.35);
-  color: var(--text);
-  font-size: 0.78rem;
+  margin: 10px 14px 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: var(--color-warning-bg);
+  box-shadow: inset 0 0 0 1px var(--color-warning-border);
+  color: var(--color-warning);
+  font-size: 12.5px;
   flex: 0 0 auto;
 }
 
 .music-now {
-  padding: 0.75rem 0.85rem;
-  border-bottom: 1px solid var(--border);
+  padding: 14px;
+  background: linear-gradient(160deg, #221f38, var(--color-surface-raised));
+  box-shadow: inset 0 -1px 0 var(--color-divider);
   flex: 0 0 auto;
 }
 
 .music-now-title {
-  margin: 0;
-  font-weight: 600;
+  margin: 0 0 3px;
+  font: 500 15px/1.3 var(--font-heading);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.music-now-meta,
+.music-now-meta {
+  margin: 0 0 10px;
+  color: var(--color-neutral-500);
+  font-size: 12px;
+}
+
 .music-time {
-  margin: 0.25rem 0 0;
-  color: var(--muted-text);
-  font-size: 0.75rem;
+  margin: 6px 0 12px;
+  color: var(--color-neutral-600);
+  font-size: 10px;
+  display: flex;
+  justify-content: space-between;
 }
 
 .music-progress {
-  height: 4px;
-  margin-top: 0.55rem;
-  border-radius: 999px;
-  background: var(--border);
+  height: 3px;
+  border-radius: 2px;
+  background: #2f3240;
   overflow: hidden;
 }
 
 .music-progress-fill {
   height: 100%;
-  background: var(--accent);
+  background: var(--color-accent);
 }
 
 .music-actions {
   display: flex;
-  gap: 0.5rem;
-  margin-top: 0.6rem;
+  gap: 6px;
 }
 
 .music-actions button {
-  padding: 0.35rem 0.8rem;
-  font-size: 0.85rem;
+  flex: 1;
+  height: 32px;
+  font-size: 12px;
 }
 
 .music-volume {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin-top: 0.7rem;
-  color: var(--muted-text);
-  font-size: 0.75rem;
+  gap: var(--space-2);
+  margin-top: 12px;
+  color: var(--color-neutral-500);
+  font-size: 11px;
 }
 
 .music-volume input {
   flex: 1;
   padding: 0;
+  background: transparent;
+  border: 0;
+  accent-color: var(--color-accent);
 }
 
 .music-empty {
-  color: var(--muted-text);
+  color: var(--color-neutral-600);
   font-size: 0.8rem;
   margin: 0;
 }
@@ -950,33 +1675,35 @@ button.thumb-item.spotlighted .video-tile {
   overflow-y: auto;
   list-style: none;
   margin: 0;
-  padding: 0.5rem 0.6rem;
+  padding: 8px;
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: 2px;
 }
 
 .music-queue-item {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
-  padding: 0.35rem 0.4rem;
-  border-radius: 8px;
-  font-size: 0.82rem;
+  gap: 9px;
+  padding: 8px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
 }
 
 .music-queue-item.current {
-  background: rgba(79, 124, 255, 0.14);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
 }
 
 .music-queue-kind {
   flex: 0 0 auto;
-  font-size: 0.62rem;
+  width: 28px;
+  height: 20px;
+  font: 600 9px/20px var(--font-heading);
   letter-spacing: 0.03em;
-  padding: 0.1rem 0.3rem;
-  border-radius: 4px;
-  background: var(--border);
-  color: var(--muted-text);
+  text-align: center;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-neutral-500);
 }
 
 .music-queue-title {
@@ -990,33 +1717,26 @@ button.thumb-item.spotlighted .video-tile {
 .music-queue-by,
 .music-queue-duration {
   flex: 0 0 auto;
-  color: var(--muted-text);
-  font-size: 0.72rem;
+  color: var(--color-neutral-600);
+  font-size: 10px;
 }
 
 .music-composer {
-  display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
-  padding: 0.6rem;
-  border-top: 1px solid var(--border);
-  flex: 0 0 auto;
 }
 
 .music-composer input {
   flex: 1 1 100%;
   min-width: 0;
+  height: 38px;
 }
 
 .music-composer button {
   flex: 1;
-  padding: 0.4rem 0.6rem;
-  font-size: 0.85rem;
+  height: 38px;
+  font-size: 13px;
 }
 
-/* O host do player do YouTube existe sempre, mas não ocupa espaço: só o áudio
-   interessa, e um iframe de 0px não renderiza vídeo à toa. Não pode ser
-   `display: none` — nesse caso o player não toca. */
 .music-youtube-host {
   position: fixed;
   width: 1px;
@@ -1031,117 +1751,121 @@ button.thumb-item.spotlighted .video-tile {
   display: none;
 }
 
-/* Card de votação: fica acima dos toasts (20) e **abaixo** do modal de entrada
-   (30). Controle de acesso nunca fica atrás de música. */
+/* Card de votação — não veio do protótipo (ele ficou de fora dessa
+   direção); segue o mesmo vocabulário de superfície + contorno accent dos
+   outros flutuantes (toasts, painéis). */
 .music-vote-card {
   position: fixed;
-  right: 1rem;
-  bottom: 1rem;
+  right: 16px;
+  bottom: 16px;
   z-index: 25;
   width: 280px;
   max-width: calc(100vw - 2rem);
-  padding: 0.85rem;
-  border-radius: 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  padding: 14px;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-raised);
+  box-shadow: 0 0 0 1px var(--color-accent-800), var(--shadow-lg);
 }
 
 .music-vote-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .music-vote-header > div {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 2px;
   min-width: 0;
 }
 
 .music-vote-question {
-  color: var(--muted-text);
-  font-size: 0.82rem;
+  color: var(--color-neutral-400);
+  font-size: 12.5px;
 }
 
 .music-vote-tally {
-  margin: 0.5rem 0 0;
-  font-size: 0.8rem;
+  margin: 8px 0 0;
+  font-size: 12.5px;
 }
 
 .music-vote-quorum {
-  color: var(--muted-text);
+  color: var(--color-neutral-600);
 }
 
 .music-vote-actions {
   display: flex;
-  gap: 0.5rem;
-  margin-top: 0.6rem;
+  gap: var(--space-2);
+  margin-top: 10px;
 }
 
 .music-vote-actions button {
   flex: 1;
-  padding: 0.35rem 0.6rem;
+  height: 34px;
 }
 
 .music-vote-actions button.chosen {
-  border-color: var(--accent);
-  background: rgba(79, 124, 255, 0.18);
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
 }
 
 .music-vote-timer {
-  margin: 0.45rem 0 0;
-  color: var(--muted-text);
-  font-size: 0.72rem;
+  margin: 8px 0 0;
+  color: var(--color-neutral-600);
+  font-size: 11px;
 }
 
 .music-vote-result {
-  margin: 0.5rem 0 0;
-  font-size: 0.85rem;
-  color: var(--danger);
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--color-danger);
 }
 
 .music-vote-result.approved {
-  color: var(--accent);
+  color: var(--color-accent-300);
 }
 
-/* Modal de pedidos de entrada */
+/* ─────────────────────────────────────────────────────────────────────
+   Modais — pedido de entrada e configurações.
+   ───────────────────────────────────────────────────────────────────── */
 
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  /* Acima dos toasts (z-index 20): o pedido de entrada é a única coisa da tela
-     que outra pessoa está esperando. */
   z-index: 30;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 1.5rem;
-  background: rgba(0, 0, 0, 0.6);
+  padding: 24px;
+  background: rgba(10, 11, 18, 0.72);
 }
 
-.join-request-modal {
+.join-request-modal,
+.settings-modal {
   position: relative;
-  z-index: 31;
   width: min(30rem, 100%);
   max-height: 100%;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 1.25rem 1.4rem;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  gap: var(--space-4);
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-8);
+  box-shadow: var(--shadow-lg);
+  text-align: center;
+}
+
+.join-request-modal {
+  z-index: 31;
 }
 
 .join-request-modal h2 {
   margin: 0;
-  font-size: 1.1rem;
+  font-size: 22px;
+  letter-spacing: -0.02em;
 }
 
 .join-request-list {
@@ -1150,7 +1874,8 @@ button.thumb-item.spotlighted .video-tile {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: var(--space-3);
+  text-align: left;
 }
 
 .join-request {
@@ -1158,74 +1883,81 @@ button.thumb-item.spotlighted .video-tile {
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 0.75rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.6rem 0.85rem;
+  gap: var(--space-3);
+  background: var(--color-surface-raised);
+  box-shadow: inset 0 0 0 1px var(--color-neutral-800);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+}
+
+.join-request-avatar {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--color-accent-800);
+  color: var(--color-accent-200);
+  display: grid;
+  place-items: center;
+  font: 500 14px/1 var(--font-heading);
 }
 
 .join-request-name {
   overflow-wrap: anywhere;
+  font-size: 14px;
+  flex: 1;
 }
 
 .join-request-actions {
   display: flex;
-  gap: 0.5rem;
+  gap: var(--space-2);
   flex-shrink: 0;
 }
 
 .join-request button.approve {
-  border-color: var(--accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-300);
 }
 
 .join-request-hint {
   margin: 0;
-  color: var(--muted-text);
-  font-size: 0.8rem;
+  color: var(--color-neutral-600);
+  font-size: 11px;
 }
 
-/* Modal de configurações de dispositivos */
-
-/* Modificadora de camada: `.modal-backdrop` já traz `z-index: 30`, e reusá-la
-   crua empataria os dois modais — a ordem passaria a depender da ordem de
-   montagem no DOM, que não é estável (eles vivem em ramos diferentes do Room).
-   Aqui só a camada é sobrescrita: acima dos toasts (20), abaixo do pedido de
-   entrada (30), que é o único que tem alguém esperando do outro lado. */
-.modal-backdrop.settings {
-  z-index: 28;
-}
+/* Modal de configurações */
 
 .settings-modal {
-  position: relative;
-  z-index: 29;
-  width: min(28rem, 100%);
-  max-height: 100%;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0.85rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 1.25rem 1.4rem;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  width: min(640px, 100%);
+  text-align: left;
+  padding: 0;
+  overflow: hidden;
 }
 
 .settings-modal h2 {
   margin: 0;
-  font-size: 1.1rem;
+  font: 500 17px/1 var(--font-heading);
+  padding: 14px 18px;
+  box-shadow: inset 0 -1px 0 var(--color-divider);
 }
 
-/* Mesma proporção e mesmo letterbox do tile da grade: o preview precisa parecer
-   com o que os outros vão ver, não com um recorte diferente. */
+.settings-modal > *:not(h2) {
+  margin-left: 18px;
+  margin-right: 18px;
+}
+
+.settings-modal > *:last-child {
+  margin-bottom: 18px;
+}
+
 .settings-preview {
   position: relative;
-  aspect-ratio: 16 / 9;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  aspect-ratio: 4 / 3;
+  max-width: 200px;
+  background: radial-gradient(circle at 50% 40%, #2b2e40, #15171f);
+  border-radius: var(--radius-md);
   overflow: hidden;
+  box-shadow: 0 0 0 1px var(--color-neutral-800);
 }
 
 .settings-preview video {
@@ -1240,15 +1972,16 @@ button.thumb-item.spotlighted .video-tile {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--muted-text);
+  color: var(--color-neutral-600);
   font-size: 0.85rem;
+  text-align: center;
+  padding: var(--space-3);
 }
 
-/* Barra dirigida por custom property, como `--speak-level` no tile. */
 .mic-meter {
-  height: 6px;
-  border-radius: 999px;
-  background: var(--border);
+  height: 4px;
+  border-radius: 2px;
+  background: #2f3240;
   overflow: hidden;
 }
 
@@ -1256,24 +1989,20 @@ button.thumb-item.spotlighted .video-tile {
   display: block;
   height: 100%;
   width: calc(var(--mic-level, 0) * 100%);
-  background: var(--accent);
+  background: var(--color-accent);
   transition: width 80ms linear;
 }
 
 .settings-field {
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
-  font-size: 0.9rem;
+  gap: 5px;
+  font-size: 13px;
+  color: var(--color-neutral-400);
 }
 
 .settings-field select {
-  font: inherit;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
-  padding: 0.5rem 0.6rem;
+  width: 100%;
 }
 
 .settings-field select:disabled {
@@ -1282,31 +2011,27 @@ button.thumb-item.spotlighted .video-tile {
 }
 
 .settings-hint {
-  color: var(--muted-text);
-  font-size: 0.78rem;
+  color: var(--color-neutral-600);
+  font-size: 11px;
 }
 
 .settings-check {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  font-size: 0.9rem;
+  gap: var(--space-2);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.settings-check input {
+  accent-color: var(--color-accent);
 }
 
 .settings-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 0.5rem;
-}
-
-button.primary,
-button.secondary {
-  border-color: var(--accent);
-}
-
-button.primary {
-  background: var(--accent);
-  color: white;
+  gap: var(--space-3);
+  margin-top: 6px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1315,137 +2040,65 @@ button.primary {
   }
 }
 
-@media (max-width: 720px) {
-  .room {
-    padding: 1rem;
-  }
-
-  .stage {
-    flex-direction: column;
-  }
-
-  .chat-panel,
-  .music-panel {
-    width: 100%;
-    /* `flex` em vez de `max-height: 45vh`: com o palco de altura fixa, uma
-       altura em vh estouraria a coluna e ressuscitaria o scroll. */
-    flex: 0 1 45%;
-    min-height: 0;
-  }
-}
-
-/* --- pré-entrada (lobby) --- */
-
-/* O lobby reusa `.home` (largura, coluna, gaps) e `.local-preview` (o tile de
-   320px). Só o que é dele mora aqui. */
-.prejoin-preview {
-  /* `.local-preview` tem largura fixa; dentro da coluna da `.home` isso deixaria
-     o tile encostado à esquerda. */
-  margin: 0 auto;
-  width: 100%;
-}
-
-/* Rótulo e caixa na mesma linha, e o clique no texto alterna o toggle. */
-.prejoin-toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  cursor: pointer;
-}
-
-/* `input` global tem padding e borda de campo de texto — nada disso serve para
-   uma caixa de marcação. */
-.prejoin-toggle input {
-  width: 1.1rem;
-  height: 1.1rem;
-  padding: 0;
-  margin: 0;
-  accent-color: var(--accent);
-  cursor: pointer;
-}
-
-/* A dica do toggle cola no rótulo: o `gap` da `.home` a jogaria longe dele, e
-   ela deixaria de ser lida como explicação da escolha. */
-.prejoin-toggle + .hint {
-  margin: -0.9rem 0 0;
-}
-
 /* --- soundboard --- */
-
-/* Painel à esquerda do palco. Ele é irmão do `.video-stage` dentro de um flex
-   row, então **empurra** a grade em vez de flutuar por cima dela: a página não
-   rola (§6.7) e o modo destaque continua medindo a caixa que sobrou. Largura
-   menor que a do chat porque a grade é o que importa na tela. */
-.soundboard-panel {
-  width: 260px;
-  max-width: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  overflow-y: auto;
-}
-
-.soundboard-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.7rem 0.85rem;
-  border-bottom: 1px solid var(--border);
-  flex: 0 0 auto;
-}
-
-.soundboard-subtitle {
-  display: block;
-  color: var(--muted-text);
-  font-size: 0.72rem;
-  margin-top: 0.15rem;
-}
-
-.soundboard-add {
-  display: flex;
-  gap: 0.35rem;
-  padding: 0.6rem 0.85rem;
-  flex: 0 0 auto;
-}
 
 .soundboard-add input {
   flex: 1;
   min-width: 0;
+  height: 38px;
 }
 
 .soundboard-error,
 .soundboard-cooldown {
-  margin: 0 0.85rem 0.5rem;
-  font-size: 0.78rem;
-  color: var(--warning);
+  margin: 0 14px 10px;
+  font-size: 12px;
+  color: var(--color-warning);
 }
 
 .soundboard-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  padding: 0 0.85rem 0.6rem;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding: 0 12px 12px;
 }
 
 .soundboard-item {
+  position: relative;
   display: flex;
-  align-items: center;
-  gap: 0.25rem;
+  flex-direction: column;
 }
 
-/* Botão grande: é o alvo de toque do disparo, e ele tem que ser óbvio. */
 .soundboard-play {
-  flex: 1;
-  min-width: 0;
-  text-align: left;
+  aspect-ratio: 1;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 4px;
+  border-radius: var(--radius-md);
+  font-size: 11px;
+  line-height: 1.15;
+  color: var(--color-neutral-300);
+  white-space: normal;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-height: 40px;
+}
+
+.soundboard-item .icon-button {
+  position: absolute;
+  top: 2px;
+  width: 20px;
+  height: 20px;
+  background: rgba(18, 20, 31, 0.6);
+  border-radius: var(--radius-sm);
+}
+
+.soundboard-item .icon-button:first-of-type {
+  right: 24px;
+}
+
+.soundboard-item .icon-button:last-of-type {
+  right: 2px;
 }
 
 .soundboard-rename {
@@ -1455,41 +2108,143 @@ button.primary {
 
 .soundboard-empty,
 .soundboard-note {
-  color: var(--muted-text);
-  font-size: 0.75rem;
-  margin: 0.2rem 0;
+  color: var(--color-neutral-600);
+  font-size: 11px;
+  margin: 8px 14px;
+  grid-column: 1 / -1;
 }
 
 .soundboard-mutes,
 .soundboard-activity {
-  padding: 0.6rem 0.85rem;
-  border-top: 1px solid var(--border);
-  font-size: 0.8rem;
+  padding: 12px 14px;
+  box-shadow: inset 0 1px 0 var(--color-divider);
+  font-size: 12.5px;
 }
 
 .soundboard-people,
 .soundboard-activity ul {
   list-style: none;
-  margin: 0.4rem 0 0;
+  margin: 8px 0 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 5px;
 }
 
 .soundboard-flood {
-  color: var(--warning);
-  font-size: 0.72rem;
-  margin-left: 0.35rem;
+  color: var(--color-warning);
+  font-size: 11px;
+  margin-left: 6px;
 }
 
+.soundboard-volume {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-neutral-500);
+  font-size: 11px;
+}
+
+.soundboard-volume input {
+  flex: 1;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  accent-color: var(--color-accent);
+}
+
+.soundboard-mute-all {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: 8px;
+  cursor: pointer;
+}
+
+.soundboard-mute-all input {
+  accent-color: var(--color-accent);
+}
+
+.soundboard-people label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+.soundboard-people input {
+  accent-color: var(--color-accent);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Mobile — o rail vira barra inferior e os painéis viram folhas cheias.
+   Abaixo de ~720px de largura o `.stage` deixa de ser uma linha (rail +
+   painel espremendo a grade) e passa a empilhar: primeiro a grade, depois
+   o painel aberto por cima dela. Nada disso toca a medição por
+   `ResizeObserver` de `VideoGrid`/`SpotlightStage` — eles continuam
+   perguntando ao próprio `.video-stage` de quanto espaço dispõem.
+   ═══════════════════════════════════════════════════════════════════════ */
+
 @media (max-width: 720px) {
-  /* Com o palco em coluna, o painel vira uma faixa de altura limitada — nunca
-     um overlay: sobrepor a barra de controles deixaria a pessoa sem como sair
-     da sala nem desligar o microfone. */
-  .soundboard-panel {
+  .room.in-call {
+    flex-direction: column-reverse;
+  }
+
+  .room-main {
+    padding: var(--space-2) var(--space-2) 0;
+  }
+
+  .controls {
     width: 100%;
-    flex: 0 1 45%;
-    min-height: 0;
+    flex-direction: row;
+    justify-content: space-around;
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+    gap: 2px;
+    box-shadow: inset 0 1px 0 var(--color-divider);
+  }
+
+  .controls .rail-mark,
+  .controls .rail-divider {
+    display: none;
+  }
+
+  .controls .rail-spacer {
+    flex: none;
+    width: 0;
+  }
+
+  .stage {
+    position: relative;
+  }
+
+  .chat-panel,
+  .music-panel,
+  .soundboard-panel {
+    position: absolute;
+    inset: 0;
+    z-index: 12;
+    width: 100%;
+    border-radius: var(--radius-lg);
+  }
+
+  .home {
+    grid-template-columns: 1fr;
+  }
+
+  .home-copy {
+    padding: var(--space-6) 20px;
+  }
+
+  .prejoin-card {
+    grid-template-columns: 1fr;
+  }
+
+  .room-header {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .room-privacy span:not(.room-privacy-dot) {
+    display: none;
   }
 }

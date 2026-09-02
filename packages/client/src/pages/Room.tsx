@@ -22,6 +22,8 @@ import Toasts from '../components/Toasts.js';
 import JoinRequestModal from '../components/JoinRequestModal.js';
 import SettingsModal from '../components/SettingsModal.js';
 import PreJoin from '../components/PreJoin.js';
+import KeyFingerprint from '../components/KeyFingerprint.js';
+import { useKeyFingerprint } from '../lib/keyFingerprint.js';
 import {
   buildConstraints,
   initialMediaPlan,
@@ -191,6 +193,12 @@ export default function Room() {
 
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [audioLevels, setAudioLevels] = useState<LevelSnapshot>({});
+
+  // A impressão da chave: 8 cores derivadas da passphrase de verdade desta
+  // sala (ver `lib/keyFingerprint.js`). Mesmo link ⇒ mesma sequência, em
+  // qualquer aba — é o que permite conferir de relance se todo mundo entrou
+  // com a mesma chave.
+  const keyFingerprint = useKeyFingerprint(passphrase);
 
   // Preferência de dispositivos: a única coisa que este app grava em
   // `localStorage` (ver `lib/devices.js` e `ARCHITECTURE.md` §6.10). O toggle de
@@ -387,7 +395,11 @@ export default function Room() {
     }, TOAST_MS);
     toastTimersRef.current.add(timer);
 
-    if (soundsEnabledRef.current) {
+    // O bipe é só de entrada/saída — um toast novo como "link copiado" não
+    // ganhou som quando entrou, e não devia: o objetivo do bipe é notar
+    // trocas na sala sem olhar a tela, não confirmar a própria ação da
+    // pessoa, que já vê o toast que ela mesma disparou.
+    if (soundsEnabledRef.current && (kind === 'join' || kind === 'leave')) {
       // Entrada sobe, saída desce — dá para distinguir sem olhar a tela.
       monitorRef.current?.playBeep(
         kind === 'join'
@@ -1535,6 +1547,7 @@ export default function Room() {
       <>
         {overlays}
         <PreJoin
+          roomId={roomId}
           preferences={preferences}
           nameInput={nameInput}
           onNameChange={setNameInput}
@@ -1553,39 +1566,80 @@ export default function Room() {
   }
 
   if (phase === PHASE.DENIED) {
+    const roomFull = denyReason === 'room-full';
     return (
       <>
         {overlays}
         <main className="room denied">
           <div className="phase-content">
-            <h2>Acesso não liberado</h2>
-            <p>
-              {denyReason === 'room-full'
-                ? 'A sala já está com 6 participantes.'
-                : denyReason === 'setup-error'
-                  ? 'Erro ao inicializar a conexão. Verifique sua rede e tente novamente.'
-                  : denyReason === 'invalid-room'
-                    ? 'Esse endereço de sala não é válido. Confira o link — ele vai até o final, incluindo a parte depois do #.'
-                    : 'Seu pedido de entrada foi negado.'}
-            </p>
-            <button onClick={() => navigate('/')}>Voltar</button>
+            <div className="denied-cards">
+              <div className="denied-card">
+                <h2>{roomFull ? 'A sala está cheia' : 'Não te deixaram entrar'}</h2>
+                {/* O texto de cada motivo é o mesmo de sempre — é o que
+                    `test/roomPhases.test.ts` fixa como caracterização — só a
+                    moldura ao redor mudou. */}
+                <p>
+                  {denyReason === 'room-full'
+                    ? 'A sala já está com 6 participantes.'
+                    : denyReason === 'setup-error'
+                      ? 'Erro ao inicializar a conexão. Verifique sua rede e tente novamente.'
+                      : denyReason === 'invalid-room'
+                        ? 'Esse endereço de sala não é válido. Confira o link — ele vai até o final, incluindo a parte depois do #.'
+                        : 'Seu pedido de entrada foi negado.'}
+                </p>
+              </div>
+              {denyReason !== 'room-full' && denyReason !== 'setup-error' && denyReason !== 'invalid-room' && (
+                <div className="denied-card muted">
+                  <h3>Ou a sala está cheia</h3>
+                  <p>
+                    São {MAX_PARTICIPANTS} por sala, porque cada pessoa se conecta com todas as
+                    outras direto. Acima disso a sua internet não dá conta.
+                  </p>
+                </div>
+              )}
+            </div>
+            <div className="denied-actions">
+              <button className="primary" onClick={() => navigate('/')}>
+                Abrir outra sala
+              </button>
+              <button className="secondary" onClick={() => navigate(0)}>
+                Tentar de novo
+              </button>
+            </div>
           </div>
         </main>
       </>
     );
   }
 
-  if (phase === PHASE.CONNECTING || phase === PHASE.WAITING_APPROVAL) {
+  if (phase === PHASE.CONNECTING) {
     return (
       <>
         {overlays}
         <main className="room waiting">
           <div className="phase-content">
-            <h2>
-              {phase === PHASE.CONNECTING
-                ? 'Conectando…'
-                : 'Aguardando aprovação de quem já está na sala…'}
-            </h2>
+            <div className="phase-orb" aria-hidden="true" />
+            <h2>Abrindo os canais</h2>
+            <p className="tagline" style={{ margin: 0, maxWidth: '34ch', textAlign: 'center' }}>
+              Negociando a conexão direta com cada pessoa da sala. Nenhum vídeo passa pelo
+              servidor.
+            </p>
+          </div>
+        </main>
+      </>
+    );
+  }
+
+  if (phase === PHASE.WAITING_APPROVAL) {
+    return (
+      <>
+        {overlays}
+        <main className="room waiting">
+          <div className="phase-content">
+            <h2>Bateu na porta</h2>
+            <p className="tagline" style={{ margin: 0, maxWidth: '34ch', textAlign: 'center' }}>
+              Quem já está na sala precisa te deixar entrar — não tem admin aqui.
+            </p>
             <div className="local-preview">
               {/* `cameraOff` é obrigatório aqui: sem ele o tile ficaria preto
                   para quem entrou sem vídeo, que passou a ser o caminho comum. */}
@@ -1596,9 +1650,20 @@ export default function Room() {
                 cameraOff={cameraOff}
               />
             </div>
+            <div className="phase-pulse-line">
+              <span className="phase-dot" aria-hidden="true" />
+              sua câmera continua {cameraOff ? 'desligada' : 'do jeito que você escolheu'}
+            </div>
             {/* Momento certo para descobrir que a câmera errada está ativa: aqui,
                 e não já visível para todo mundo na grade. */}
-            <button onClick={openSettings}>Configurações</button>
+            <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+              <button className="secondary" onClick={openSettings}>
+                Configurações
+              </button>
+              <button className="secondary" onClick={() => navigate('/')}>
+                Desistir
+              </button>
+            </div>
           </div>
         </main>
       </>
@@ -1608,6 +1673,13 @@ export default function Room() {
   const inviteLink = buildRoomUrl(window.location.origin, roomId, passphrase);
   const roomSize = participants.size + 1;
 
+  const copyInvite = () => {
+    navigator.clipboard
+      .writeText(inviteLink)
+      .then(() => pushToast('copy', 'Link copiado — inclusive a parte depois do #'))
+      .catch(() => setMediaError('Não foi possível copiar. O link está logo abaixo, na sala.'));
+  };
+
   return (
     <>
       {overlays}
@@ -1616,22 +1688,138 @@ export default function Room() {
           soundboardOpen ? ' with-soundboard' : ''
         }`}
       >
-        {/* E2EE desabilitado por ora */}
+        {/* O rail substitui a barra de rodapé do Meet. Continua sendo a mesma
+            `.controls` que sempre foi — o e2e mede o retângulo dela e compara
+            o `textContent` exato de cada botão (ver os comentários abaixo) —
+            só a forma virou coluna. Os rótulos escondidos por `.sr-only` são o
+            que preserva esse contrato sem mostrar texto nenhum: quem aparece é
+            o ícone e, nos três toggles de mídia, a keycap desenhada por CSS
+            (`data-key`, nunca um nó de texto — ela não pode entrar no
+            `textContent`). */}
+        <div className="controls">
+          <span className="rail-mark" aria-hidden="true">w</span>
 
-        {mediaError && <p className="warning">{mediaError}</p>}
-
-        {/* Fora de qualquer painel, e `<button>` de verdade — não um `<div
-            onClick>`. O único caminho de destravamento que existia era o botão
-            dentro do painel de música, que só existe com o painel aberto: quem
-            não o abre ficava em silêncio sem nenhuma saída. Também não é um
-            toast: toasts somem sozinhos, e silêncio depois de um toast expirado
-            é o mesmo defeito numa forma nova. */}
-        {audioBlocked && (
-          <button type="button" className="warning audio-blocked" onClick={unlockAudio}>
-            O navegador bloqueou o som desta sala. Clique aqui para ouvir os
-            participantes e a música.
+          <button type="button" data-key="M" aria-pressed={!muted} onClick={toggleMute}>
+            <i className="ph ph-microphone" aria-hidden="true" />
+            <span className="sr-only">{muted ? 'Ativar mic' : 'Silenciar'}</span>
           </button>
-        )}
+
+          <button type="button" data-key="V" aria-pressed={!cameraOff} onClick={toggleCamera}>
+            <i className={`ph ${cameraOff ? 'ph-video-camera-slash' : 'ph-video-camera'}`} aria-hidden="true" />
+            <span className="sr-only">{cameraOff ? 'Ativar câmera' : 'Desligar câmera'}</span>
+          </button>
+
+          <button
+            type="button"
+            data-key="S"
+            aria-pressed={sharingScreen}
+            onClick={sharingScreen ? stopScreenShare : startScreenShare}
+          >
+            <i className="ph ph-monitor" aria-hidden="true" />
+            <span className="sr-only">{sharingScreen ? 'Parar compartilhamento' : 'Compartilhar tela'}</span>
+          </button>
+
+          <div className="rail-divider" aria-hidden="true" />
+
+          <button type="button" aria-pressed={chatOpen} onClick={chatOpen ? () => setChatOpen(false) : openChat}>
+            <i className="ph ph-chat-teardrop-text" aria-hidden="true" />
+            <span className="sr-only">Chat</span>
+            {unreadCount > 0 && !chatOpen && (
+              <span className="badge rail-unread">{unreadCount}</span>
+            )}
+          </button>
+
+          {/* Sem emoji dentro do texto: os roteiros do e2e comparam
+              `textContent` exato de botões desta barra. */}
+          <button
+            type="button"
+            onClick={toggleMusic}
+            className={`music-button${music.currentEntry ? ' has-track' : ''}`}
+            aria-pressed={musicOpen}
+            title={
+              music.currentEntry
+                ? music.currentEntry.title
+                : music.enabled
+                  ? 'Fila de música da sala'
+                  : 'Propor à sala ligar o player de música'
+            }
+          >
+            <i className="ph ph-music-notes" aria-hidden="true" />
+            <span className="sr-only">Música</span>
+            {music.currentEntry && (
+              <span className="music-button-track">{music.currentEntry.title}</span>
+            )}
+          </button>
+
+          {/* Rótulo exato `Soundboard`, sem emoji e sem começar por
+              `Silenciar`/`Chat`/`Música`: os roteiros do e2e procuram botões
+              desta barra por `textContent` exato e por prefixo. */}
+          <button
+            type="button"
+            className={`soundboard-button${soundboardOpen ? ' rail-on' : ''}`}
+            onClick={toggleSoundboard}
+            aria-label="Soundboard"
+            aria-expanded={soundboardOpen}
+            title="Efeitos sonoros favoritados neste navegador"
+          >
+            <i className="ph ph-squares-four" aria-hidden="true" />
+            <span className="sr-only">Soundboard</span>
+          </button>
+
+          <div className="rail-spacer" />
+
+          <button type="button" onClick={openSettings} title="Câmera, microfone e saída de áudio">
+            <i className="ph ph-gear-six" aria-hidden="true" />
+            <span className="sr-only">Configurações</span>
+          </button>
+          <button type="button" onClick={() => navigate('/')} className="leave" title="Sair da sala">
+            <i className="ph ph-sign-out" aria-hidden="true" />
+            <span className="sr-only">Sair</span>
+          </button>
+        </div>
+
+        <div className="room-main">
+          <header className="room-header">
+            <div className="room-header-name">
+              <span className="room-name">{roomId}</span>
+              <span className="room-size">
+                {roomSize} de {MAX_PARTICIPANTS}
+              </span>
+            </div>
+
+            <div className="key-chip" title="A impressão da chave desta sala">
+              <span className="key-chip-label">chave</span>
+              <KeyFingerprint colors={keyFingerprint} size="sm" />
+            </div>
+
+            <div className="room-header-spacer" />
+
+            <span className="room-privacy">
+              <span className="room-privacy-dot" aria-hidden="true" />
+              <span>nada sendo gravado</span>
+            </span>
+            <button type="button" className="primary" onClick={copyInvite} style={{ height: 32, fontSize: 12 }}>
+              Copiar convite
+            </button>
+          </header>
+
+          {mediaError && <p className="warning">{mediaError}</p>}
+
+          {/* Fora de qualquer painel, e `<button>` de verdade — não um `<div
+              onClick>`. O único caminho de destravamento que existia era o
+              botão dentro do painel de música, que só existe com o painel
+              aberto: quem não o abre ficava em silêncio sem nenhuma saída.
+              Também não é um toast: toasts somem sozinhos, e silêncio depois
+              de um toast expirado é o mesmo defeito numa forma nova. */}
+          {audioBlocked && (
+            <button type="button" className="warning audio-blocked" onClick={unlockAudio}>
+              <i className="ph ph-speaker-simple-slash" aria-hidden="true" style={{ fontSize: 18 }} />
+              <span>
+                O navegador bloqueou o som desta sala. Clique aqui para ouvir os participantes
+                e a música.
+              </span>
+            </button>
+          )}
 
         <div className="stage">
           {/* Antes do palco de vídeo de propósito: `.stage` é um flex row, e a
@@ -1722,69 +1910,16 @@ export default function Room() {
           </div>
         )}
 
-        <div className="controls">
-          <button onClick={toggleMute}>{muted ? 'Ativar mic' : 'Silenciar'}</button>
-          <button onClick={toggleCamera}>{cameraOff ? 'Ativar câmera' : 'Desligar câmera'}</button>
-          <button onClick={sharingScreen ? stopScreenShare : startScreenShare}>
-            {sharingScreen ? 'Parar compartilhamento' : 'Compartilhar tela'}
-          </button>
-          <button onClick={chatOpen ? () => setChatOpen(false) : openChat}>
-            Chat
-            {unreadCount > 0 && !chatOpen && <span className="badge">{unreadCount}</span>}
-          </button>
-          {/* Sem emoji dentro do texto: os roteiros do e2e comparam
-              `textContent` exato de botões desta barra. */}
-          <button
-            onClick={toggleMusic}
-            className={`music-button${music.currentEntry ? ' has-track' : ''}`}
-            aria-pressed={musicOpen}
-            title={
-              music.currentEntry
-                ? music.currentEntry.title
-                : music.enabled
-                  ? 'Fila de música da sala'
-                  : 'Propor à sala ligar o player de música'
-            }
-          >
-            Música
-            {music.currentEntry && (
-              <span className="music-button-track">{music.currentEntry.title}</span>
-            )}
-          </button>
-          {/* Rótulo exato `Soundboard`, sem emoji e sem começar por
-              `Silenciar`/`Chat`/`Música`: os roteiros do e2e procuram botões
-              desta barra por `textContent` exato e por prefixo. */}
-          <button
-            type="button"
-            className="soundboard-button"
-            onClick={toggleSoundboard}
-            aria-label="Soundboard"
-            aria-expanded={soundboardOpen}
-            title="Efeitos sonoros favoritados neste navegador"
-          >
-            Soundboard
-          </button>
-          <button
-            onClick={() => savePreferences({ soundsEnabled: !soundsEnabled })}
-            title="Bipe de entrada e saída de participantes"
-          >
-            {soundsEnabled ? 'Silenciar avisos' : 'Ativar avisos'}
-          </button>
-          <button onClick={openSettings} title="Câmera, microfone e saída de áudio">
-            Configurações
-          </button>
-          <button onClick={() => navigate('/')} className="leave">
-            Sair
-          </button>
+          {/* Linha única e truncada: com `word-break` a URL virava 3–4 linhas
+              em janela estreita e roubava altura do palco a cada resize. O
+              botão "Copiar convite" do cabeçalho é o caminho rápido; esta
+              linha é o retrocesso que continua funcionando sem clipboard. */}
+          <p className="invite-hint" title={inviteLink}>
+            Link do convite: <code>{inviteLink}</code> — copie inteiro, inclusive depois do{' '}
+            <code>#</code>, e compartilhe por outro canal.
+            {roomSize >= MAX_PARTICIPANTS && ' Sala no limite de participantes.'}
+          </p>
         </div>
-
-        {/* Linha única e truncada: com `word-break` a URL virava 3–4 linhas em
-            janela estreita e roubava altura do palco a cada resize. */}
-        <p className="invite-hint" title={inviteLink}>
-          Link do convite: <code>{inviteLink}</code> — copie inteiro, inclusive depois do{' '}
-          <code>#</code>, e compartilhe por outro canal.
-          {roomSize >= MAX_PARTICIPANTS && ' Sala no limite de participantes.'}
-        </p>
       </main>
     </>
   );

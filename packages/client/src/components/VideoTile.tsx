@@ -150,9 +150,11 @@ export default function VideoTile({
       )}
       <span className="video-label">
         {micOff && (
-          <span className="mic-off" title="Microfone desligado" aria-label="Microfone desligado">
-            🔇
-          </span>
+          <i
+            className="ph ph-microphone-slash mic-off"
+            title="Microfone desligado"
+            aria-label="Microfone desligado"
+          />
         )}
         {label}
       </span>
