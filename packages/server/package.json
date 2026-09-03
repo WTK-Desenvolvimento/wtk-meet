@@ -15,8 +15,8 @@
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/core": "^2.10.0",
-    "@opentelemetry/exporter-metrics-otlp-http": "^0.221.0",
+    "@opentelemetry/core": "^2.11.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.222.0",
     "@opentelemetry/resources": "^2.10.0",
     "@opentelemetry/sdk-metrics": "^2.10.0",
     "cors": "^2.8.5",
