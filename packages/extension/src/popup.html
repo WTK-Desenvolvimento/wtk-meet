@@ -51,6 +51,14 @@
 
     <p id="notice" class="aviso" data-testid="notice" hidden></p>
 
+    <!--
+      Sonda de diagnóstico: invisível para quem usa, e o único jeito honesto de
+      um teste de fora afirmar "um motor só". `engine-id` muda quando o
+      documento offscreen é recriado; `play-count` e `audio-contexts` vêm do
+      motor, não desta página.
+    -->
+    <span id="diag" data-testid="diag" hidden></span>
+
     <footer>
       <button id="manage" data-testid="manage" type="button">Gerenciar fila e arquivos</button>
       <p class="rodape" data-testid="e2ee-note">

@@ -53,7 +53,41 @@ export interface PrefillRequest {
   type: 'prefill';
 }
 
-export type SwMessage = EnsureEngineMessage | BadgeMessage | OpenManagerMessage | PrefillRequest;
+/**
+ * O motor pedindo disco ao service worker.
+ *
+ * Não é indireção gratuita: **o documento offscreen não tem `chrome.storage`**
+ * (verificado no Chromium; ver o cabeçalho de `lib/storage.ts`). Ele tem
+ * `chrome.runtime`, e é por ele que os favoritos e as preferências passam.
+ */
+export interface StorageGetMessage {
+  target: 'sw';
+  type: 'storage-get';
+  keys: string[];
+}
+
+export interface StorageSetMessage {
+  target: 'sw';
+  type: 'storage-set';
+  key: string;
+  value: string;
+}
+
+/** O caminho de volta: o service worker avisa o motor do que mudou. */
+export interface StorageChangedMessage {
+  target: 'engine';
+  type: 'storage-changed';
+  key: string;
+  value: string | null;
+}
+
+export type SwMessage =
+  | EnsureEngineMessage
+  | BadgeMessage
+  | OpenManagerMessage
+  | PrefillRequest
+  | StorageGetMessage
+  | StorageSetMessage;
 
 // -------------------------------------------------------------- UI → motor
 
@@ -121,6 +155,16 @@ export interface FavoriteRenameCommand {
   title: string;
 }
 
+/**
+ * O handshake: a UI (pelo service worker) pergunta se o motor já atende. Ver o
+ * cabeçalho de `offscreen.ts` — "o documento existe" e "o motor atende" são
+ * dois instantes diferentes, e conectar no primeiro é uma tela vazia sem erro.
+ */
+export interface PingCommand {
+  target: 'engine';
+  type: 'ping';
+}
+
 export interface JoinDecisionCommand {
   target: 'engine';
   type: 'join-decision';
@@ -139,7 +183,9 @@ export type EngineCommand =
   | FavoriteAddCommand
   | FavoriteRemoveCommand
   | FavoriteRenameCommand
-  | JoinDecisionCommand;
+  | JoinDecisionCommand
+  | PingCommand
+  | StorageChangedMessage;
 
 // -------------------------------------------------------------- motor → UI
 

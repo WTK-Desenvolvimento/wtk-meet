@@ -33,8 +33,32 @@ const OFFSCREEN_PATH = 'offscreen.html';
  */
 let ensuring: Promise<void> | null = null;
 
+/**
+ * Espera o motor **atender**, e não só o documento existir.
+ *
+ * `createDocument` resolve quando o documento foi criado; o script dele pode
+ * ainda não ter rodado. Responder `ensure-engine` nesse instante faz a porta que
+ * a UI abre em seguida chegar a um `onConnect` sem listener: ela é desconectada
+ * na hora e o popup abre vazio, sem erro nenhum. O `ping` do `offscreen.ts` é o
+ * que distingue os dois momentos.
+ */
+async function esperarMotor(tentativas = 40): Promise<void> {
+  for (let i = 0; i < tentativas; i += 1) {
+    try {
+      const resposta = (await chrome.runtime.sendMessage({ target: 'engine', type: 'ping' })) as
+        | { ready?: boolean }
+        | undefined;
+      if (resposta?.ready) return;
+    } catch {
+      // "Receiving end does not exist": o documento ainda não atende. É o caso
+      // esperado nas primeiras voltas.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 async function ensureEngine(): Promise<void> {
-  if (await chrome.offscreen.hasDocument()) return;
+  if (await chrome.offscreen.hasDocument()) return esperarMotor();
   if (ensuring) return ensuring;
   ensuring = chrome.offscreen
     .createDocument({
@@ -56,7 +80,8 @@ async function ensureEngine(): Promise<void> {
     .finally(() => {
       ensuring = null;
     });
-  return ensuring;
+  await ensuring;
+  return esperarMotor();
 }
 
 /** O endereço sugerido para o campo de sala, lido da aba ativa. */
@@ -96,6 +121,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       void chrome.tabs.create({ url: chrome.runtime.getURL('manager.html') });
       return undefined;
 
+    case 'storage-get':
+      // O motor não tem `chrome.storage` (ver `lib/storage.ts`): aqui é o
+      // único lugar da extensão que fala com o disco em nome dele.
+      chrome.storage.local.get(message.keys).then(
+        (stored) => {
+          const values: Record<string, string> = {};
+          for (const [key, value] of Object.entries(stored)) {
+            if (typeof value === 'string') values[key] = value;
+          }
+          sendResponse({ values });
+        },
+        () => sendResponse({ values: {} }),
+      );
+      return true;
+
+    case 'storage-set':
+      void chrome.storage.local.set({ [message.key]: message.value });
+      return undefined;
+
     case 'badge': {
       // A única superfície que o motor não alcança. Pedido dele, escrito aqui.
       const text = message.pending > 0 ? String(message.pending) : message.playing ? '♪' : '';
@@ -119,6 +163,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
  *
  * O `onInstalled` existe só para deixar o badge limpo.
  */
+/**
+ * Uma escrita de qualquer contexto vira aviso ao motor — que não recebe
+ * `chrome.storage.onChanged` porque não tem `chrome.storage`. É isto que
+ * mantém a lista de favoritos igual no popup, na `manager` e no motor.
+ */
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') return;
+  for (const [key, change] of Object.entries(changes)) {
+    void chrome.runtime
+      .sendMessage({
+        target: 'engine',
+        type: 'storage-changed',
+        key,
+        value: typeof change.newValue === 'string' ? change.newValue : null,
+      })
+      .catch(() => {
+        // O motor pode não estar de pé. O próximo `hydrate` lê o valor atual.
+      });
+  }
+});
+
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.action.setBadgeText({ text: '' });
 });

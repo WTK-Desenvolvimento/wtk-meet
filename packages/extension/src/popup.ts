@@ -45,6 +45,7 @@ const els = {
   cooldown: $<HTMLSpanElement>('cooldown'),
   notice: $<HTMLParagraphElement>('notice'),
   manage: $<HTMLButtonElement>('manage'),
+  diag: $<HTMLSpanElement>('diag'),
 };
 
 const STATUS_TEXT: Record<EngineState['status'], string> = {
@@ -97,6 +98,15 @@ function render(): void {
 
   els.volume.value = String(state.volume);
   els.cooldown.textContent = state.cooldownMs > 0 ? `aguarde ${Math.ceil(state.cooldownMs / 1000)}s` : '';
+
+  // A sonda do E2E (ver `popup.html`). Escrita no render para acompanhar o
+  // estado sem um caminho próprio de atualização.
+  els.diag.dataset.engineId = state.engineId;
+  els.diag.dataset.playCount = String(state.playCount);
+  els.diag.dataset.audioContexts = String(state.audioContextCount);
+  els.diag.dataset.queueLength = String(state.queue.length);
+  els.diag.dataset.favorites = String(state.favorites.length);
+  els.diag.dataset.cooldownMs = String(state.cooldownMs);
 
   renderPending();
   renderFavorites();

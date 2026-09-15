@@ -1,27 +1,37 @@
 /**
- * `chrome.storage.local` com cara de `localStorage`.
+ * `chrome.storage.local` com cara de `localStorage` — e o desvio que o
+ * documento offscreen obriga.
  *
- * `lib/soundboard.ts` do client espera um objeto *storage-like* **síncrono**
- * (`getItem`/`setItem`) — e é assim de propósito: é o que o mantém puro e
- * testável em `node --test`. `chrome.storage.local` é assíncrono. O adaptador
- * fecha a distância com um cache em memória hidratado **antes** do primeiro uso:
- * o boot do motor e o de cada página de UI aguardam `hydrate()`, e daí em diante
- * a leitura é do cache e a escrita é *write-through*.
+ * **Duas coisas, e a segunda foi medida, não deduzida:**
+ *
+ * 1. `lib/soundboard.ts` do client espera um objeto *storage-like* **síncrono**
+ *    (`getItem`/`setItem`), e é assim de propósito: é o que o mantém puro e
+ *    testável em `node --test`. `chrome.storage.local` é assíncrono. O adaptador
+ *    fecha a distância com um cache em memória hidratado **antes** do primeiro
+ *    uso: o boot de cada contexto aguarda `hydrate()`, e daí em diante a leitura
+ *    é do cache e a escrita é *write-through*.
+ *
+ * 2. **O documento offscreen não tem `chrome.storage`.** Ele tem `chrome.runtime`
+ *    e praticamente nada mais — `chrome.storage.local` é `undefined` lá dentro, e
+ *    o sintoma é um `TypeError: Cannot read properties of undefined (reading
+ *    'local')` dentro de um boot assíncrono cuja rejeição ninguém vê: o documento
+ *    existe, responde, e a UI espera para sempre um estado que nunca chega.
+ *    Verificado no Chromium em 2026-09-15; o documento de arquitetura desta
+ *    entrega afirmava o contrário (§7.4 listava `chrome.storage` como disponível
+ *    no motor), e é esta a correção.
+ *
+ *    Daí os dois *backends*: quem tem a API usa a API (`directBackend`); o motor
+ *    pede ao service worker por mensagem (`messageBackend`). O resto do código —
+ *    inclusive `soundboard.ts` — não sabe a diferença.
  *
  * **O valor gravado é a mesma string JSON que o app grava no `localStorage`**,
- * sob a mesma chave (`wtk-meet:soundboard`) e na mesma versão de esquema. Não é
- * detalhe: é o que permite copiar a lista de favoritos de um lado para o outro
- * sem conversão, e o que faz `readSoundboard`/`writeSoundboard` do client
- * valerem aqui sem uma linha de tradução.
- *
- * `chrome.storage.onChanged` atualiza o cache nos **outros** contextos — é o que
- * mantém popup, `manager` e motor com a mesma lista de favoritos depois de uma
- * edição em qualquer um deles.
+ * sob a mesma chave (`wtk-meet:soundboard`) e na mesma versão de esquema. É o
+ * que permite copiar a lista de favoritos de um lado para o outro sem conversão.
  */
 
 import type { PreferenceStorage } from '../../../client/src/lib/soundboard.js';
 import { STORAGE_KEY as SOUNDBOARD_KEY } from '../../../client/src/lib/soundboard.js';
-import { runtimeStorage } from './chromeCommon.js';
+import { runtime, runtimeStorage } from './chromeCommon.js';
 
 /** Preferências da própria extensão. Análoga a `wtk-meet:devices` no app. */
 export const EXTENSION_KEY = 'wtk-meet:extension';
@@ -49,6 +59,73 @@ export const DEFAULT_EXTENSION_PREFERENCES: ExtensionPreferences = {
   volume: 1,
 };
 
+/** O mínimo que um contexto precisa saber fazer com o disco. */
+export interface StorageBackend {
+  readAll(keys: string[]): Promise<Record<string, string>>;
+  write(key: string, value: string): void;
+  /** Avisa quando **outro** contexto escreveu. */
+  subscribe(listener: (key: string, value: string | null) => void): void;
+}
+
+/** Quem tem `chrome.storage` (service worker, popup, `manager`). */
+export function directBackend(): StorageBackend {
+  return {
+    async readAll(keys) {
+      const stored = await runtimeStorage.local.get(keys);
+      const out: Record<string, string> = {};
+      for (const key of keys) {
+        const value = stored[key];
+        if (typeof value === 'string') out[key] = value;
+      }
+      return out;
+    },
+    write(key, value) {
+      // A promessa fica deliberadamente solta: quem chamou é código síncrono do
+      // módulo puro, que não tem onde esperar. Uma falha de cota aqui é um
+      // favorito que não sobrevive ao reload — melhor que uma rejeição não
+      // tratada derrubando o motor no meio de uma faixa.
+      void runtimeStorage.local.set({ [key]: value }).catch(() => {});
+    },
+    subscribe(listener) {
+      runtimeStorage.onChanged.addListener((changes, areaName) => {
+        if (areaName !== 'local') return;
+        for (const [key, change] of Object.entries(changes)) {
+          listener(key, typeof change.newValue === 'string' ? change.newValue : null);
+        }
+      });
+    },
+  };
+}
+
+/**
+ * Quem **não** tem `chrome.storage`: o documento offscreen. Tudo vira mensagem
+ * ao service worker, que é quem tem a API.
+ */
+export function messageBackend(): StorageBackend {
+  return {
+    async readAll(keys) {
+      const resposta = (await runtime.sendMessage({ target: 'sw', type: 'storage-get', keys })) as
+        | { values?: Record<string, string> }
+        | undefined;
+      return resposta?.values ?? {};
+    },
+    write(key, value) {
+      void runtime.sendMessage({ target: 'sw', type: 'storage-set', key, value }).catch(() => {
+        // O service worker estava dormindo e acordou tarde demais: a escrita
+        // seguinte reenvia o valor inteiro (é sempre o documento completo).
+      });
+    },
+    subscribe(listener) {
+      runtime.onMessage.addListener((message) => {
+        const msg = message as { target?: string; type?: string; key?: string; value?: unknown };
+        if (msg?.target !== 'engine' || msg.type !== 'storage-changed') return undefined;
+        listener(String(msg.key), typeof msg.value === 'string' ? msg.value : null);
+        return undefined;
+      });
+    },
+  };
+}
+
 /** Normaliza o que veio do disco. Nunca lança: valor estranho vira default. */
 export function sanitizePreferences(raw: unknown): ExtensionPreferences {
   const base = { ...DEFAULT_EXTENSION_PREFERENCES };
@@ -69,14 +146,19 @@ export function sanitizePreferences(raw: unknown): ExtensionPreferences {
 }
 
 /**
- * O adaptador. Uma instância por contexto (o motor tem a sua, cada página de UI
- * tem a sua) — o que as mantém coerentes é o `onChanged`, e não um singleton.
+ * O adaptador. Uma instância por contexto — o que as mantém coerentes é o
+ * `subscribe` do backend, e não um singleton.
  */
 export class ChromeLocalStorage implements PreferenceStorage {
   private cache = new Map<string, string>();
   private hydrated = false;
+  private backend: StorageBackend;
   /** Avisados quando outro contexto escreve. O motor usa para reemitir estado. */
   private listeners = new Set<(key: string) => void>();
+
+  constructor(backend: StorageBackend = directBackend()) {
+    this.backend = backend;
+  }
 
   /**
    * Lê o disco uma vez e passa a escutar mudanças. Idempotente: chamar duas
@@ -85,18 +167,12 @@ export class ChromeLocalStorage implements PreferenceStorage {
   async hydrate(keys: string[] = [SOUNDBOARD_KEY, EXTENSION_KEY]): Promise<void> {
     if (this.hydrated) return;
     this.hydrated = true;
-    const stored = await runtimeStorage.local.get(keys);
-    for (const key of keys) {
-      const value = stored[key];
-      if (typeof value === 'string') this.cache.set(key, value);
-    }
-    runtimeStorage.onChanged.addListener((changes, areaName) => {
-      if (areaName !== 'local') return;
-      for (const [key, change] of Object.entries(changes)) {
-        if (typeof change.newValue === 'string') this.cache.set(key, change.newValue);
-        else this.cache.delete(key);
-        for (const listener of this.listeners) listener(key);
-      }
+    const stored = await this.backend.readAll(keys);
+    for (const [key, value] of Object.entries(stored)) this.cache.set(key, value);
+    this.backend.subscribe((key, value) => {
+      if (value === null) this.cache.delete(key);
+      else this.cache.set(key, value);
+      for (const listener of this.listeners) listener(key);
     });
   }
 
@@ -110,11 +186,7 @@ export class ChromeLocalStorage implements PreferenceStorage {
 
   setItem(key: string, value: string): void {
     this.cache.set(key, value);
-    // *Write-through* com a promessa deliberadamente solta: quem chamou é código
-    // síncrono do módulo puro, que não tem onde esperar. Uma falha de cota aqui
-    // é um favorito que não sobrevive ao reload — e o `catch` vazio é melhor que
-    // uma rejeição não tratada que derruba o motor no meio de uma faixa.
-    runtimeStorage.local.set({ [key]: value }).catch(() => {});
+    this.backend.write(key, value);
   }
 
   /** As preferências da extensão, já normalizadas. */
