@@ -218,6 +218,29 @@ async function musicTrackInfo(page: Page) {
   });
 }
 
+/**
+ * Os `<audio>` que o app monta para a música dos outros (`RemoteMusicAudio`).
+ *
+ * `totalAudioEnergy` é medido no **playout**: um elemento pausado (autoplay
+ * bloqueado, por exemplo) deixa os bytes chegando e a energia em zero — que é
+ * indistinguível de "o outro lado mandou silêncio" se ninguém olhar aqui.
+ */
+async function remoteMusicElements(page: Page) {
+  return page.evaluate(() =>
+    [...document.querySelectorAll('.remote-music-audio audio')].map((el) => {
+      const audio = el as HTMLAudioElement;
+      return {
+        paused: audio.paused,
+        muted: audio.muted,
+        volume: audio.volume,
+        temStream: !!audio.srcObject,
+        readyState: audio.readyState,
+        currentTime: Number(audio.currentTime.toFixed(2)),
+      };
+    }),
+  );
+}
+
 async function esperaMotor(page: Page): Promise<void> {
   await page.waitForFunction(
     () => (document.getElementById('diag')?.dataset.engineId ?? '').startsWith('eng-'),
@@ -270,6 +293,24 @@ try {
 
   // ------------------------------------------------------------------- R1
   await context.addInitScript({ content: INSTRUMENTATION });
+  /**
+   * Semeia o volume da música do **app**, e não da extensão.
+   *
+   * Sem isto a Alice recebe o áudio e não o reproduz: o `<audio>` do
+   * `RemoteMusicAudio` toca com `volume: 0`, os bytes chegam e o
+   * `totalAudioEnergy` fica em zero — o sintoma exato de "a sala não ouve".
+   *
+   * A causa é do app e é pré-existente (`lib/useMusicRoom.ts`):
+   * `Number(localStorage.getItem('wtk-meet:music-volume'))` devolve **0** quando
+   * a chave não existe (`Number(null) === 0`), e o `0` passa na validação
+   * `>= 0 && <= 1` — então o default de `0.8` nunca é usado por quem nunca mexeu
+   * no controle. Vale para a música de **qualquer** peer, não só a da extensão.
+   * Registrado como débito em `docs/progress/WTK-MEET-26.md`; esta entrega não
+   * toca no client.
+   */
+  await context.addInitScript({
+    content: "localStorage.setItem('wtk-meet:music-volume', '0.8');",
+  });
   await context.route('**/turn-credentials', (route) =>
     route.fulfill({
       status: 200,
@@ -349,6 +390,10 @@ try {
   const antes = await musicChannelAudio(alice);
   await sleep(6_000);
   const depois = await musicChannelAudio(alice);
+  console.log(
+    '[extension-room] <audio> de música na Alice:',
+    JSON.stringify(await remoteMusicElements(alice)),
+  );
   const rms = rmsBetween(antes, depois);
   const bytes = depois.bytes - antes.bytes;
   const estadoMotor = await popup.evaluate(() => ({ ...(document.getElementById('diag')?.dataset ?? {}) }));

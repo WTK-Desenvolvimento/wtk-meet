@@ -86,7 +86,14 @@ Intermitente por construção — passava quando o boot ganhava a corrida.
 **Conserto:** os comandos que chegam antes do motor existir ficam numa fila e são
 executados, na ordem, assim que ele sobe.
 
-### 3.4 `context.route` do Playwright **não alcança** o documento offscreen
+### 3.4 Um comando disparado antes de a porta abrir sumia — dos **dois** lados
+
+A mesma falha, em dois lugares: a UI descartava o comando em
+`this.port?.postMessage` enquanto `start()` ainda esperava o service worker, e o
+motor descartava em `motor?.handleCommand` enquanto hidratava o storage. Os dois
+agora enfileiram e executam na ordem.
+
+### 3.5 `context.route` do Playwright **não alcança** o documento offscreen
 
 Medido com uma sonda dedicada: zero interceptações de um `fetch` feito de dentro
 do offscreen. Isso tem consequência direta no teste — o TURN do E2E não pode ser
@@ -170,7 +177,35 @@ README documenta) e o TURN, que entra pelo proxy (§3.4).
 
 ---
 
-## 7. Débito identificado
+## 7. Achado fora do escopo: a música do app nasce muda
+
+Medido enquanto se investigava "a sala não ouve a extensão", e **não é da
+extensão** — é do app, e é pré-existente:
+
+```ts
+// packages/client/src/lib/useMusicRoom.ts (~linha 230)
+const stored = Number(localStorage.getItem('wtk-meet:music-volume'));
+return Number.isFinite(stored) && stored >= 0 && stored <= 1 ? stored : 0.8;
+```
+
+`localStorage.getItem` devolve `null` quando a chave nunca foi escrita, e
+`Number(null)` é **0** — que passa em `Number.isFinite`, em `>= 0` e em `<= 1`.
+Resultado: **o default de `0.8` é inalcançável** e quem nunca mexeu no controle
+de volume da música ouve tudo em silêncio. Vale para a música de **qualquer**
+peer, não só a da extensão.
+
+O sintoma é exatamente o que este projeto documenta como a pior classe de falha:
+o `<audio>` toca (`paused: false`, `currentTime` avançando), os bytes chegam
+(`bytesReceived > 0`), e o `totalAudioEnergy` fica em zero — indistinguível de
+"o outro lado mandou silêncio" sem olhar o `volume` do elemento.
+
+**Não foi corrigido aqui**: esta entrega não muda `packages/client` (a única
+exceção é o comentário-âncora do §4), e o conserto — tratar `null` antes do
+`Number` — é uma linha no app que merece o seu próprio teste. O roteiro
+`extensionRoom.ts` semeia `wtk-meet:music-volume` para contornar, com o motivo
+escrito ali.
+
+## 8. Débito identificado
 
 - **O proxy do MyInstants continua em aberto**, e agora em dois lugares: no app
   (que precisaria de um proxy no servidor) e na extensão (que precisaria de
@@ -180,3 +215,5 @@ README documenta) e o TURN, que entra pelo proxy (§3.4).
   client e falha quando alguém renomeia um evento em um lado só.
 - **As três falhas de `roomPhases.test.ts`** continuam na `main` (§1). Não são
   desta entrega e não foram tocadas aqui.
+- **O volume da música do app nasce zero** (§7). Uma linha, no client, com teste
+  próprio — precisa de aval por estar fora do escopo desta task.
