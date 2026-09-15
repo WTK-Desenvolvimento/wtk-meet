@@ -105,6 +105,37 @@ queda arma), mas é lixo que se acumula numa sala de vida longa com rotatividade
 existe e é chamado no ramo `'leave'`. É higiene de memória, não regra de acesso, e não
 contradiz nada do §3.3.
 
+## QA de navegador — os 9 cenários do DoD, no Chromium
+
+Todos passaram. O roteiro está versionado em `docs/progress/wtk-meet-25/`, então é
+reexecutável e não vira relato de memória:
+
+| # | Cenário | Resultado |
+|---|---|---|
+| QA 1 | B dá F5 e volta sozinho; nenhum modal na tela de A | ✔ (mais: token de 64 hex gravado, e **rotacionado** no retorno) |
+| QA 2 | B sai pela UI e reabre na mesma aba | ✔ pede aprovação (e a chave já tinha sumido do `sessionStorage`) |
+| QA 3 | B fecha a aba e reabre numa aba nova | ✔ pede aprovação |
+| QA 4 | B demora mais de 60s para voltar | ✔ pede aprovação, e entra normalmente depois de aprovado |
+| QA 5 | Aba duplicada (com o `sessionStorage` copiado) | ✔ a cópia pede aprovação, a original continua na sala, 2 tiles — sem fantasma |
+| QA 6 | Sala de 6, um dá F5 | ✔ volta sem `room-full`; e o sétimo estranho continua barrado enquanto ele está fora |
+| QA 7 | Sala X e depois sala Y na mesma aba | ✔ Y pede aprovação normal |
+| QA 8 | Mídia depois do retorno | ✔ mesh reconectado nos dois sentidos, áudio+vídeo de volta, 2 tiles |
+| QA 9 | Vazamento do token | ✔ console do browser limpo; varredura de `[0-9a-f]{64}` no log do servidor: zero ocorrências |
+
+Comandos (com a receita de libs do `claude-progress.md` exportada):
+
+```bash
+node docs/progress/wtk-meet-25/qa.ts        > /tmp/qa25.log 2>&1         # QA 1,2,3,5,6,7,8,9
+node docs/progress/wtk-meet-25/qa-janela.ts > /tmp/qa25-janela.log 2>&1  # QA 4
+```
+
+**Por que o QA 4 tem processo próprio.** Rodando no fim do `qa.ts`, logo depois do
+bloco de sala cheia (sete contextos Chromium), o `browser.newContext()` seguinte não
+voltava: o cenário travou quinze minutos sem produzir verde nem vermelho, e foi preciso
+matar a execução. Com navegador limpo, o mesmo cenário fecha em pouco mais de um minuto.
+Não é falha do produto — é saturação do Chromium neste sandbox, o mesmo tipo de
+armadilha que a memória do projeto já registra para o E2E.
+
 ## Como testar à mão
 
 ```bash
