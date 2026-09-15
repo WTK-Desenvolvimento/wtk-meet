@@ -107,6 +107,11 @@ function render(): void {
   els.diag.dataset.queueLength = String(state.queue.length);
   els.diag.dataset.favorites = String(state.favorites.length);
   els.diag.dataset.cooldownMs = String(state.cooldownMs);
+  els.diag.dataset.playing = String(!!state.current?.playing);
+  els.diag.dataset.position = String(Math.round(state.current?.positionSec ?? 0));
+  els.diag.dataset.peers = String(state.peers.length);
+  els.diag.dataset.audioState = state.audioState;
+  els.diag.dataset.outputLevel = String(state.outputLevel);
 
   renderPending();
   renderFavorites();

@@ -47,6 +47,12 @@ export class ExtensionAudio implements AudioSide {
   private contexts = 0;
   private engine: MusicEngine;
   private sound: SoundboardPlayer | null = null;
+  /** Medidor do que sai para a sala. Ver `EngineState.outputLevel`. */
+  private meter: AnalyserNode | null = null;
+  // O parâmetro de tipo é exigência do `lib.dom` novo: `getByteTimeDomainData`
+  // recusa um `Uint8Array<ArrayBufferLike>`, que é o que `new Uint8Array(n)`
+  // infere quando o alvo não diz o contrário.
+  private meterBuffer: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(0));
   private options: ExtensionAudioOptions;
 
   constructor(options: ExtensionAudioOptions) {
@@ -75,13 +81,45 @@ export class ExtensionAudio implements AudioSide {
     return this.contexts;
   }
 
+  audioState(): 'none' | 'running' | 'suspended' | 'closed' {
+    const estado = this.context?.state;
+    // `interrupted` existe no iOS e não tem equivalente no que a UI mostra; ele
+    // é lido como `suspended`, que é o que ele significa para quem ouve.
+    if (!estado) return 'none';
+    if (estado === 'running' || estado === 'closed') return estado;
+    return 'suspended';
+  }
+
   /**
    * Garante o grafo de saída e devolve o track do canal de música — o que vai
    * para `mesh.setMusicTrack`, uma vez só, na entrada da sala.
    */
   musicTrack(): MediaStreamTrack | null {
-    this.engine.ensureOutput();
+    this.ensureMeter();
     return this.engine.track;
+  }
+
+  /**
+   * Liga o medidor **no mesmo nó** que alimenta o track da sala. Um analisador
+   * pendurado em qualquer outro ponto mediria outra coisa — e a pergunta que ele
+   * responde é exatamente "o que a sala recebe tem sinal?".
+   */
+  private ensureMeter(): void {
+    const output = this.engine.ensureOutput();
+    if (!output || this.meter) return;
+    this.meter = output.context.createAnalyser();
+    this.meter.fftSize = 1024;
+    this.meterBuffer = new Uint8Array(new ArrayBuffer(this.meter.fftSize));
+    output.destination.connect(this.meter);
+  }
+
+  outputLevel(): number {
+    this.ensureMeter();
+    if (!this.meter) return 0;
+    this.meter.getByteTimeDomainData(this.meterBuffer);
+    let pico = 0;
+    for (const amostra of this.meterBuffer) pico = Math.max(pico, Math.abs(amostra - 128));
+    return Number((pico / 128).toFixed(3));
   }
 
   /** O soundboard mixa no **mesmo** destination do player (§6.13 do app). */

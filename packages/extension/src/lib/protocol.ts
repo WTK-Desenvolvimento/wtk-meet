@@ -254,6 +254,25 @@ export interface EngineState {
   playCount: number;
   /** Quantos `AudioContext` este motor criou. Um motor bem construído diz `1`. */
   audioContextCount: number;
+  /**
+   * O estado do `AudioContext` do motor.
+   *
+   * Está aqui porque `suspended` é uma falha **silenciosa**: o elemento toca, a
+   * posição anda, o track continua vivo — e o que sai para a sala é silêncio
+   * digital. Sem este campo, o sintoma que chega é "a sala não ouve" sem nada
+   * para olhar.
+   */
+  audioState: 'none' | 'running' | 'suspended' | 'closed';
+  /**
+   * Pico recente do que **sai** para a sala (0..1), medido no mesmo ponto em que
+   * o track nasce.
+   *
+   * Existe porque "a sala não ouve" é, quase sempre, uma de duas coisas muito
+   * diferentes — o motor não está produzindo som, ou o som não está chegando — e
+   * sem esta medida não há nada para olhar. Zero com a faixa tocando é silêncio
+   * digital, e o lugar de procurar é o grafo de áudio, não a rede.
+   */
+  outputLevel: number;
   lastError: string | null;
 }
 
@@ -322,6 +341,8 @@ export function emptyState(engineId = ''): EngineState {
     cooldownMs: 0,
     playCount: 0,
     audioContextCount: 0,
+    audioState: 'none',
+    outputLevel: 0,
     lastError: null,
   };
 }

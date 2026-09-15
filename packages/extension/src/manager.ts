@@ -157,8 +157,7 @@ els.save.addEventListener('click', () => {
   els.signaling.value = next.signalingUrl;
   els.appUrl.value = next.appUrl;
   els.notice.hidden = false;
-  els.notice.textContent =
-    'Salvo. A URL do servidor passa a valer no próximo carregamento do motor (recarregue a extensão).';
+  els.notice.textContent = 'Salvo. A URL do servidor vale já na próxima conexão.';
 });
 
 /**

@@ -9,6 +9,16 @@ e o projeto adere ao [Versionamento Semantico](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
+- Extensao Chrome (MV3) em `packages/extension`: um motor de audio unico — uma fila,
+  um player, um soundboard e um `AudioContext` num documento offscreen — compartilhado
+  por todas as abas e conectado a uma sala wtk-meet paralela, que serve de canal de
+  transmissao para quem esta no app. Com uma aba do Google Meet ativa, o popup abre com
+  o codigo da reuniao ja preenchido como endereco da sala. A sala da extensao entra
+  **sem a camada extra de E2EE** (so DTLS-SRTP) — decisao registrada no
+  `ARCHITECTURE.md` §11.2, com a condicao de disparo para o dia em que o app religar a
+  cifra. Dois roteiros E2E novos: `npm run test:e2e:extension` (duas abas, um motor so)
+  e `npm run test:e2e:extension:room` (o app ouve o que sai do motor).
+
 - Telemetria anonima via OTLP: o servidor de sinalizacao exporta nove metricas
   agregadas para um OpenTelemetry Collector / Grafana Alloy. Sem
   `OTEL_EXPORTER_OTLP_ENDPOINT` configurado o comportamento e identico ao

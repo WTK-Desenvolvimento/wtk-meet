@@ -50,6 +50,15 @@ let motor: EngineCore | null = null;
  */
 let falhaNoBoot: string | null = null;
 const fila: ChromePort[] = [];
+/**
+ * Comandos que chegaram antes de o motor existir.
+ *
+ * Descartá-los seria a falha silenciosa clássica desta arquitetura: a página
+ * `manager` abre, cria o documento offscreen e manda `queue-add` no mesmo
+ * segundo — o motor ainda está hidratando o storage, o comando cai num
+ * `motor?.` e some. Quem clicou vê um botão que não fez nada, sem erro.
+ */
+const comandosPendentes: { comando: EngineCommand; porta: ChromePort }[] = [];
 
 function aceitar(port: ChromePort): void {
   if (!motor) {
@@ -66,7 +75,12 @@ runtime.onConnect.addListener((port) => {
   aceitar(port);
   port.onMessage.addListener((message) => {
     if (!isFor('engine', message)) return;
-    void motor?.handleCommand(message as EngineCommand, port as PortLike);
+    const comando = message as EngineCommand;
+    if (!motor) {
+      comandosPendentes.push({ comando, porta: port });
+      return;
+    }
+    void motor.handleCommand(comando, port as PortLike);
   });
   port.onDisconnect.addListener(() => {
     motor?.detach(port as PortLike);
@@ -113,7 +127,7 @@ async function boot(): Promise<void> {
   });
 
   const room = new ExtensionRoom({
-    signalingUrl: prefs.signalingUrl,
+    getSignalingUrl: () => storage.readPreferences().signalingUrl,
     getMusicTrack: () => audio.musicTrack(),
     events: {
       onStatus: (status, detail) => core.setStatus(status, detail),
@@ -140,8 +154,12 @@ async function boot(): Promise<void> {
   audio.setMonitorVolume(prefs.volume);
 
   motor = core;
-  // As portas que chegaram durante o boot recebem o snapshot agora.
+  // As portas que chegaram durante o boot recebem o snapshot agora…
   for (const port of fila.splice(0)) core.attach(port as PortLike);
+  // …e o que elas mandaram nesse meio-tempo é executado, na ordem em que chegou.
+  for (const { comando, porta } of comandosPendentes.splice(0)) {
+    await core.handleCommand(comando, porta as PortLike);
+  }
 
   // Outro contexto editou os favoritos (a página `manager`, por exemplo): relê e
   // espelha. É o que mantém popup, `manager` e motor com a mesma lista.

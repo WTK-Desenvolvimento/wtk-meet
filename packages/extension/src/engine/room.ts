@@ -66,21 +66,26 @@ export class ExtensionRoom implements RoomSide {
   private pending = new Map<string, string>();
   private selfId = '';
   private events: RoomEvents;
-  private signalingUrl: string;
+  /**
+   * Lida **a cada conexão**, e não uma vez no boot: trocar o servidor na página
+   * `manager` e ter de recarregar a extensão para que valesse era uma pegadinha
+   * sem motivo — o motor só usa esta URL no momento em que entra na sala.
+   */
+  private getSignalingUrl: () => string;
   /** O track de música, atado uma vez (decisão 3 do cabeçalho). */
   private getMusicTrack: () => MediaStreamTrack | null;
 
   constructor({
     events,
-    signalingUrl,
+    getSignalingUrl,
     getMusicTrack,
   }: {
     events: RoomEvents;
-    signalingUrl: string;
+    getSignalingUrl: () => string;
     getMusicTrack: () => MediaStreamTrack | null;
   }) {
     this.events = events;
-    this.signalingUrl = signalingUrl;
+    this.getSignalingUrl = getSignalingUrl;
     this.getMusicTrack = getMusicTrack;
   }
 
@@ -90,9 +95,10 @@ export class ExtensionRoom implements RoomSide {
     // O endpoint de TURN é o do servidor configurado. `iceServers.ts` é puro (não
     // lê `import.meta.env`), e é por isso que ele pode ser configurado daqui em
     // vez de vir com a configuração do app embutida.
-    configureIceServers({ endpoint: `${this.signalingUrl.replace(/\/$/, '')}/turn-credentials` });
+    const signalingUrl = this.getSignalingUrl().replace(/\/$/, '');
+    configureIceServers({ endpoint: `${signalingUrl}/turn-credentials` });
 
-    const signaling = createSignalingClient(this.signalingUrl);
+    const signaling = createSignalingClient(signalingUrl);
     this.signaling = signaling;
 
     const mesh = new WebRTCMesh({

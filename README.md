@@ -461,16 +461,109 @@ decisão de privacidade que não coube nesta entrega.
 
 `infra/otel/dashboards/wtk-meet.json` é o painel Grafana, importável sem edição manual.
 
+## Extensão Chrome: um motor de áudio para todas as abas
+
+`packages/extension` é uma extensão Chrome (MV3) que mantém **um** motor de áudio —
+uma fila, um player, um soundboard, um `AudioContext` — e o conecta a uma sala
+wtk-meet paralela. Quem está no app ouve a música e os efeitos **sem instalar nada**.
+
+O caso de uso que a originou: uma reunião no Google Meet (que não compartilha áudio do
+sistema) em que alguém quer pôr som para a sala sem trocar de ferramenta. Com uma aba do
+Meet ativa, o popup já abre com o código da reunião como endereço da sala — assim duas
+pessoas da mesma reunião chegam ao mesmo lugar sem combinar nada.
+
+### Instalar
+
+```bash
+npm install                    # na raiz, uma vez
+npm run build:extension        # gera packages/extension/dist/
+```
+
+Depois: `chrome://extensions` → ligue o **Modo do desenvolvedor** → **Carregar sem
+compactação** → escolha `packages/extension/dist`.
+
+### Usar
+
+1. Clique no ícone da extensão. Com uma aba ativa em `meet.google.com/abc-defg-hij`, o
+   campo de sala já vem preenchido com `abc-defg-hij`; em qualquer outra aba vem a
+   última sala usada, e o popup diz por que não preencheu.
+2. **Conectar** põe o motor na sala. Se já houver gente lá, alguém precisa aprovar a
+   entrada — e a recíproca vale: com o motor na sala, quem chega depois aparece no popup
+   com "Aprovar" e "Negar", e o ícone ganha um badge com a contagem. **O motor nunca
+   aprova sozinho.**
+3. **Gerenciar fila e arquivos** abre a página de gestão: fila completa, adicionar URL ou
+   arquivo do computador, editar favoritos do soundboard e configurar o servidor.
+4. Do popup você toca, pausa, pula, ajusta o volume (que é **local**, nunca trafega) e
+   dispara os favoritos do soundboard.
+
+O áudio continua tocando com o popup fechado: quem toca é o documento offscreen, não a
+janelinha. Para parar, abra o popup e use **Parar e sair**.
+
+### Apontar para o seu servidor
+
+Por padrão a extensão fala com `http://localhost:4000`. Troque na página de gestão.
+
+A extensão tem origem própria (`chrome-extension://<id>`), que não está no `CLIENT_ORIGIN`
+de nenhum deploy. Acrescente-a à lista (a variável aceita valores separados por vírgula):
+
+```bash
+CLIENT_ORIGIN=https://meet.exemplo.com,chrome-extension://abcdefghijklmnopabcdefghijklmnop
+```
+
+O id aparece em `chrome://extensions`. Ele muda a cada instalação enquanto a extensão não
+for publicada com uma `key` fixa no manifest.
+
+O TURN é o mesmo do app: a extensão busca `/turn-credentials` no servidor configurado, e o
+mesh roda com `iceTransportPolicy: 'relay'` — sem TURN, nenhuma conexão fecha.
+
+### O que ela pede, e o que ela não faz
+
+| Permissão | Para quê |
+|---|---|
+| `offscreen` | criar o documento que **é** o motor |
+| `storage` | favoritos (`wtk-meet:soundboard`, mesmo formato do app) e preferências |
+| `activeTab` | ler a URL da aba ativa **no clique**, para explicar por que não preencheu |
+| `https://meet.google.com/*` | ler o código da reunião da aba ativa |
+
+Ela **não** captura o áudio da aba do Meet (isso levaria a voz de quem está na reunião
+para dentro de outra sala), **não** injeta script na página da Google, **não** usa
+microfone nem câmera, e **não** reproduz a voz dos outros participantes — só o canal de
+música deles.
+
+### Duas coisas que precisam estar claras
+
+- **A sala da extensão entra sem a camada extra de E2EE.** O áudio é protegido por
+  DTLS-SRTP, como o de qualquer participante, mas sem a cifra adicional que o app aplica
+  quando ligada (hoje ela está desligada no `Room`; ver `ARCHITECTURE.md` §3 e §11.2).
+- **A sala herda o sigilo do código da reunião — nem mais, nem menos.** Como o endereço é
+  derivado do código do Meet, quem conhece o código consegue adivinhar a sala. A defesa é
+  a aprovação de entrada, que continua sendo humana. Se isso não basta para o seu caso,
+  use "usar um endereço aleatório" na página de gestão.
+- O motor **ocupa uma das seis vagas** da sala: com ele dentro, cabem cinco pessoas.
+
+### Limites herdados do app
+
+URL de áudio sem CORS é **recusada com mensagem** (é o caso do MyInstants), porque sem
+`Access-Control-Allow-Origin` o que chegaria à sala seria silêncio, sem erro. Link de
+YouTube também é recusado: MV3 proíbe código hospedado remotamente, e a entrega do YouTube
+exige que *cada* participante toque o vídeo — o motor é uma máquina só.
+
 ## Testes
 
 ```bash
 # tudo pela raiz (npm workspaces):
-npm test                    # unitários de client + server (node:test)
-npm run typecheck           # tsc --noEmit nos três pacotes
+npm test                    # unitários de client + server + extensão (node:test)
+npm run typecheck           # tsc --noEmit nos quatro pacotes
 npm run lint                # eslint 9 flat config + typescript-eslint
 
 # E2E (ponta a ponta: 3 participantes Chromium + TURN local):
 npm run test:e2e
+
+# E2E da extensão: duas abas, um motor só (contexto persistente + --load-extension)
+npm run test:e2e:extension
+
+# E2E da extensão na sala: o app ouve a música e o efeito que saem do motor
+npm run test:e2e:extension:room
 ```
 
 O typecheck é portão **separado** do build: `npm run build` no client não roda `tsc`,
@@ -499,7 +592,8 @@ packages/server/         sinalização (Express + Socket.IO), estado em memória
 packages/server/dist/    artefato compilado (`npm run build`) — é o que o container roda
 packages/client/         app React (Vite) — UI, mesh WebRTC, E2EE via insertable streams
 packages/client/test/    testes unitários
-packages/e2e/            teste ponta a ponta com 3 participantes
+packages/e2e/            teste ponta a ponta com 3 participantes (e os dois roteiros da extensão)
+packages/extension/      extensão Chrome MV3: um motor de áudio para todas as abas
 infra/coturn/            config de referência para STUN/TURN self-hosted
 ```
 

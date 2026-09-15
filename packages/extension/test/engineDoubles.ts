@@ -68,6 +68,8 @@ export class FakeAudio implements AudioSide {
   disparos: string[] = [];
   faixasCarregadas: string[] = [];
   contextos = 1;
+  estadoDoContexto: 'none' | 'running' | 'suspended' | 'closed' = 'running';
+  nivelDeSaida = 0;
   volume = 1;
   tocando = false;
   posicao = 0;
@@ -78,6 +80,14 @@ export class FakeAudio implements AudioSide {
 
   audioContextCount(): number {
     return this.contextos;
+  }
+
+  audioState(): 'none' | 'running' | 'suspended' | 'closed' {
+    return this.estadoDoContexto;
+  }
+
+  outputLevel(): number {
+    return this.nivelDeSaida;
   }
 
   setMonitorVolume(value: number): void {

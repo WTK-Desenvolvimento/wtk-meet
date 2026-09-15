@@ -3,8 +3,15 @@
   "version": "1.1.0",
   "license": "Apache-2.0",
   "type": "module",
-  "workspaces": ["packages/client", "packages/server", "packages/e2e", "packages/extension"],
-  "engines": { "node": ">=26" },
+  "workspaces": [
+    "packages/client",
+    "packages/server",
+    "packages/e2e",
+    "packages/extension"
+  ],
+  "engines": {
+    "node": ">=26"
+  },
   "devDependencies": {
     "esbuild": "^0.28.2"
   },
@@ -19,6 +26,7 @@
     "test:e2e": "npm -w wtk-meet-e2e run test",
     "test:e2e:extension": "npm -w wtk-meet-e2e run test:extension",
     "typecheck": "npm -w wtk-meet-client -w wtk-meet-server -w wtk-meet-e2e -w wtk-meet-extension run typecheck",
-    "lint": "npm -w wtk-meet-client -w wtk-meet-server -w wtk-meet-extension run lint"
+    "lint": "npm -w wtk-meet-client -w wtk-meet-server -w wtk-meet-extension run lint",
+    "test:e2e:extension:room": "npm -w wtk-meet-e2e run test:extension:room"
   }
 }

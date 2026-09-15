@@ -1347,3 +1347,184 @@ criaria métricas por rota **com path**, e o path de sala **é** o `roomId`.
   por-peer, medidos no navegador, e o caminho até o servidor recriaria exatamente o
   identificador que esta entrega se recusa a criar.
 - **Alertas e SLOs.** O painel é entregue; regras de alerta são decisão de operação.
+
+## 11. Extensão Chrome (MV3): um motor de áudio para todas as abas (WTK-MEET-26)
+
+`packages/extension` é uma extensão Chrome MV3 que mantém **um** motor de áudio — uma
+fila, um player, um soundboard, um `AudioContext` — e o conecta a uma sala wtk-meet
+paralela, que serve de canal de transmissão para quem está no app. O caso de uso que a
+originou: uma reunião no Google Meet, que não compartilha áudio do sistema, onde alguém
+quer pôr música para a sala sem abandonar a ferramenta em que a conversa acontece.
+
+### 11.1 O que muda em relação ao app, em uma tabela
+
+| | App (aba) | Extensão |
+|---|---|---|
+| `AudioContext` | um **por aba**, nasce e morre com a sala | **um**, no documento offscreen, enquanto o motor viver |
+| Fila e player | por aba, replicados pelo protocolo `music-*` | um só, no motor; as abas são espelhos |
+| Favoritos | `localStorage` daquela origem | `chrome.storage.local`, mesma chave e mesmo formato |
+| Rate limit do soundboard | por aba (cada aba é um participante) | **um**, no motor: N abas dividem a mesma janela |
+| E2EE extra | ligável (hoje desligada — §3) | **nunca** (§11.2) |
+| Protocolo `music-*` | participa | não participa (§11.5) |
+
+### 11.2 Sem passphrase e sem chave derivada — a decisão e a condição de disparo
+
+O motor **não** chama `deriveRoomKey`, **não** passa `getRoomKey` ao `WebRTCMesh` e não
+guarda passphrase nenhuma. Se o popup receber um link de convite com `#fragmento`, o
+fragmento é descartado: ele não é usado para derivar coisa alguma.
+
+Hoje isso é compatível com o produto porque a camada extra de E2EE está **desligada no
+`Room`** (§3): sem `getRoomKey`, os transforms de `e2ee.ts` fazem *passthrough* dos dois
+lados. O tráfego da extensão continua protegido por **DTLS-SRTP**, como o de qualquer
+participante — o que ela não tem é a camada adicional que o app aplicaria por cima.
+
+**A armadilha, escrita aqui porque é silenciosa:** `makeDecryptTransform` *descarta* o
+quadro quando a decifragem falha — não repassa, não loga, não avisa. No dia em que o app
+religar a E2EE, os participantes passarão a decifrar tudo que chega com a chave da sala,
+inclusive os quadros em claro da extensão, e vão descartá-los **em silêncio**. O sintoma
+será "a extensão conecta, o tile aparece, e ninguém ouve nada", sem um erro sequer. Por
+isso há um comentário-âncora em `pages/Room.tsx`, ao lado das linhas comentadas de
+`deriveRoomKey`/`getRoomKey`, apontando para cá: religar a E2EE exige decidir entre
+*derivar de verdade* na extensão e *declará-la incompatível*. Não há meio-termo — dar a
+passphrase à extensão "só para não quebrar" seria manusear a chave da sala num documento
+invisível para não usá-la em mais nada.
+
+### 11.3 O motor mora no documento offscreen; o service worker é um roteador sem estado
+
+O service worker MV3 é **efêmero por especificação**: o Chrome o encerra depois de ~30s
+sem eventos e o reinicia do zero. Um socket, uma `RTCPeerConnection` ou um `AudioContext`
+ali dentro morreriam no meio da música, e o sintoma seria "a sala parou de ouvir, e não
+tem erro em lugar nenhum". O documento offscreen, ao contrário, vive enquanto não for
+fechado — e o Chrome permite **um por extensão**, o que entrega de graça a propriedade
+central do produto.
+
+O service worker faz três coisas: garante o documento offscreen (`ensure-engine`),
+responde o que só ele enxerga (a URL da aba ativa, o disco) e pinta o badge do ícone.
+
+**Duas coisas que só se descobrem medindo, e que este projeto mediu (Chromium, 2026-09):**
+
+1. **O documento offscreen não tem `chrome.storage`.** Ele tem `chrome.runtime`, e pouco
+   mais. Um `chrome.storage.local.get` lá dentro é `TypeError` dentro de um boot
+   assíncrono cuja rejeição ninguém vê: o documento sobe, responde, e a UI espera para
+   sempre um estado que nunca chega. Por isso o adaptador de storage tem dois *backends*
+   (`src/lib/storage.ts`): direto para quem tem a API, por mensagem ao service worker para
+   o motor. O documento de arquitetura desta entrega afirmava o contrário.
+2. **`createDocument` resolver não significa "o motor atende".** O script do documento
+   pode ainda não ter rodado, e a porta que a UI abre em seguida chega a um `onConnect`
+   sem listener: ela é desconectada na hora e o popup abre vazio, sem erro. Daí o
+   handshake `ping` entre service worker e motor, e o `onConnect` registrado **antes** de
+   qualquer `await`, com fila para as portas que chegam durante o boot.
+
+### 11.4 O código da reunião vira o endereço da sala — e o que isso custa
+
+Com uma aba ativa em `https://meet.google.com/abc-defg-hij`, o popup abre com
+`abc-defg-hij` no campo de sala, normalizado pelo `roomSlug.ts` do client (o mesmo
+módulo do app: duas normalizações diferentes poriam extensão e app em salas distintas,
+cada um vendo uma sala vazia, sem erro). Com a aba em qualquer outro lugar, o campo traz a
+última sala usada — e o popup **diz por que** não preencheu, em vez de deixar quem olha
+adivinhando.
+
+O que isso custa, e está registrado porque é real:
+
+- O servidor de sinalização passa a ver códigos de reunião como nome de sala. Ele já via
+  nomes escolhidos por gente (§5); isto é mais um passo na mesma direção.
+- **Quem conhece o código da reunião adivinha o endereço da sala** e, com
+  `GET /rooms/:roomId/occupancy`, consegue sondar se ela está aberta agora.
+- A defesa que sobra é o fluxo de aprovação do §4 — e a extensão **não** a enfraquece:
+  quando um pedido chega, o motor guarda, pinta o badge e espera clique humano. Ele nunca
+  aprova sozinho. Um porteiro automático transformaria "sala com aprovação" em "sala
+  aberta para quem adivinhar o endereço", que é justamente o que o item anterior torna
+  fácil.
+- Mitigação embutida: a página `manager` oferece "usar um endereço aleatório" com um
+  clique, e o campo do popup é editável.
+
+### 11.5 A extensão é produtora de áudio, não co-autora da sessão
+
+O motor entra na sala, ata o track no quarto transceiver e toca. Ele **não** envia
+`music-queue-add`, `music-playback`, `music-snapshot` nem `music-command`, e não participa
+de votação; `getMusicSnapshot` devolve `null`. A única mensagem que sai dele é o anúncio
+`soundboard-play`. Mensagens `music-*` que chegam são sanitizadas e descartadas.
+
+Isso funciona porque, para a sala ouvir, **zero mensagem é necessária**: o
+`RemoteMusicAudio` do app toca o canal de música de qualquer peer, montado fora de todo
+ramo condicional. Falar o protocolo inteiro significaria replicar dono de faixa, `version`
+monotônico, sucessão e heartbeat — uma segunda implementação da máquina cuja regra de ouro
+é "um escritor por transição", e a forma mais confiável de produzir duas verdades sobre
+quem é o dono da faixa.
+
+**Consequência que precisa estar escrita:** quem está no app não vê a fila da extensão e
+não consegue pular a faixa dela. O que vê é um participante tocando som — e a defesa de
+quem não quer ouvir é a de sempre: baixar o volume da música ou silenciar aquele peer.
+
+O motor também **ocupa uma das seis vagas** da sala (`MAX_PARTICIPANTS`): com ele dentro,
+cabem cinco pessoas. A UI traduz `room-full` dizendo isso.
+
+### 11.6 O track de música é atado uma vez, e só solto ao desconectar
+
+Logo depois de entrar na sala, o motor chama `ensureOutput()` e `setMusicTrack(track)`
+**uma vez**; `setMusicTrack(null)` só acontece no desligamento. No app, o canal de música
+tem dois donos desde a WTK-MEET-23 (player e soundboard mixam no mesmo destination), e por
+isso cada ramo que "desliga o canal" precisa perguntar antes se o soundboard está com ele
+— um `setMusicTrack(null)` cru derruba um efeito no meio, em silêncio. Aqui o motor é um
+broadcaster dedicado: manter o sender atado o tempo todo **apaga a classe inteira de bug**
+em vez de reimplementar a pergunta. O custo é um Opus transmitindo silêncio enquanto nada
+toca, com o teto de 96 kbps que o mesh já aplica.
+
+O motor também **não** reproduz a voz nem a tela dos outros: `onRemoteStream` e
+`onRemoteScreen` ficam sem handler. Um documento invisível, sem entrada na barra de abas e
+sem controle de volume, reproduzindo a voz de uma sala é algo que ninguém vê nem controla
+— e, com a conversa acontecendo no Meet, seria eco garantido.
+
+### 11.7 Origem, CORS e TURN: o que um deploy precisa saber
+
+A extensão fala de `chrome-extension://<id>`, uma origem que não está no `CLIENT_ORIGIN` de
+nenhum servidor. São dois caminhos, e o README documenta os dois:
+
+1. **Acrescentar `chrome-extension://<id>` ao `CLIENT_ORIGIN`** (a variável aceita valores
+   separados por vírgula). É o caminho verificado pelo E2E desta entrega.
+2. Publicar a extensão com `key` fixa no manifest, para que o id não mude por instalação,
+   e fazer o mesmo uma vez só.
+
+O cliente de sinalização abre com `transports: ['websocket']`: o handshake por *polling* é
+o único que passa por CORS.
+
+O TURN é o mesmo do app: o motor busca `/turn-credentials` no servidor configurado, e o
+mesh roda com `iceTransportPolicy: 'relay'` — sem TURN, nenhuma conexão fecha.
+
+### 11.8 Música com CORS; efeito com CORS; nada de silêncio
+
+URL sem CORS é **recusada com mensagem**, tanto na fila quanto no soundboard — o mesmo
+comportamento do app, e pelo mesmo motivo físico: sem `Access-Control-Allow-Origin` o
+grafo fica *tainted* e o `MediaStreamDestination` emite silêncio digital, sem erro. Na
+extensão, o modo `local` do app (cada participante baixa a mesma URL) não existe: o motor é
+uma máquina só, e tocar local seria tocar para ninguém.
+
+Isso mantém o **MyInstants** recusado, como no app (§9). A extensão *poderia* tocá-lo —
+uma permissão de host opcional dispensa o CORS no `fetch` do soundboard —, mas isso é uma
+permissão ampla na revisão da loja e uma decisão de produto que continua em aberto; o
+`manifest.json` desta entrega não a pede. YouTube também fica de fora, por dois motivos
+independentes: MV3 proíbe código hospedado remotamente (a IFrame API é exatamente isso), e
+a entrega do YouTube é `local` por impossibilidade técnica — cada participante toca o
+vídeo na própria máquina, e o motor não pode fazer isso pela sala.
+
+### 11.9 Build e superfícies
+
+`build.ts` roda no Node (type stripping nativo) e chama o `esbuild` que já é devDependency
+da raiz: três bundles autocontidos (`background`, `offscreen`, `popup`/`manager`) com
+`splitting: false` — um service worker de módulo com chunks compartilhados é a forma mais
+fácil de descobrir, em produção, que um `import()` dinâmico não resolve sob
+`chrome-extension://`. Nenhuma ferramenta nova entra na árvore, e os ícones são gerados por
+código (`tools/makeIcons.ts`) em vez de versionados como binário.
+
+O popup fecha quando perde o foco, e abrir um seletor de arquivo tira o foco dele — o
+diálogo abre, o popup morre, a promessa nunca resolve. Por isso o arquivo local mora na
+página `manager`, que é uma aba comum; e por isso o conteúdo vai para o **IndexedDB** da
+origem da extensão, com só o `fileId` viajando nas mensagens (`File` e `Blob` não
+atravessam a serialização, e um object URL morre com o documento que o criou).
+
+### 11.10 O que a telemetria passa a ver
+
+O motor é mais um socket na sala. Os gauges derivados do `RoomStore` (§10.4) passam a
+contá-lo como participante, e `wtk_room_peak` sobe em salas que têm as mesmas pessoas de
+antes. **Não** há campo novo no `join-request` para marcar "sou bot": seria metadado novo
+no servidor, contra o §5, para corrigir um número que ninguém usa para decidir nada.
