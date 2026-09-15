@@ -112,6 +112,7 @@ function render(): void {
   els.diag.dataset.peers = String(state.peers.length);
   els.diag.dataset.audioState = state.audioState;
   els.diag.dataset.outputLevel = String(state.outputLevel);
+  els.diag.dataset.lastCommand = state.lastCommand ?? '';
 
   renderPending();
   renderFavorites();

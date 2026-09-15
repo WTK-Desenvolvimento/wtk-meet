@@ -196,6 +196,28 @@ async function musicChannelAudio(page: Page) {
   });
 }
 
+/**
+ * O que a Alice vê do canal de música do motor: existe track? está `muted`?
+ *
+ * `muted: true` num receiver quer dizer "o outro lado não está mandando nada
+ * neste m-line" — é a diferença entre *o sender não tem track* e *o sender tem
+ * track e o que sai dele é silêncio*. Sem essa distinção, os dois casos chegam
+ * como "a sala não ouve".
+ */
+async function musicTrackInfo(page: Page) {
+  return page.evaluate(() => {
+    const out: { muted: boolean; readyState: string; enabled: boolean }[] = [];
+    for (const pc of window.__wtkPeers || []) {
+      if (pc.connectionState !== 'connected') continue;
+      const music = pc.getTransceivers().filter((t) => t.currentDirection === 'recvonly')[3];
+      const track = music?.receiver.track;
+      if (!track) continue;
+      out.push({ muted: track.muted, readyState: track.readyState, enabled: track.enabled });
+    }
+    return out;
+  });
+}
+
 async function esperaMotor(page: Page): Promise<void> {
   await page.waitForFunction(
     () => (document.getElementById('diag')?.dataset.engineId ?? '').startsWith('eng-'),
@@ -274,6 +296,11 @@ try {
 
   // ------------------------------------------------------------------- R2
   const manager = await context.newPage();
+  // Console e erro das páginas da extensão: sem isto, um `start()` que rejeita
+  // (o service worker ainda dormindo, por exemplo) some — e o sintoma é um botão
+  // que não faz nada.
+  manager.on('console', (m) => console.log(`[manager:${m.type()}]`, m.text()));
+  manager.on('pageerror', (e) => console.log('[manager:error]', e.message));
   await manager.goto(`chrome-extension://${extensionId}/manager.html`);
   await manager.fill('#signaling', proxy.origin);
   await manager.fill('#display-name', 'Música (extensão)');
@@ -281,6 +308,8 @@ try {
   await sleep(500);
 
   const popup = await context.newPage();
+  popup.on('console', (m) => console.log(`[popup:${m.type()}]`, m.text()));
+  popup.on('pageerror', (e) => console.log('[popup:error]', e.message));
   await popup.goto(`chrome-extension://${extensionId}/popup.html`);
   await esperaMotor(popup);
   await popup.fill('#room', SALA);
@@ -324,6 +353,8 @@ try {
   const bytes = depois.bytes - antes.bytes;
   const estadoMotor = await popup.evaluate(() => ({ ...(document.getElementById('diag')?.dataset ?? {}) }));
   const avisoManager = await manager.evaluate(() => document.getElementById('notice')?.textContent ?? '');
+  const filaNaManager = await manager.evaluate(() => document.getElementById('queue')?.textContent ?? '');
+  console.log('[extension-room] fila vista pela manager:', JSON.stringify(filaNaManager));
   console.log('[extension-room] estado do motor:', JSON.stringify(estadoMotor));
   if (avisoManager) console.log('[extension-room] aviso na manager:', avisoManager);
   check(
@@ -348,6 +379,13 @@ try {
     })
     .then(() => true)
     .catch(() => false);
+  // O nível **na saída do motor**, durante o efeito: separa "não está saindo som
+  // daqui" de "está saindo e não chega lá".
+  const nivelNoMotor = await popup.evaluate(
+    () => document.getElementById('diag')?.dataset.outputLevel ?? '?',
+  );
+  console.log('[extension-room] outputLevel durante o efeito:', nivelNoMotor);
+  console.log('[extension-room] track de música na Alice:', JSON.stringify(await musicTrackInfo(alice)));
   await sleep(4_000);
   const depoisDoEfeito = await musicChannelAudio(alice);
   const rmsEfeito = rmsBetween(antesDoEfeito, depoisDoEfeito);

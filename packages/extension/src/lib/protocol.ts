@@ -274,6 +274,15 @@ export interface EngineState {
    */
   outputLevel: number;
   lastError: string | null;
+  /**
+   * O último comando que o motor **recebeu** (não o último que deu certo).
+   *
+   * É diagnóstico, e existe porque a pergunta "o clique chegou?" não tinha
+   * resposta: entre a porta da UI e o motor há um service worker, um documento
+   * offscreen e duas filas, e um comando perdido no caminho é indistinguível de
+   * um comando que chegou e falhou em silêncio.
+   */
+  lastCommand: string | null;
 }
 
 export interface StateMessage {
@@ -344,5 +353,6 @@ export function emptyState(engineId = ''): EngineState {
     audioState: 'none',
     outputLevel: 0,
     lastError: null,
+    lastCommand: null,
   };
 }

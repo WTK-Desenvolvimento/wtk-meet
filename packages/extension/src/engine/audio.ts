@@ -95,22 +95,38 @@ export class ExtensionAudio implements AudioSide {
    * para `mesh.setMusicTrack`, uma vez só, na entrada da sala.
    */
   musicTrack(): MediaStreamTrack | null {
+    // O grafo primeiro, o medidor depois: atar o track é o que a sala depende, e
+    // nada do diagnóstico pode ficar no caminho disso.
+    this.engine.ensureOutput();
+    const track = this.engine.track;
     this.ensureMeter();
-    return this.engine.track;
+    return track;
   }
 
   /**
-   * Liga o medidor **no mesmo nó** que alimenta o track da sala. Um analisador
-   * pendurado em qualquer outro ponto mediria outra coisa — e a pergunta que ele
-   * responde é exatamente "o que a sala recebe tem sinal?".
+   * Liga o medidor ao **stream** do destination, e não ao nó.
+   *
+   * `MediaStreamAudioDestinationNode` é terminal: ele tem entrada e **zero
+   * saídas**, então `destination.connect(analyser)` não mede nada (na melhor das
+   * hipóteses é no-op; na pior, lança). O que se quer medir é o que a sala
+   * recebe — e isso é o `stream` dele, relido por um
+   * `MediaStreamAudioSourceNode`.
    */
   private ensureMeter(): void {
+    if (this.meter) return;
     const output = this.engine.ensureOutput();
-    if (!output || this.meter) return;
-    this.meter = output.context.createAnalyser();
-    this.meter.fftSize = 1024;
-    this.meterBuffer = new Uint8Array(new ArrayBuffer(this.meter.fftSize));
-    output.destination.connect(this.meter);
+    if (!output) return;
+    try {
+      const fonte = output.context.createMediaStreamSource(output.destination.stream);
+      const analisador = output.context.createAnalyser();
+      analisador.fftSize = 1024;
+      fonte.connect(analisador);
+      this.meter = analisador;
+      this.meterBuffer = new Uint8Array(new ArrayBuffer(analisador.fftSize));
+    } catch {
+      // Medidor é diagnóstico: se o navegador recusar, o motor continua tocando.
+      this.meter = null;
+    }
   }
 
   outputLevel(): number {
