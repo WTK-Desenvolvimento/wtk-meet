@@ -323,7 +323,9 @@ try {
   const rms = rmsBetween(antes, depois);
   const bytes = depois.bytes - antes.bytes;
   const estadoMotor = await popup.evaluate(() => ({ ...(document.getElementById('diag')?.dataset ?? {}) }));
+  const avisoManager = await manager.evaluate(() => document.getElementById('notice')?.textContent ?? '');
   console.log('[extension-room] estado do motor:', JSON.stringify(estadoMotor));
+  if (avisoManager) console.log('[extension-room] aviso na manager:', avisoManager);
   check(
     'R4b. Alice ouve a faixa da extensão (sem votação e sem painel aberto)',
     (rms ?? 0) > 0.001 && bytes > 0,

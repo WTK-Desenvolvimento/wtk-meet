@@ -29,6 +29,15 @@ export class EngineClient {
   // `ChromePort` é a interface global de `src/types/chrome.d.ts`.
   private port: ChromePort | null = null;
   private state: EngineState = emptyState();
+  /**
+   * Comandos disparados antes de a porta abrir.
+   *
+   * `start()` é assíncrono (ele espera o service worker garantir o motor), e uma
+   * página é clicável antes disso — clicar em "adicionar à fila" um instante
+   * depois de abrir a `manager` caía num `this.port?.postMessage` e sumia. Um
+   * botão que não faz nada, sem erro, é a pior forma de perder um comando.
+   */
+  private pendentes: EngineCommand[] = [];
   private handlers: EngineClientHandlers;
 
   constructor(handlers: EngineClientHandlers) {
@@ -64,10 +73,16 @@ export class EngineClient {
       this.port = null;
       this.handlers.onLost();
     });
+
+    for (const comando of this.pendentes.splice(0)) port.postMessage(comando);
   }
 
   send(command: EngineCommand): void {
-    this.port?.postMessage(command);
+    if (!this.port) {
+      this.pendentes.push(command);
+      return;
+    }
+    this.port.postMessage(command);
   }
 
   /** O endereço sugerido para o campo de sala. Só o service worker sabe. */
