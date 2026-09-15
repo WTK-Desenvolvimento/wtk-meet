@@ -101,24 +101,45 @@ pelo Google Meet e Zoom para "E2EE":
    inteira está em `client/src/lib/roomRouting.js`. Links no formato antigo
    (`/room/:id#chave`) redirecionam com `replace`, preservando o fragmento.
 2. Ao abrir o link, o client conecta ao Socket.IO e emite `join-request { roomId,
-   displayName }`.
-3. Se a sala não existe (primeiro a entrar), o próprio requisitante é admitido
+   displayName }` — mais um `resumeToken`, quando a aba tem um (passo 3).
+3. **Retomada (WTK-MEET-25).** Antes de qualquer outra decisão, o servidor verifica o
+   `resumeToken`. Se ele for válido, o requisitante é admitido **direto** e nenhum
+   `join-request` é retransmitido aos presentes — o modal não aparece para ninguém. Um
+   token só vale se cumprir as cinco condições: tem a forma certa (64 chars hex), é da
+   **mesma** sala, teve a graça **armada** (ou seja, aquele socket caiu de verdade),
+   está **dentro** dos 60 segundos, e o `socketId` que ele carrega **não** está mais na
+   sala. Ele é consumido no uso — a admissão emite um token novo e invalida o
+   apresentado na hora.
+
+   A regra que governa todo o resto: **token ruim nunca nega entrada**. Ausente,
+   malformado, expirado, de outra sala, já usado ou de socket ainda vivo ⇒ nenhum
+   `join-denied`, nenhum log, nenhuma métrica de fracasso; o pedido só segue para a fila
+   de aprovação de sempre. O token é um atalho, não uma credencial — se negasse, bastaria
+   plantar lixo no `sessionStorage` de alguém para trancá-lo do lado de fora.
+
+   A malha WebRTC **não** participa disso: quem volta é um peer novo, com `selfId` novo,
+   e `peer-left`/`peer-joined` acontecem normalmente. O que se dispensa é a aprovação, e
+   só ela.
+4. Se a sala não existe (primeiro a entrar), o próprio requisitante é admitido
    automaticamente — ele está criando a sala.
-4. Se a sala já tem participantes, o servidor retransmite `join-request` para todos os
+5. Se a sala já tem participantes, o servidor retransmite `join-request` para todos os
    sockets já presentes. Qualquer um deles pode `approve-join` ou `deny-join`. Nenhuma
    política de "host único" é necessária: qualquer pessoa já presente pode aprovar,
    reforçando que o controle de acesso é do grupo, não de uma conta.
-5. Sala cheia (6 membros) rejeita novos pedidos com `join-denied { reason: 'room-full' }`
-   sem nem notificar os presentes.
-6. Após aprovação, o servidor entrega ao novo membro a lista de participantes atuais
+6. Sala cheia (6 membros) rejeita novos pedidos com `join-denied { reason: 'room-full' }`
+   sem nem notificar os presentes. Durante a janela de graça, a vaga de quem caiu
+   **continua contando** para o limite — é o que garante que ele não leve `room-full` ao
+   voltar, e o preço é que um desconhecido pode ser barrado numa sala que mostra 5
+   pessoas, por no máximo 60 segundos.
+7. Após aprovação, o servidor entrega ao novo membro a lista de participantes atuais
    (id + nome, nada de mídia) e avisa os já presentes via `peer-joined`. Só então começa
    a negociação WebRTC (mesh) entre o novo peer e cada peer existente.
-7. Um pedido que **deixa de ser aprovável** é retratado com `join-request-cancelled
+8. Um pedido que **deixa de ser aprovável** é retratado com `join-request-cancelled
    { requesterId }`, emitido aos membros da sala. Isso acontece quando o requisitante
    desiste (fecha a aba / cai), quando outro participante já negou, ou quando a sala
    encheu no meio do caminho.
 
-O passo 7 é o único evento que esta camada acrescentou ao protocolo, e ele existe por
+O passo 8 é o único evento que esta camada acrescentou ao protocolo, e ele existe por
 causa da forma da UI: como o pedido é um **modal** na tela de todo mundo (§6.7), um
 pedido morto que continuasse na tela seria um botão que não faz nada — e, pior, faria
 parecer que a sala ignora quem está esperando. `approve-join`/`deny-join` já são
@@ -140,6 +161,7 @@ só o aviso; ela não afeta a decisão de acesso em si. O evento carrega apenas 
 | — | Que alguém disparou um efeito do soundboard, quais efeitos existem nos favoritos de quem, ou quem silenciou quem — nada disso passa pelo servidor nem por rota nova (§6.13) |
 | Que uma página foi vista, e qual das três (`home`, `room`, `legacy`) — em agregado, sem saber **qual** sala nem **qual** aba (§10) | Qual sala foi vista, por quem, e a partir de qual link — o beacon não tem campo para nada disso, e a métrica não tem label de sala (§10) |
 | Quanto tempo uma aba ficou na sala, em agregado (§10) | Qual aba, de quem — nenhum identificador de aba, de sessão ou de usuário é criado, lido ou persistido (§10) |
+| Um token de retorno opaco por participante admitido: 32 bytes aleatórios em memória, atados àquela sala, apagados junto com ela (§4, passo 3) | Que duas sessões são a mesma pessoa fora da janela de 60 segundos — o token é consumido no uso, rotacionado a cada admissão e morre com a sala, então não existe fio que ligue a chamada de hoje à de amanhã |
 
 Nada disso é persistido: ao encerrar a sala (todos saem) ou reiniciar o processo, o
 estado desaparece. Não há banco de dados no backend.
@@ -160,6 +182,41 @@ Duas mudanças da WTK-MEET-10 mexem nesta tabela e merecem estar escritas:
   resposta foi reduzida ao mínimo (sem contagem, sem nomes) e o recurso vive num commit
   isolado, revertível sozinho — a decisão de mantê-lo é de produto, não de
   implementação.
+
+A WTK-MEET-25 acrescenta o token de retorno, e ele merece a descrição inteira aqui
+porque é a primeira coisa deste produto que **dá acesso** a uma sala sem aprovação:
+
+- **O que é:** 32 bytes de `crypto.randomBytes` em hexadecimal. Nada é derivado dele e
+  nada o deriva — não é chave, não vira chave e não substitui a passphrase do fragmento.
+  Quem tem token e não tem passphrase entra na sala e não entende nada do que trafega.
+- **Onde vive, do lado do servidor:** num `Map` privado do `RoomStore`, ao lado das
+  salas, com `{ roomId, socketId, displayName, expiresAt }`. Em memória e só. Quando a
+  sala é deletada — o que acontece assim que o último socket sai — os tokens dela são
+  deletados no mesmo instante. Reiniciar o processo significa, sem nenhuma linha de
+  código a mais, que todo mundo volta a pedir aprovação.
+- **Onde vive, do lado do client:** em `sessionStorage`, sob `wtk-meet:resume:<roomId>`.
+  `sessionStorage`, e não `localStorage`, é decisão de produto: sobrevive ao F5 e à
+  reconexão, e morre com a aba. Fechar a aba volta a exigir aprovação de propósito —
+  para que um link vazado numa máquina compartilhada não entre sozinho. Sair pela UI
+  apaga a chave.
+- **Por quanto tempo:** 60 segundos contados **da desconexão**, nunca da admissão (uma
+  reunião de duas horas não pode expirar o token de quem está dentro dela). Enquanto o
+  socket está conectado o token existe mas não é retomável.
+- **Onde ele nunca aparece:** em log, em atributo de métrica, em mensagem de erro, em
+  `peer-joined`, `join-denied`, `join-request` retransmitido, `join-request-cancelled` ou
+  `signal`. O único lugar do fio em que ele trafega é o `join-approved` do próprio dono e
+  o `join-request` de volta.
+- **Ameaça que ele não resolve, dita na cara:** quem executa script na origem do client
+  lê o `sessionStorage` e entra sem aprovação. Quem consegue isso já controla a aba e a
+  chave de E2EE que vive no fragmento; o token não move essa fronteira. O que ele muda é
+  que passa a existir **um** valor com poder de entrada — daí a rotação, o uso único e
+  a janela curta.
+
+Consequência aceita e não tratada: quem edita o nome no lobby e volta na mesma aba
+dentro dos 60s reaparece com o nome antigo. A admissão por token usa o `displayName`
+registrado, e não o do payload, porque a autoridade do token cobre a identidade que foi
+aprovada e nada além — deixar o payload vencer abriria um canal de renomeação silenciosa
+na tela de quem nem viu a queda.
 
 A WTK-MEET-21 acrescenta duas linhas à coluna "Sabe", e elas precisam estar escritas
 aqui e não só na seção nova: o servidor passa a saber **que** uma página foi vista e

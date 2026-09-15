@@ -409,16 +409,24 @@ em segundos.
 | `wtk_client_session_duration_seconds` | histogram | `s` | — | Tempo da aba na sala (via beacon) |
 | `wtk_telemetry_beacons_total` | counter | `{beacon}` | `outcome` | Cada `POST /telemetry` |
 
-`outcome` de `wtk_joins_total` ∈ `admitted, approved, denied, room_full, invalid_room`;
+`outcome` de `wtk_joins_total` ∈ `admitted, approved, denied, room_full, invalid_room,
+resumed`;
 `outcome` de `wtk_telemetry_beacons_total` ∈ `accepted, rejected`; `route` ∈ `home, room,
 legacy`.
 
 Três leituras que evitam interpretação errada do painel:
 
 - **`wtk_joins_total` conta desfechos, não tentativas.** Quem desiste na fila de
-  aprovação não aparece em nenhum dos cinco valores — o conjunto é fechado e não tem
+  aprovação não aparece em nenhum dos seis valores — o conjunto é fechado e não tem
   valor para isso. A diferença entre "pedidos recebidos" e a soma dos desfechos é,
   portanto, invisível. É limitação declarada, não bug.
+- **`resumed` é readmissão sem aprovação**, de quem caiu e voltou dentro dos 60 segundos
+  da janela de graça (`ARCHITECTURE.md` §4). Ele fica separado de `admitted` e de
+  `approved` de propósito: somá-los apagaria a única medida de quanto a reconexão
+  silenciosa está sendo usada. E espere `room_full` subir um pouco junto com ele: durante
+  a graça a vaga de quem caiu continua contando para o limite de 6, então um desconhecido
+  pode ser barrado numa sala que mostra 5 pessoas. É o preço da garantia de retorno, e
+  dura no máximo 60 segundos.
 - **`wtk_client_session_duration_seconds` não é duração de reunião.** Ela mede o tempo
   até a aba ser escondida ou fechada pela primeira vez: trocar de aba no meio da chamada
   encerra a contagem. É o preço de o beacon chegar em navegador móvel, onde `pagehide`

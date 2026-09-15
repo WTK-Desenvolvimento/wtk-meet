@@ -409,16 +409,24 @@ be worse, because it looks solved: with a small space of likely names (`daily`, 
 | `wtk_client_session_duration_seconds` | histogram | `s` | — | Time the tab spent in the room (via beacon) |
 | `wtk_telemetry_beacons_total` | counter | `{beacon}` | `outcome` | Each `POST /telemetry` |
 
-`outcome` on `wtk_joins_total` ∈ `admitted, approved, denied, room_full, invalid_room`;
+`outcome` on `wtk_joins_total` ∈ `admitted, approved, denied, room_full, invalid_room,
+resumed`;
 `outcome` on `wtk_telemetry_beacons_total` ∈ `accepted, rejected`; `route` ∈ `home, room,
 legacy`.
 
 Three readings that keep the dashboard from being misread:
 
 - **`wtk_joins_total` counts outcomes, not attempts.** Someone who gives up in the
-  approval queue shows in none of the five values — the set is closed and has no value for
+  approval queue shows in none of the six values — the set is closed and has no value for
   that. The gap between "requests received" and the sum of outcomes is therefore
   invisible. That is a declared limitation, not a bug.
+- **`resumed` is readmission without approval**, for someone who dropped and came back
+  within the 60-second grace window (`ARCHITECTURE.md` §4). It is kept apart from
+  `admitted` and `approved` on purpose: folding them together would erase the only measure
+  of how much silent reconnection is actually used. Expect `room_full` to rise slightly
+  alongside it — during the grace window the absent person's seat still counts toward the
+  limit of 6, so a stranger can be turned away from a room that shows 5 people. That is
+  the price of the return guarantee, and it lasts at most 60 seconds.
 - **`wtk_client_session_duration_seconds` is not meeting duration.** It measures time until
   the tab is first hidden or closed: switching tabs mid-call ends the count. That is the
   price of the beacon actually arriving on mobile browsers, where `pagehide` is not
