@@ -154,7 +154,28 @@ Duas coisas do ambiente que ele precisa resolver, e que são o mesmo problema de
 deploy real: a origem `chrome-extension://<id>` no `CLIENT_ORIGIN` (o caminho que o
 README documenta) e o TURN, que entra pelo proxy (§3.5).
 
-### 5.3 O que **não** foi medido nesta sessão
+### 5.3 `npm run test:e2e` — a suíte de 3 participantes, comparada com a base
+
+A suíte do app mudou de tamanho com o redesign (#33): são **72** checagens hoje, e a
+falha conhecida deste repositório (F4a, do botão "Silenciar avisos") não existe mais
+nesse recorte. A comparação que vale é com a **linha de base desta branch**:
+
+| Execução | Resultado | Falhas |
+|---|---|---|
+| merge-base `3dfc6bb` | **71/72** | S2 |
+| branch, 1ª rodada | 70/72 | S2 + **L5** |
+| branch, 2ª rodada | **71/72** | S2 |
+
+- **S2** ("o modal é acessível, tem preview ao vivo e não cria um segundo
+  `AudioContext`") falha **também na base** — é pré-existente e não é desta entrega.
+- **L5** (layout do chat) apareceu só na primeira rodada, com a máquina carregada logo
+  depois da suíte unitária, e passou na segunda. É a classe de checagem de layout/rAF que
+  este repositório já registra como intermitente sob carga.
+
+Nada em `packages/client` ou `packages/server` muda por esta entrega além de um
+comentário, então uma regressão de layout vinda daqui não teria por onde acontecer.
+
+### 5.4 O que **não** foi medido nesta sessão
 
 - **Tempo de vida do documento offscreen** com `reasons: ['WEB_RTC',
   'AUDIO_PLAYBACK']`, ocioso por 15 minutos (§7.2 do documento). O código cria o
