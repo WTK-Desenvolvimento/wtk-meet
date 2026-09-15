@@ -36,7 +36,7 @@ import type { Socket } from 'socket.io-client';
 /** Um payload que chega do servidor: o teste lê campo a campo. */
 type Payload = Record<string, unknown>;
 
-import { MAX_PARTICIPANTS } from '../src/rooms.js';
+import { MAX_PARTICIPANTS, RESUME_GRACE_MS, RoomStore } from '../src/rooms.js';
 
 const SERVER_ENTRY = fileURLToPath(new URL('../src/index.ts', import.meta.url));
 /** `spawn` cria um processo Node novo: o hook de módulo do pai não atravessa. */
@@ -602,4 +602,255 @@ test('/turn-credentials sem CF_TURN_* responde 503, e não uma lista vazia com 2
   const body = (await res.json()) as Payload;
   assert.equal(body.error, 'turn-unconfigured');
   assert.ok(!JSON.stringify(body).includes('iceServers'), 'não anuncia lista nenhuma');
+});
+
+// ------------------------------------------------------ 8. token de retorno
+
+/** Entra numa sala vazia e devolve também o token de retorno emitido. */
+async function enterEmptyRoomWithToken(roomId: string, displayName: string) {
+  const socket = await connect();
+  const approved = once(socket, 'join-approved', 3000);
+  socket.emit('join-request', { roomId, displayName });
+  const payload = await approved;
+  return { socket, token: payload.resumeToken as string };
+}
+
+/** Entra com aprovação e devolve o token de retorno emitido na admissão. */
+async function enterWithApprovalAndToken(roomId: string, displayName: string, approver: Socket) {
+  const socket = await connect();
+  const incoming = once(approver, 'join-request', 3000);
+  const admitted = once(socket, 'join-approved', 3000);
+  socket.emit('join-request', { roomId, displayName });
+  const { requesterId } = await incoming;
+  approver.emit('approve-join', { requesterId });
+  const payload = await admitted;
+  return { socket, token: payload.resumeToken as string };
+}
+
+/**
+ * Derruba um socket e só volta quando o servidor já processou a queda.
+ *
+ * Sem esperar o `peer-left`, o `join-request` seguinte corre contra o
+ * `disconnect`: a graça ainda não estaria armada e o token, legitimamente, não
+ * valeria — um teste que falharia por corrida, não por regressão.
+ */
+async function derrubar(socket: Socket, testemunha: Socket) {
+  const left = once(testemunha, 'peer-left', 3000);
+  socket.close();
+  await left;
+}
+
+test('toda admissão entrega um resumeToken opaco, e ele nunca se repete', async () => {
+  const room = 'sala-token-emitido';
+  const alice = await enterEmptyRoomWithToken(room, 'Alice');
+  const bob = await enterWithApprovalAndToken(room, 'Bob', alice.socket);
+
+  for (const token of [alice.token, bob.token]) {
+    assert.match(token, /^[0-9a-f]{64}$/, '32 bytes em hex, sem estrutura legível');
+  }
+  assert.notEqual(alice.token, bob.token);
+});
+
+test('quem cai e volta com o token entra direto, sem modal na tela de ninguém', async () => {
+  const room = 'sala-retomada';
+  const alice = await enterEmptyRoom(room, 'Alice');
+  const bob = await enterWithApprovalAndToken(room, 'Bob', alice);
+
+  await derrubar(bob.socket, alice);
+
+  // A afirmação que **é** esta entrega: ninguém dentro da sala é incomodado.
+  const semPedido = nothing(alice, 'join-request', 600);
+  const volta = await connect();
+  const admitido = once(volta, 'join-approved', 3000);
+  volta.emit('join-request', { roomId: room, displayName: 'Bob', resumeToken: bob.token });
+
+  const payload = await admitido;
+  assert.equal(payload.selfId, volta.id, 'o selfId é o socket novo: a malha não reaproveita identidade');
+  assert.deepEqual(payload.members, [{ id: alice.id, displayName: 'Alice' }]);
+  assert.notEqual(payload.resumeToken, bob.token, 'a retomada também rotaciona');
+  await semPedido;
+});
+
+test('a retomada preserva o nome registrado, mesmo com outro nome no payload', async () => {
+  const room = 'sala-nome-preservado';
+  const alice = await enterEmptyRoom(room, 'Alice');
+  const bob = await enterWithApprovalAndToken(room, 'Bob', alice);
+  await derrubar(bob.socket, alice);
+
+  const entrou = once(alice, 'peer-joined', 3000);
+  const volta = await connect();
+  volta.emit('join-request', { roomId: room, displayName: 'Bob Renomeado', resumeToken: bob.token });
+
+  assert.equal((await entrou).displayName, 'Bob', 'o token não é canal de renomeação');
+});
+
+test('o token consumido não volta: reapresentá-lo cai na fila de aprovação', async () => {
+  const room = 'sala-rotacao';
+  const alice = await enterEmptyRoom(room, 'Alice');
+  const bob = await enterWithApprovalAndToken(room, 'Bob', alice);
+  await derrubar(bob.socket, alice);
+
+  const volta = await connect();
+  const admitido = once(volta, 'join-approved', 3000);
+  volta.emit('join-request', { roomId: room, displayName: 'Bob', resumeToken: bob.token });
+  await admitido;
+
+  // Uso único: um token que funcionasse duas vezes seria um convite
+  // transferível que não expira ao ser usado, e o dono nem saberia.
+  const replay = await connect();
+  const pedido = once(alice, 'join-request', 3000);
+  replay.emit('join-request', { roomId: room, displayName: 'Bob', resumeToken: bob.token });
+
+  assert.equal((await pedido).requesterId, replay.id);
+});
+
+test('o token de uma sala não admite em outra — a sala é parte do que ele prova', async () => {
+  const origem = 'sala-origem';
+  const destino = 'sala-destino';
+  const alice = await enterEmptyRoom(origem, 'Alice');
+  const bob = await enterWithApprovalAndToken(origem, 'Bob', alice);
+  await derrubar(bob.socket, alice);
+
+  const carol = await enterEmptyRoom(destino, 'Carol');
+  const intruso = await connect();
+  const pedido = once(carol, 'join-request', 3000);
+  const semRecusa = nothing(intruso, 'join-denied', 600);
+  intruso.emit('join-request', { roomId: destino, displayName: 'Bob', resumeToken: bob.token });
+
+  assert.equal((await pedido).requesterId, intruso.id, 'a sala destino pede aprovação normal');
+  await semRecusa;
+});
+
+test('com o socket original ainda na sala, o mesmo token pede aprovação', async () => {
+  // Duplicar a aba copia o `sessionStorage`. A cópia não pode entrar sozinha
+  // enquanto a original segue na sala: seriam duas presenças a partir de uma
+  // aprovação só — e ninguém pode ser expulso por causa disso.
+  const room = 'sala-aba-duplicada';
+  const alice = await enterEmptyRoom(room, 'Alice');
+  const bob = await enterWithApprovalAndToken(room, 'Bob', alice);
+
+  const clone = await connect();
+  const pedido = once(alice, 'join-request', 3000);
+  const ninguemSaiu = nothing(alice, 'peer-left', 600);
+  clone.emit('join-request', { roomId: room, displayName: 'Bob', resumeToken: bob.token });
+
+  assert.equal((await pedido).requesterId, clone.id, 'a cópia entra na fila normal');
+  await ninguemSaiu;
+});
+
+test('token expirado cai na aprovação — provado no relógio, não no cronômetro', async () => {
+  // A expiração é a única regra desta entrega que o fio não prova sem esperar 60
+  // segundos de relógio de parede. Em vez de tornar `RESUME_GRACE_MS`
+  // configurável por ambiente só para o teste — superfície de produção que
+  // ninguém pediu —, ela é provada com o relógio injetado da **mesma** unidade
+  // que o servidor instancia, e o fio prova o que resta e é o que importa: um
+  // token que o servidor não reconhece mais não nega entrada a ninguém.
+  let agora = 1_000_000;
+  const store = new RoomStore(() => agora);
+  store.addMember('daily', 'alice', 'Alice');
+  store.addMember('daily', 'bob', 'Bob');
+  const token = store.issueResumeToken('daily', 'bob', 'Bob');
+  store.removeMember('daily', 'bob');
+  store.armResumeGrace('daily', 'bob');
+
+  agora += RESUME_GRACE_MS;
+  assert.equal(store.consumeResumeToken(token, 'daily'), null, 'no instante do prazo já não vale');
+
+  const room = 'sala-expirado';
+  const alice = await enterEmptyRoom(room, 'Alice');
+  const tardio = await connect();
+  const pedido = once(alice, 'join-request', 3000);
+  const semRecusa = nothing(tardio, 'join-denied', 600);
+  tardio.emit('join-request', { roomId: room, displayName: 'Bob', resumeToken: token });
+
+  assert.equal((await pedido).requesterId, tardio.id, 'quem demorou pede aprovação, e ninguém fica preso fora');
+  await semRecusa;
+});
+
+test('a sala cheia não barra quem está na graça, e o sétimo estranho continua barrado', async () => {
+  const room = 'sala-cheia-retomada';
+  const alice = await enterEmptyRoom(room, 'Alice');
+  let ultimo = { socket: alice, token: '' };
+  for (let i = 2; i <= MAX_PARTICIPANTS; i += 1) {
+    ultimo = await enterWithApprovalAndToken(room, `P${i}`, alice);
+  }
+
+  await derrubar(ultimo.socket, alice);
+
+  // A cadeira continua ocupada por quem caiu: é o preço, decidido e visível, da
+  // garantia de retorno numa sala no teto.
+  const estranho = await connect();
+  const denied = once(estranho, 'join-denied', 3000);
+  estranho.emit('join-request', { roomId: room, displayName: 'Setimo' });
+  assert.equal((await denied).reason, 'room-full');
+
+  const volta = await connect();
+  const admitido = once(volta, 'join-approved', 3000);
+  volta.emit('join-request', { roomId: room, displayName: `P${MAX_PARTICIPANTS}`, resumeToken: ultimo.token });
+  const payload = await admitido;
+
+  assert.equal(
+    (payload.members as unknown[]).length,
+    MAX_PARTICIPANTS - 1,
+    'no instante do consumo a sala tinha cinco: a reserva bloqueou o sexto lugar',
+  );
+});
+
+test('sair pela UI e voltar com o token pede aprovação — quem saiu, saiu', async () => {
+  const room = 'sala-saida-intencional';
+  const alice = await enterEmptyRoom(room, 'Alice');
+  const bob = await enterWithApprovalAndToken(room, 'Bob', alice);
+
+  const left = once(alice, 'peer-left', 3000);
+  bob.socket.emit('leave-room');
+  await left;
+
+  const volta = await connect();
+  const pedido = once(alice, 'join-request', 3000);
+  volta.emit('join-request', { roomId: room, displayName: 'Bob', resumeToken: bob.token });
+
+  assert.equal((await pedido).requesterId, volta.id, 'saída explícita não reserva vaga nem guarda token');
+});
+
+test('resumeToken de tipo ou forma inesperada é tratado como ausente, sem derrubar nada', async () => {
+  const room = 'sala-token-lixo';
+  const alice = await enterEmptyRoom(room, 'Alice');
+
+  for (const lixo of [42, { a: 1 }, ['x'], null, true, 'z'.repeat(64), 'x'.repeat(100_000), 'abc']) {
+    const socket = await connect();
+    const pedido = once(alice, 'join-request', 3000);
+    const semRecusa = nothing(socket, 'join-denied', 200);
+    socket.emit('join-request', { roomId: room, displayName: 'Estranho', resumeToken: lixo });
+
+    assert.equal((await pedido).requesterId, socket.id, `o lixo ${JSON.stringify(lixo)?.slice(0, 20)} virou pedido normal`);
+    await semRecusa;
+    socket.close();
+  }
+
+  // E o servidor continua de pé depois de tudo isso.
+  const res = await fetch(`http://127.0.0.1:${port}/health`);
+  assert.equal(res.status, 200);
+});
+
+test('nenhum evento além do join-approved do dono carrega o token', async () => {
+  const room = 'sala-sem-vazamento';
+  const alice = await enterEmptyRoom(room, 'Alice');
+
+  // Tudo que a Alice ouvir enquanto o Bob entra, cai e volta.
+  const ouvido: string[] = [];
+  for (const evento of ['peer-joined', 'peer-left', 'join-request', 'join-request-cancelled', 'signal']) {
+    alice.on(evento, (payload: Payload) => ouvido.push(JSON.stringify(payload)));
+  }
+
+  const bob = await enterWithApprovalAndToken(room, 'Bob', alice);
+  await derrubar(bob.socket, alice);
+  const volta = await connect();
+  const admitido = once(volta, 'join-approved', 3000);
+  volta.emit('join-request', { roomId: room, displayName: 'Bob', resumeToken: bob.token });
+  const novoToken = (await admitido).resumeToken as string;
+
+  const tudo = ouvido.join('|');
+  assert.ok(!tudo.includes(bob.token), 'o token apresentado não apareceu em evento nenhum da sala');
+  assert.ok(!tudo.includes(novoToken), 'nem o token novo');
+  assert.ok(!/[0-9a-f]{64}/.test(tudo), 'e nada com a forma de um token atravessou');
 });

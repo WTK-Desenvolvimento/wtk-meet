@@ -55,7 +55,20 @@ import type { ExportResult } from '@opentelemetry/core';
 import type { PageViewRoute } from './telemetryEvents.js';
 
 /** Desfecho de uma tentativa de entrada. Fechado pelo DoD; ver o mapa no README. */
-export type JoinOutcome = 'admitted' | 'approved' | 'denied' | 'room_full' | 'invalid_room';
+/**
+ * `resumed` é a readmissão por token de retorno: quem caiu e voltou dentro da
+ * janela de graça, sem passar pela fila de aprovação. Fica separado de
+ * `admitted` e de `approved` de propósito — é o único desfecho que diz que o
+ * servidor **reconheceu um retorno**, e somá-lo aos outros apagaria a única
+ * medida de quanto a reconexão silenciosa está sendo usada.
+ */
+export type JoinOutcome =
+  | 'admitted'
+  | 'approved'
+  | 'denied'
+  | 'room_full'
+  | 'invalid_room'
+  | 'resumed';
 
 /**
  * Desfecho de um `POST /telemetry`. Fechado em dois valores **de propósito**:
@@ -129,7 +142,7 @@ export const OCCUPANCY_BUCKETS = [1, 2, 3, 4, 5, 6];
 export const DURATION_BUCKETS_SECONDS = [5, 30, 60, 300, 900, 1800, 3600, 7200];
 
 /**
- * Teto duro de séries por instrumento. O desenho produz no máximo 5 (`outcome`
+ * Teto duro de séries por instrumento. O desenho produz no máximo 6 (`outcome`
  * de `wtk_joins_total`); o teto existe para o caso em que ele deixe de produzir.
  */
 const CARDINALITY_LIMIT = 32;

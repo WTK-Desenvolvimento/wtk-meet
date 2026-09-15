@@ -152,7 +152,14 @@ test('durações são gravadas em segundos, e não em milissegundos', async () =
 
 test('os únicos atributos do sistema são outcome e route, nos valores fechados', async () => {
   const { exporter, telemetry } = novaTelemetria(() => ({ rooms: 1, participants: 2 }));
-  for (const outcome of ['admitted', 'approved', 'denied', 'room_full', 'invalid_room'] as const) {
+  for (const outcome of [
+    'admitted',
+    'approved',
+    'denied',
+    'room_full',
+    'invalid_room',
+    'resumed',
+  ] as const) {
     telemetry.recordJoin(outcome);
   }
   for (const route of ['home', 'room', 'legacy'] as const) telemetry.recordPageView(route);
@@ -177,6 +184,7 @@ test('os únicos atributos do sistema são outcome e route, nos valores fechados
     'approved',
     'denied',
     'invalid_room',
+    'resumed',
     'room_full',
   ]);
   assert.deepEqual(valores('wtk_page_views_total', 'route'), ['home', 'legacy', 'room']);
