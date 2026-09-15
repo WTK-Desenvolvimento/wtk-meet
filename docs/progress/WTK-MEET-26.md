@@ -11,14 +11,15 @@ verdade**, e o que fica como débito.
 
 ---
 
-## 1. Linha de base, medida nesta branch antes de qualquer alteração
+## 1. Linha de base e resultado final
 
-| Portão | Valor | Observação |
+| Portão | Linha de base (antes) | Depois desta entrega |
 |---|---|---|
-| `npm test` (client) | **571/574** | 3 falhas **pré-existentes** em `test/roomPhases.test.ts` |
-| `npm test` (server) | 98/98 | |
-| `npm run typecheck` | limpo | |
-| `npm run lint` | limpo | 1 warning pré-existente em `useMusicRoom.ts` |
+| `npm test` (client) | **571/574** | **571/574** (as mesmas 3 falhas) |
+| `npm test` (server) | 98/98 | 98/98 |
+| `npm test` (extensão) | — | **50/50** (novos) |
+| `npm run typecheck` | limpo | limpo, com o workspace novo |
+| `npm run lint` | limpo | limpo, com o workspace novo |
 
 As três falhas do client são de redirecionamento duplo (`"/a/b" devia voltar para
 a Home` e as duas irmãs): o efeito de canonicalização navega **duas** vezes onde o
@@ -26,10 +27,9 @@ teste espera uma. Medidas em `1e88073`, **antes** de qualquer arquivo desta
 entrega existir, e em arquivos que esta entrega não toca. O número da memória do
 projeto (520/520) é de uma linha de base mais velha — a suíte cresceu desde então.
 
-O E2E de 3 participantes (`npm run test:e2e`) **não** foi executado nesta branch:
-nada em `packages/client` ou `packages/server` muda por esta entrega, exceto um
-comentário em `pages/Room.tsx` (§4). Os dois roteiros novos da extensão foram
-executados, e estão descritos no §5.
+O E2E de 3 participantes (`npm run test:e2e`) foi executado ao fim da entrega — o
+resultado está no §5.3. A única mudança fora de `packages/extension` e
+`packages/e2e` é um comentário em `pages/Room.tsx` (§4).
 
 ---
 
@@ -141,10 +141,18 @@ Nenhuma linha de `packages/server` mudou.
 
 ### 5.2 `npm run test:e2e:extension:room` — o app ouve o motor
 
-Roteiro com servidor de sinalização, TURN local, o app e a extensão na mesma sala.
+**7/7 checagens.** Roteiro com servidor de sinalização, TURN local, o app e a
+extensão na mesma sala:
+
+- Alice entra pelo app e o pedido de entrada do motor aparece para ela;
+- ela aprova, e o motor entra (a aprovação é sempre humana);
+- a faixa que toca no motor chega a ela: **rms 0,29** no canal de música, sem
+  nenhuma votação de player e sem o painel de música aberto;
+- o efeito do soundboard também: **rms 0,35**.
+
 Duas coisas do ambiente que ele precisa resolver, e que são o mesmo problema de um
 deploy real: a origem `chrome-extension://<id>` no `CLIENT_ORIGIN` (o caminho que o
-README documenta) e o TURN, que entra pelo proxy (§3.4).
+README documenta) e o TURN, que entra pelo proxy (§3.5).
 
 ### 5.3 O que **não** foi medido nesta sessão
 
