@@ -1,0 +1,28 @@
+{
+  "name": "wtk-meet-extension",
+  "version": "1.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Extensão Chrome (MV3) com um motor de áudio único para música e soundboard numa sala wtk-meet paralela",
+  "type": "module",
+  "scripts": {
+    "build": "node build.ts",
+    "lint": "eslint .",
+    "test": "node --import ../../tools/registerTs.mjs --test \"test/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.7.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.3.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^9.39.5",
+    "globals": "^17.11.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.68.0"
+  },
+  "engines": {
+    "node": ">=26"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  // Um `tsconfig` só, cobrindo `src/`, `test/` e o próprio `build.ts` — a mesma
+  // escolha do client, pelo mesmo motivo (o portão é `tsc --noEmit`, sem `-b` e
+  // sem grafo de projetos).
+  //
+  // Os módulos reusados de `packages/client/src/lib/` entram no programa por
+  // import relativo (ver `ARCHITECTURE.md` §11): é por isso que `lib` precisa
+  // conter `DOM` e `DOM.Iterable`, exatamente como lá.
+  //
+  // Armadilha herdada e que vale aqui inteira: com `@types/node` e `DOM` no
+  // mesmo programa, `setTimeout` resolve para a sobrecarga do Node. **Todo
+  // handle de timer é `ReturnType<typeof setTimeout>`, nunca `number`.**
+  //
+  // A superfície de `chrome.*` é declarada à mão em `src/types/chrome.d.ts` —
+  // só o que a extensão chama, e não o `@types/chrome` inteiro (ver o cabeçalho
+  // daquele arquivo).
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "moduleResolution": "Bundler",
+    // `build.ts` roda com o type stripping do Node e importa `./tools/makeIcons.ts`
+    // com a extensão real — a mesma escolha (e o mesmo motivo) do `packages/e2e`.
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "allowJs": false
+  },
+  "include": ["src", "test", "build.ts"],
+  "exclude": ["node_modules", "dist"]
+}

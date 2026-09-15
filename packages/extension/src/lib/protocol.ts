@@ -1,0 +1,281 @@
+/**
+ * O contrato entre os três contextos da extensão: popup/`manager` (a UI), o
+ * service worker (o roteador) e o documento offscreen (o motor).
+ *
+ * Módulo **puro** — só tipos, constantes e funções de decisão. Nada de
+ * `chrome.*` aqui dentro, e é por isso que o roteamento tem teste em
+ * `node --test` sem navegador nenhum.
+ *
+ * **Toda mensagem carrega `target`, e todo listener filtra por ele.**
+ * `chrome.runtime` entrega a mensagem a *todos* os contextos da extensão — o
+ * service worker recebe o que a UI mandou para o motor, o motor recebe o que a
+ * UI mandou para o service worker, e um listener que não filtra responde por
+ * engano. O `target` não é decoração: é o endereçamento.
+ */
+
+import type { Favorite } from '../../../client/src/lib/soundboard.js';
+
+/** O nome da porta de longa duração. Quem não for este nome não é nosso. */
+export const PORT_NAME = 'wtk-engine';
+
+/** Os três endereços possíveis. */
+export type Target = 'sw' | 'engine' | 'ui';
+
+// ------------------------------------------------------------------ UI → SW
+
+export interface EnsureEngineMessage {
+  target: 'sw';
+  type: 'ensure-engine';
+}
+
+/** O motor pede ao service worker o que ele não pode fazer (§7.4 do doc). */
+export interface BadgeMessage {
+  target: 'sw';
+  type: 'badge';
+  pending: number;
+  playing: boolean;
+  /** O que o ícone diz ao passar o mouse. Vazio volta ao título padrão. */
+  title: string;
+}
+
+export interface OpenManagerMessage {
+  target: 'sw';
+  type: 'open-manager';
+}
+
+/**
+ * A UI pergunta ao service worker qual é o endereço sugerido. Quem lê a aba
+ * ativa é ele: `chrome.tabs` não existe no documento offscreen, e concentrar a
+ * leitura num lugar só evita duas respostas diferentes para a mesma pergunta.
+ */
+export interface PrefillRequest {
+  target: 'sw';
+  type: 'prefill';
+}
+
+export type SwMessage = EnsureEngineMessage | BadgeMessage | OpenManagerMessage | PrefillRequest;
+
+// -------------------------------------------------------------- UI → motor
+
+export interface ConnectCommand {
+  target: 'engine';
+  type: 'connect';
+  roomPath: string;
+  displayName: string;
+}
+
+export interface DisconnectCommand {
+  target: 'engine';
+  type: 'disconnect';
+}
+
+export interface QueueAddCommand {
+  target: 'engine';
+  type: 'queue-add';
+  /** URL colada (`kind: 'url'`) ou id de um arquivo já gravado no IndexedDB. */
+  source: { kind: 'url'; sourceRef: string } | { kind: 'file'; fileId: string; title: string };
+}
+
+export interface QueueRemoveCommand {
+  target: 'engine';
+  type: 'queue-remove';
+  entryId: string;
+}
+
+export interface TransportCommand {
+  target: 'engine';
+  type: 'transport';
+  action: 'play' | 'pause' | 'skip' | 'seek';
+  positionSec?: number;
+}
+
+export interface VolumeCommand {
+  target: 'engine';
+  type: 'volume';
+  /** `0..1`. **Local, nunca trafega** — é monitoração, como no app (§6.9). */
+  value: number;
+}
+
+export interface SoundboardFireCommand {
+  target: 'engine';
+  type: 'soundboard-fire';
+  favoriteId: string;
+}
+
+export interface FavoriteAddCommand {
+  target: 'engine';
+  type: 'favorite-add';
+  input: string;
+}
+
+export interface FavoriteRemoveCommand {
+  target: 'engine';
+  type: 'favorite-remove';
+  favoriteId: string;
+}
+
+export interface FavoriteRenameCommand {
+  target: 'engine';
+  type: 'favorite-rename';
+  favoriteId: string;
+  title: string;
+}
+
+export interface JoinDecisionCommand {
+  target: 'engine';
+  type: 'join-decision';
+  requesterId: string;
+  approve: boolean;
+}
+
+export type EngineCommand =
+  | ConnectCommand
+  | DisconnectCommand
+  | QueueAddCommand
+  | QueueRemoveCommand
+  | TransportCommand
+  | VolumeCommand
+  | SoundboardFireCommand
+  | FavoriteAddCommand
+  | FavoriteRemoveCommand
+  | FavoriteRenameCommand
+  | JoinDecisionCommand;
+
+// -------------------------------------------------------------- motor → UI
+
+/** O ciclo de vida da sala, do ponto de vista de quem olha o popup. */
+export type EngineStatus =
+  | 'idle'
+  | 'connecting'
+  | 'waiting-approval'
+  | 'connected'
+  | 'denied'
+  | 'error';
+
+export interface EngineQueueEntry {
+  entryId: string;
+  title: string;
+  kind: 'url' | 'file';
+  durationSec: number;
+}
+
+export interface EngineCurrent {
+  entryId: string;
+  title: string;
+  positionSec: number;
+  durationSec: number;
+  playing: boolean;
+}
+
+export interface EnginePeer {
+  id: string;
+  displayName: string;
+}
+
+export interface EnginePendingJoin {
+  requesterId: string;
+  displayName: string;
+}
+
+/**
+ * Tudo que a UI precisa para renderizar, e **nada além**. Serializável por
+ * construção: é o que atravessa `port.postMessage`, e um `MediaStreamTrack` ou
+ * um `AudioBuffer` aqui dentro viraria erro de clonagem em runtime.
+ */
+export interface EngineState {
+  /**
+   * Identidade desta instância do motor. Muda quando o documento offscreen é
+   * recriado — é o que um teste usa para provar que **um** motor atendeu duas
+   * abas (§11.3 do `ARCHITECTURE.md`).
+   */
+  engineId: string;
+  status: EngineStatus;
+  roomPath: string;
+  displayName: string;
+  peers: EnginePeer[];
+  pendingJoins: EnginePendingJoin[];
+  queue: EngineQueueEntry[];
+  current: EngineCurrent | null;
+  favorites: Favorite[];
+  /** Volume de monitoração local (`0..1`). */
+  volume: number;
+  /** Quanto falta para o próximo disparo caber na janela do rate limit. */
+  cooldownMs: number;
+  /**
+   * Quantos disparos de soundboard este motor executou. Contador monotônico: é
+   * o que prova que N abas disparando produzem **uma** reprodução.
+   */
+  playCount: number;
+  /** Quantos `AudioContext` este motor criou. Um motor bem construído diz `1`. */
+  audioContextCount: number;
+  lastError: string | null;
+}
+
+export interface StateMessage {
+  target: 'ui';
+  type: 'state';
+  state: EngineState;
+}
+
+export interface PatchMessage {
+  target: 'ui';
+  type: 'patch';
+  patch: Partial<EngineState>;
+}
+
+export interface NoticeMessage {
+  target: 'ui';
+  type: 'notice';
+  kind: 'error' | 'info';
+  text: string;
+}
+
+/** A resposta do service worker ao `prefill` — o popup só a exibe. */
+export interface PrefillMessage {
+  target: 'ui';
+  type: 'prefill';
+  value: string;
+  fromMeet: boolean;
+  notice: string | null;
+}
+
+export type UiMessage = StateMessage | PatchMessage | NoticeMessage | PrefillMessage;
+
+export type AnyMessage = SwMessage | EngineCommand | UiMessage;
+
+// ------------------------------------------------------------------- guardas
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/**
+ * A mensagem é para mim?
+ *
+ * Usada em **todo** listener. Devolve `false` para qualquer coisa malformada —
+ * um `postMessage` de outra extensão, um payload antigo depois de um reload sem
+ * recarregar as abas, ou a própria mensagem voltando por reflexo.
+ */
+export function isFor<T extends Target>(target: T, message: unknown): message is Extract<AnyMessage, { target: T }> {
+  return isRecord(message) && message.target === target && typeof message.type === 'string';
+}
+
+/** Estado inicial — o que a UI mostra antes de o motor dizer qualquer coisa. */
+export function emptyState(engineId = ''): EngineState {
+  return {
+    engineId,
+    status: 'idle',
+    roomPath: '',
+    displayName: '',
+    peers: [],
+    pendingJoins: [],
+    queue: [],
+    current: null,
+    favorites: [],
+    volume: 1,
+    cooldownMs: 0,
+    playCount: 0,
+    audioContextCount: 0,
+    lastError: null,
+  };
+}
