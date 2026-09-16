@@ -6,5 +6,8 @@ dist/
 *.log
 .DS_Store
 
-# core dumps do Chromium headless durante os testes E2E
-core.*
+# core dumps do Chromium headless durante os testes E2E.
+# A classe [0-9] não é zelo: `core.*` engolia
+# `packages/extension/src/engine/core.ts` — o motor inteiro da extensão — e um
+# arquivo ignorado não aparece no `git status`. Ver docs/progress/WTK-MEET-26.md §12.
+core.[0-9]*
