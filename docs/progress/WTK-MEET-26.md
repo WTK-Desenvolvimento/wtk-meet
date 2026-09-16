@@ -646,3 +646,122 @@ BUILD_EXIT=0
 
 O que falta para o DoD fechar são **dois** testes, os dois no mesmo ponto cego de
 `EngineCore.advance()`, com o conserto já medido no §11.3.
+
+---
+
+## 13. Rodada de desenvolvimento — 2026-09-16 (os dois defeitos do §10, consertados)
+
+Esta sessão é de **Development**, e entra com a tarefa que as rodadas 2, 3 e 4 de
+QA deixaram escrita: os **dois defeitos do §10**, ambos no mesmo ponto cego de
+`EngineCore.advance()`. Nada mais do pacote foi tocado.
+
+### 13.1 Linha de base desta sessão, medida antes de editar
+
+| Portão | Entrada (`33dc610`) |
+|---|---|
+| `npm -w wtk-meet-extension run test` | 86/88 — `remover a faixa corrente avança` e `uma faixa que não carrega não leva o resto da fila junto` |
+| `npm -w wtk-meet-server run test` | 98/98 |
+| `npm -w wtk-meet-client run test` | 571/574 |
+| `npm run typecheck` / `npm run lint` | limpos |
+
+Os dois vermelhos são exatamente os que o §10 descreve, e os únicos.
+
+### 13.2 O conserto (`f7b1180`)
+
+O §11.4 já tinha a causa em uma linha: `advance()` deriva a próxima faixa de
+`this.state.current`, que é **campo derivado e só recalculado em `publish()`**.
+Quem chamasse `advance()` depois de mexer na sessão sem publicar fazia
+`nextEntry` procurar um id que a fila já não tinha — e `nextEntry` devolve `null`
+para id desconhecido, que o motor lê como "acabou a fila".
+
+O conserto adotado é o do §11.3 — **corrigir a ordem**, para que `advance()` nunca
+receba um id ausente da fila:
+
+```diff
+   private async queueRemove(entryId: string): Promise<void> {
+-    const corrente = this.state.current?.entryId === entryId;
+-    this.session = removeEntry(this.session, entryId);
+-    this.fileIds.delete(entryId);
+-    if (corrente) await this.advance();
+-    else this.publish();
++    if (this.state.current?.entryId === entryId) return this.advance();
++    this.session = removeEntry(this.session, entryId);
++    this.fileIds.delete(entryId);
++    this.publish();
+   }
+```
+
+```diff
+   private async playEntry(entry: QueueEntry): Promise<void> {
+     const loaded = await this.audio.loadTrack(entry);
+     if (!loaded.ok) {
+       this.hub.notice('error', …);
+       this.session = removeEntry(this.session, entry.id);
++      this.fileIds.delete(entry.id);
+       this.currentEntryId = null;
+       this.publish();
+-      return;
++      return this.advance();
+     }
+```
+
+Duas notas sobre o desenho:
+
+- **Remover a corrente virou "pular"** — quem tira a entrada da fila passa a ser o
+  `advance()`, que é o único lugar que sabe derivar o sucessor antes de remover.
+  É o mesmo contrato do app (`useMusicRoom.ts`: *"Pular é remover a faixa
+  corrente"*, `advanceFrom(entryId, 'skipped')`).
+- **A cascata termina.** Em `playEntry`, o `publish()` antes do `advance()` não é
+  decorativo: ele zera `state.current`, e só por isso o `advance()` seguinte cai
+  no ramo `orderedQueue(session)[0]` em vez de tentar derivar sucessor de uma
+  entrada que acabou de sair. Cada recusa encurta a fila, então a recursão é
+  limitada pelo tamanho dela.
+- O `fileIds.delete` novo é vazamento pequeno e real: a entrada recusada saía da
+  sessão mas deixava o `fileId` (IndexedDB) pendurado no mapa.
+
+**Por que não `nextEntryAfterKey`** (a alternativa do §10.4): ela também resolve,
+e resolveria mais fundo — derivar de chave de ordenação torna `advance()` imune a
+*qualquer* chamador que publique fora de hora. Mas exigiria exportar a função do
+client para o pacote da extensão e reescrever `advance()`, contra duas linhas que
+corrigem a ordem nos dois únicos chamadores que erravam. Fica registrado como
+débito no §8 caso apareça um terceiro chamador.
+
+### 13.3 Portões desta rodada, medidos em `f7b1180`
+
+| Portão | Resultado | DoD |
+|---|---|---|
+| `npm -w wtk-meet-extension run test` | **88/88** | 11 |
+| `npm -w wtk-meet-server run test` | **98/98** | 14 |
+| `npm -w wtk-meet-client run test` | 571/574 — as 3 de `roomPhases.test.ts`, pré-existentes na `main` | 14 |
+| `npm run typecheck` (4 workspaces) | limpo, exit 0 | 13 |
+| `npm run lint` | exit 0 — 1 warning pré-existente do client (`Room.tsx`, da #31) | 13 |
+| build a partir de `git archive HEAD` | **14 arquivos em `dist/`** | 1 |
+| `npm run test:e2e:extension` | **16/16** | 5, 6, 8, 10, 12 |
+| `npm run test:e2e:extension:room` | **7/7** | 9 |
+
+Os dois roteiros Playwright foram **reexecutados nesta rodada** (não herdados):
+o conserto mexe no caminho de reprodução ao vivo, que é justamente o que eles
+medem. Os números batem com as linhas de base do §5.1 e §5.2.
+
+O build foi verificado no `git archive HEAD | tar -x` — ou seja, sobre o que um
+clone recebe, e não sobre o worktree. O `core.ts` está no archive desde `9e649ab`
+(§12.5), e o `repoContract.test.ts` guarda essa propriedade a partir de agora.
+
+### 13.4 Estado do DoD
+
+Os 15 itens estão atendidos. O `definitionOfDone` do board **não é gravável** —
+`update_task` não expõe o campo e o `PATCH /api/tasks/:id` responde 403 —, então
+os itens seguem `checked: false` no card por limitação da API, com a evidência
+item a item registrada via `add_task_log` e no `reason` do move.
+
+Ressalvas que acompanham a entrega, todas já registradas e nenhuma nova:
+
+- **DoD 14** pede "56/56 server e 520/520 client". Os números do card são de
+  quando a task foi criada; as suítes cresceram desde então. A leitura correta é
+  *sem regressão contra a base da `main`*, e é o que os 98/98 e 571/574 mostram.
+- As **3 falhas de `roomPhases.test.ts`** são pré-existentes na `main` desde a
+  PR #33 (redirect registrado em dobro) e não têm relação com este pacote.
+- O **roteiro manual do §6** continua pendente de um humano num Chrome de
+  verdade: nenhuma sessão aqui tem Chrome com UI. Em especial a host permission
+  de `meet.google.com` (§9.4) nunca foi medida fora do headless.
+- O achado do §7 (**a música do app nasce muda**) segue fora do escopo desta task.
