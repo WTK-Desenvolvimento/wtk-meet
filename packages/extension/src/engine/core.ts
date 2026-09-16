@@ -363,11 +363,14 @@ export class EngineCore {
   }
 
   private async queueRemove(entryId: string): Promise<void> {
-    const corrente = this.state.current?.entryId === entryId;
+    // Remover a corrente é pular: quem tira a entrada da fila é o `advance()`.
+    // Tirá-la antes deixaria `advance()` procurando o sucessor de um id que a
+    // fila já não tem — `nextEntry` devolve `null` para id desconhecido, e o
+    // motor concluiria "acabou a fila" com faixas nela, em silêncio.
+    if (this.state.current?.entryId === entryId) return this.advance();
     this.session = removeEntry(this.session, entryId);
     this.fileIds.delete(entryId);
-    if (corrente) await this.advance();
-    else this.publish();
+    this.publish();
   }
 
   private async transport(action: 'play' | 'pause' | 'skip' | 'seek', positionSec?: number): Promise<void> {
@@ -405,9 +408,13 @@ export class EngineCore {
     if (!loaded.ok) {
       this.hub.notice('error', SOURCE_ERRORS[loaded.reason] ?? 'Não consegui tocar essa faixa.');
       this.session = removeEntry(this.session, entry.id);
+      this.fileIds.delete(entry.id);
       this.currentEntryId = null;
+      // Publica antes de seguir para que `advance()` leia `current = null` e
+      // pegue o topo da fila: uma URL podre custa a própria faixa, não o resto
+      // da playlist. Termina porque cada recusa encurta a fila.
       this.publish();
-      return;
+      return this.advance();
     }
     this.currentEntryId = entry.id;
     await this.audio.play();
