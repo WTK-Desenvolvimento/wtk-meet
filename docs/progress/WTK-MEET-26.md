@@ -604,3 +604,45 @@ uma exceção explícita resolvem igual. A decisão é de quem implementa — o 
 Os dois roteiros Playwright **não** foram reexecutados: eles carregam a extensão
 a partir do worktree e, por construção, não alcançam o defeito do §12.1. Os §5,
 §10 e §11 os medem, e nada de produção mudou desde então.
+
+### 12.5 Por que esta rodada **consertou** o empacotamento, em vez de devolver
+
+Devolver o §12.1 ao Development seria devolver um defeito cujo conserto depende
+de um arquivo que **só existe neste worktree** — e este repositório já registra
+que o worktree pode sumir no meio de uma sessão. Uma sessão de Development que
+começasse de um checkout limpo desta branch não encontraria `core.ts` para
+versionar: encontraria um pacote sem motor, um build que não resolve e uma suíte
+que não sobe, sem nada no `git log` explicando. O risco de perder as 597 linhas
+do `EngineCore` é irreversível; commitá-las não é.
+
+Então esta rodada faz a exceção, e ela é estreita:
+
+- `9e649ab` versiona `packages/extension/src/engine/core.ts` **sem alterar uma
+  linha** — `md5 5768439f1b18602c5bb362535f204403`, o mesmo do arquivo em disco
+  antes do commit — e troca `core.*` por `core.[0-9]*` no `.gitignore` da raiz.
+  `core.4242` (o dump real) continua ignorado; `core.ts` deixa de ser.
+- Nada mais de produção foi tocado. Os dois defeitos do §10 seguem **intactos e
+  vermelhos**, e são do Development.
+
+Verificado depois do commit, no mesmo `git archive HEAD | tar -x` do §12.1:
+
+```
+$ node build.ts
+⚡ Done in 108ms
+[extension] dist/ pronto — 14 arquivos
+BUILD_EXIT=0
+```
+
+### 12.6 Estado ao fim desta rodada (`9e649ab`)
+
+| Portão | Resultado |
+|---|---|
+| `npm -w wtk-meet-server run test` | **98/98** |
+| `npm -w wtk-meet-client run test` | 571/574 — as 3 de `roomPhases.test.ts`, pré-existentes na `main` |
+| `npm -w wtk-meet-extension run test` | **86/88** — só os dois defeitos do §10 |
+| `npm run typecheck` (4 workspaces) | limpo |
+| `npm run lint` | limpo — 1 warning pré-existente do client (`Room.tsx`, da #31) |
+| build a partir de `git archive HEAD` | **14 arquivos em `dist/`** — DoD 1 fecha |
+
+O que falta para o DoD fechar são **dois** testes, os dois no mesmo ponto cego de
+`EngineCore.advance()`, com o conserto já medido no §11.3.
