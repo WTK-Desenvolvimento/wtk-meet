@@ -234,3 +234,65 @@ test('a ausência de E2EE derivada está escrita nos três documentos', () => {
   const changelog = readFileSync(join(REPO, 'CHANGELOG.md'), 'utf8');
   assert.match(changelog, /packages\/extension/);
 });
+
+/**
+ * O que um `git clone` recebe — que não é, necessariamente, o que este worktree
+ * tem.
+ *
+ * Todos os testes acima (inclusive o que roda `node build.ts`) olham para os
+ * arquivos **em disco**. Um arquivo que existe aqui e que o `git` ignora passa
+ * em todos eles e desaparece do PR: a suíte fecha verde na máquina de quem
+ * escreveu e o build quebra na de quem clonou, com um `Could not resolve` que
+ * não aponta para nenhuma mudança recente. É a mesma classe de falha silenciosa
+ * que o §11 do `ARCHITECTURE.md` persegue, só que no empacotamento em vez de no
+ * áudio.
+ *
+ * `dist/`, `icons/` e `node_modules/` são ignorados **de propósito** — os dois
+ * primeiros o `build.ts` gera (os ícones são desenhados por
+ * `tools/makeIcons.ts`, para não versionar binário). Qualquer outra ausência é
+ * defeito, e a mensagem traz a regra de `.gitignore` responsável para que o
+ * conserto não dependa de adivinhação.
+ */
+const GERADOS_DE_PROPOSITO = new Set(['node_modules', 'dist', 'icons']);
+
+function arquivosEmDisco(relativo = ''): string[] {
+  return readdirSync(join(EXT, relativo), { withFileTypes: true }).flatMap((entrada) => {
+    const caminho = relativo ? `${relativo}/${entrada.name}` : entrada.name;
+    if (entrada.isDirectory()) {
+      return GERADOS_DE_PROPOSITO.has(caminho) ? [] : arquivosEmDisco(caminho);
+    }
+    return entrada.isFile() ? [caminho] : [];
+  });
+}
+
+/** A linha de `.gitignore` que manda ignorar o caminho, ou `null`. */
+function regraQueIgnora(relativo: string): string | null {
+  try {
+    return execFileSync('git', ['check-ignore', '-v', '--', `packages/extension/${relativo}`], {
+      cwd: REPO,
+      encoding: 'utf8',
+    }).trim();
+  } catch {
+    return null; // `check-ignore` sai com 1 quando o caminho não é ignorado.
+  }
+}
+
+test('todo arquivo do pacote está versionado — o clone recebe o que este worktree tem', () => {
+  const rastreados = new Set(
+    execFileSync('git', ['ls-files', '-z', '--', 'packages/extension'], { cwd: REPO, encoding: 'utf8' })
+      .split('\0')
+      .filter(Boolean)
+      .map((caminho) => caminho.replace(/^packages\/extension\//, '')),
+  );
+
+  const ausentes = arquivosEmDisco().filter((caminho) => !rastreados.has(caminho));
+  const detalhe = ausentes
+    .map((caminho) => `  ${caminho} — ${regraQueIgnora(caminho) ?? 'não é ignorado; falta um `git add`'}`)
+    .join('\n');
+
+  assert.deepEqual(
+    ausentes,
+    [],
+    `arquivo(s) do pacote fora do git — um clone não consegue construir a extensão:\n${detalhe}`,
+  );
+});

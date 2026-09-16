@@ -493,3 +493,114 @@ publicar, então `advance()` enxerga um `atual` que a fila já não contém;
 `nextEntry` devolve `null` para id desconhecido (`index < 0`) e o motor conclui
 "acabou a fila" com duas faixas nela. É stale state, não lógica de fila — e é por
 isso que o `skip`, que não remove antes de avançar, escapa.
+
+---
+
+## 12. Quarta rodada de QA — 2026-09-16
+
+Rodada sobre `6775469`. Os dois defeitos do §10 **continuam vivos** — o
+Development recebeu a task de volta três vezes (14:57, 15:03 e 15:09) e não há
+**nenhum commit** nem **nenhuma alteração de arquivo** desde então
+(`core.ts` tem mtime 15:06:28, que é a sonda revertida do §11.3). A suíte da
+extensão fecha nos mesmos **85/87**, nos mesmos dois testes, com as mesmas duas
+mensagens.
+
+E esta rodada acha um defeito **maior que os dois**, num lugar onde nenhum teste
+desta entrega olhava.
+
+### 12.1 O defeito que bloqueia o DoD 1: o motor não está no repositório
+
+```
+$ git check-ignore -v packages/extension/src/engine/core.ts
+.gitignore:10:core.*	packages/extension/src/engine/core.ts
+```
+
+A regra `core.*` da raiz — escrita para os **core dumps do Chromium** durante o
+E2E — engole `packages/extension/src/engine/core.ts`, que é o `EngineCore`: a
+fila, o player, o soundboard, o rate limit. O arquivo de 22 KB que **é** a
+entrega. Ele existe neste worktree, nunca foi versionado, e `git status` diz
+"clean" porque um arquivo ignorado não aparece.
+
+Prova, num checkout limpo do `HEAD` (`git archive HEAD | tar -x`):
+
+```
+$ node build.ts
+Error: Build failed with 1 error:
+src/offscreen.ts:33:27: ERROR: Could not resolve "./engine/core.js"
+```
+
+Consequências, em ordem de gravidade:
+
+1. **DoD 1 falha.** "`npm run build` produzindo um `dist/` carregável" não
+   acontece para ninguém que clone o repositório. Só acontece aqui.
+2. **Os DoD 5, 6, 7, 8, 9, 11, 12 e 13 estão medidos sobre um arquivo que o PR
+   não leva.** Os 87 testes, os dois roteiros Playwright, o `typecheck` e o
+   `lint` leem o disco — e no disco o arquivo está. Verde local, quebrado no
+   clone.
+3. **Explica o que as três devoluções anteriores não explicavam.** Qualquer
+   sessão que tenha partido de um checkout limpo desta branch encontrou um
+   pacote que não constrói e uma suíte que não sobe, sem nada no `git log` que
+   justificasse — e o `git status` limpo esconde a causa.
+
+`packages/extension/icons/` também está ignorado, e esse é **de propósito**: o
+`build.ts` chama `tools/makeIcons.ts` quando os PNGs não existem, para não
+versionar binário. Nenhum outro arquivo do repositório está nessa situação
+(`git status --porcelain --ignored=matching`).
+
+### 12.2 O teste que fecha o buraco
+
+`test/repoContract.test.ts` → *"todo arquivo do pacote está versionado — o clone
+recebe o que este worktree tem"*.
+
+Ele cruza `git ls-files` com o que existe em disco, descontando os três
+diretórios gerados de propósito (`dist/`, `icons/`, `node_modules/`), e a
+mensagem de falha traz a **regra de `.gitignore` responsável**, para o conserto
+não depender de adivinhação:
+
+```
+arquivo(s) do pacote fora do git — um clone não consegue construir a extensão:
+  src/engine/core.ts — .gitignore:10:core.*	packages/extension/src/engine/core.ts
+```
+
+Era o ponto cego estrutural desta suíte: todos os outros testes de contrato
+(inclusive o que roda `node build.ts`) afirmam coisas sobre **arquivos em
+disco**. Nenhum perguntava se o disco e o `git` contam a mesma história.
+
+### 12.3 Sonda do conserto, aplicada e revertida
+
+```diff
+--- a/.gitignore
++++ b/.gitignore
+ # core dumps do Chromium headless durante os testes E2E
+-core.*
++core.[0-9]*
+```
+
+Medido com a sonda no lugar:
+
+- `core.12345` (o core dump real) **continua ignorado** — `.gitignore:10:core.[0-9]*`;
+- `packages/extension/src/engine/core.ts` **deixa de ser ignorado**;
+- com `git add packages/extension/src/engine/core.ts`, a suíte vai a **86/88** —
+  o teste novo fecha verde e sobram exatamente os dois defeitos do §10.
+
+Revertido: `.gitignore` e o índice estão como em `6775469`; o único arquivo que
+esta rodada modifica é `test/repoContract.test.ts`.
+
+A regra acima é uma sugestão medida, não a única: `/core.*` (ancorada na raiz) ou
+uma exceção explícita resolvem igual. A decisão é de quem implementa — o que não
+é opcional é o `git add` do `core.ts`.
+
+### 12.4 Portões desta rodada
+
+| Portão | Resultado |
+|---|---|
+| `npm -w wtk-meet-server run test` | **98/98** |
+| `npm -w wtk-meet-client run test` | 571/574 — as 3 de `roomPhases.test.ts`, pré-existentes |
+| `npm -w wtk-meet-extension run test` | **86/88 — 3 falhas** (as 2 do §10 + a nova do §12.1) |
+| `npm run typecheck` | limpo |
+| `npm run lint` | limpo |
+| build a partir de `git archive HEAD` | **falha** — §12.1 |
+
+Os dois roteiros Playwright **não** foram reexecutados: eles carregam a extensão
+a partir do worktree e, por construção, não alcançam o defeito do §12.1. Os §5,
+§10 e §11 os medem, e nada de produção mudou desde então.
