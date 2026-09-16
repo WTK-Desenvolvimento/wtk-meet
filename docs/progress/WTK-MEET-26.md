@@ -320,3 +320,82 @@ a fila não fica parada com nada tocando"*.
   A 11ª é recusada com a mensagem do app ("Você já tem o máximo de faixas na
   fila"), o que é correto — mas para um motor que existe para tocar playlist, 10 é
   um teto que merece decisão de produto. Caracterizado em `engineQueue.test.ts`.
+
+---
+
+## 10. Segunda rodada de QA — 2026-09-16 (confirmação e um defeito irmão)
+
+Rodada independente sobre o mesmo commit (`5e295d7`). Tudo que o §9 afirma foi
+**medido de novo aqui**, portão a portão — inclusive os dois roteiros Playwright,
+que não são baratos e por isso costumam ser herdados em vez de refeitos.
+
+### 10.1 Portões, medidos nesta sessão
+
+| Portão | Resultado |
+|---|---|
+| `npm -w wtk-meet-server run test` | **98/98** |
+| `npm -w wtk-meet-client run test` | **571/574** — as 3 de `roomPhases.test.ts` |
+| `npm -w wtk-meet-extension run test` | **85/87 — 2 falhas, as duas reais** |
+| `npm run typecheck` (raiz, os 4 workspaces) | limpo |
+| `npm run lint` (raiz) | limpo — 1 warning pré-existente no client (`Room.tsx` 844, da #31) |
+| `npm run test:e2e:extension` | **16/16** |
+| `npm run test:e2e:extension:room` | **7/7** — a Alice ouve a faixa (rms 0.294) e o efeito (rms 0.345) |
+
+As 3 falhas do client **não são desta entrega**, e desta vez com prova em vez de
+argumento: `git diff main -- packages/client` devolve **9 linhas, todas de
+comentário**, no `Room.tsx` (o aviso sobre religar a E2EE). Nenhuma linha de
+comportamento do client mudou nesta branch.
+
+### 10.2 O defeito do §9.3, confirmado na leitura do código
+
+`EngineCore.queueRemove` (`src/engine/core.ts:365`) chama `advance()` **depois**
+de já ter tirado a entrada da sessão. Dentro de `advance()`, `atual` vem do
+snapshot publicado — que ainda traz o id removido — e `nextEntry(session, atual)`
+procura esse id numa fila onde ele não está mais: `index < 0` → `null`
+(`musicSession.ts:367`). Daí em diante: `stopTrack()`, `current = null`, e a
+publicação sai com a fila cheia e nada tocando.
+
+E ele é alcançável pela tela: `manager.ts:74` põe um botão **Remover** em *toda*
+entrada da fila, inclusive na que está marcada com `▶`. Como o motor é a fonte do
+áudio da sala, o clique não emudece uma aba — emudece a sala inteira.
+
+O contrato do app é o oposto, e está escrito lá em código: em `useMusicRoom.ts`
+(`removeFromQueue`, ~1285) remover a corrente é `advanceFrom(entryId, 'skipped')`
+com o comentário *"Pular é remover a faixa corrente"*.
+
+### 10.3 O defeito irmão — a faixa que não carrega leva o resto da fila junto
+
+Mesmo ponto cego, outro caminho. `playEntry` (`core.ts:402`), quando
+`loadTrack` recusa, avisa, remove a entrada, zera a corrente e **publica** — não
+chama `advance()`. Com uma faixa só na fila isso é indistinguível do correto, e é
+por isso que o teste que existia (`faixa que não carrega vira a mensagem do app`)
+passava: ele usa uma fila de um item.
+
+Reprodução com três faixas, sendo a do meio ruim:
+
+```
+fila [boa, ruim, outra], tocando boa
+skip                       → advance() → playEntry(ruim) → loadTrack recusa
+depois : aviso "não é áudio" ✔ , fila [outra] , corrente null , NÃO tocando
+esperado: corrente = outra, tocando
+```
+
+O app, de novo, faz o contrário: erro de reprodução é
+`advanceFrom(entryId, 'error')` (`useMusicRoom.ts:541` e `:550`).
+
+Diferença em relação ao §10.2: aqui **há mensagem**, então não é o silêncio mudo
+— é uma playlist que para na primeira URL podre. Em um motor cuja razão de
+existir é tocar fila sem ninguém olhando, o efeito prático é o mesmo.
+
+Teste que cobre: `test/engineQueue.test.ts` → *"uma faixa que não carrega não
+leva o resto da fila junto"*.
+
+### 10.4 Por que os dois voltam para o desenvolvimento, e não são consertados aqui
+
+O conserto dos dois passa por `advance()` — que hoje deriva a próxima faixa de um
+**id**, e precisa derivá-la de uma **chave de ordenação** para sobreviver à
+entrada que já saiu da fila. O client tem a função escrita para exatamente isto,
+com o caso no próprio comentário: `nextEntryAfterKey` (`musicSession.ts:384`,
+*"primeira entrada depois de uma chave que pode nem existir mais na fila"*).
+Escolher entre reusá-la e reordenar as chamadas é decisão de implementação, e
+esta sessão é de QA: o que sai daqui são os dois testes vermelhos.

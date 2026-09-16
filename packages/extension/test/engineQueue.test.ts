@@ -142,6 +142,26 @@ test('faixa que não carrega vira a mensagem do app e sai da fila — nunca sil�
   assert.equal(aba.avisos.at(-1), SOURCE_ERRORS['not-audio']);
 });
 
+test('uma faixa que não carrega não leva o resto da fila junto', async () => {
+  const { core, audio, aba } = motor();
+  await adicionar(core, 'https://cdn.example/boa.mp3', aba);
+  await adicionar(core, 'https://cdn.example/ruim.mp3', aba);
+  await adicionar(core, 'https://cdn.example/outra.mp3', aba);
+
+  // A faixa do meio recusa ao carregar; as outras duas são boas.
+  audio.falhaAoCarregar = 'not-audio';
+  await core.handleCommand({ target: 'engine', type: 'transport', action: 'skip' }, aba);
+  audio.falhaAoCarregar = null;
+
+  // O client faz exatamente isto: erro de reprodução vira `advanceFrom(id,
+  // 'error')` (`useMusicRoom.ts`), e a fila segue. Aqui a mensagem aparece — o
+  // que evita o silêncio mudo —, mas a faixa seguinte nunca assume, e quem
+  // montou a playlist fica olhando para duas faixas enfileiradas e nada tocando.
+  assert.equal(aba.avisos.at(-1), SOURCE_ERRORS['not-audio'], 'a recusa é dita');
+  assert.equal(aba.estado.current?.title, 'outra', 'a seguinte assume');
+  assert.equal(audio.isPlaying(), true);
+});
+
 test('reprodução bloqueada pela política de autoplay diz o que fazer', async () => {
   const { core, audio, aba } = motor();
   await adicionar(core, 'https://cdn.example/uma.mp3', aba);
