@@ -399,3 +399,97 @@ com o caso no próprio comentário: `nextEntryAfterKey` (`musicSession.ts:384`,
 *"primeira entrada depois de uma chave que pode nem existir mais na fila"*).
 Escolher entre reusá-la e reordenar as chamadas é decisão de implementação, e
 esta sessão é de QA: o que sai daqui são os dois testes vermelhos.
+
+---
+
+## 11. Terceira rodada de QA — 2026-09-16
+
+Rodada independente sobre `f43b031`. Os dois defeitos do §10 **foram
+reproduzidos e confirmados na leitura do código**, e esta rodada acrescenta duas
+coisas que faltavam: a prova de que os testes vermelhos são **satisfazíveis**
+(isto é, que eles ficam verdes com o conserto, e não por acidente), e o conserto
+de um **defeito no próprio teste** que tornava um deles impossível de passar.
+
+### 11.1 Portões, medidos nesta sessão
+
+| Portão | Resultado |
+|---|---|
+| `npm -w wtk-meet-server run test` | **98/98** |
+| `npm -w wtk-meet-client run test` | **571/574** — as 3 de `roomPhases.test.ts` |
+| `npm -w wtk-meet-extension run test` | **85/87 — 2 falhas, as duas reais** |
+| `npm run typecheck` (raiz, os 4 workspaces) | limpo |
+| `npm run lint` (raiz) | 0 erros — 1 warning pré-existente (`Room.tsx:844`, da #31) |
+
+As 3 falhas do client são pré-existentes, e a prova é mecânica: `git diff main --
+packages/client` devolve **9 linhas, todas de comentário**, no `Room.tsx`. Nenhuma
+linha de comportamento do client mudou nesta branch, então nenhuma falha do client
+pode ter origem aqui. (Os dois roteiros Playwright não foram reexecutados nesta
+rodada — os §5 e §10 os medem, e nada de produção mudou desde então.)
+
+### 11.2 O defeito no teste: um vermelho que continuaria vermelho depois do conserto
+
+O teste *"uma faixa que não carrega não leva o resto da fila junto"* (§10.3) usava
+o `falhaAoCarregar` do dublê, que é **global e permanente**:
+
+```ts
+audio.falhaAoCarregar = 'not-audio';
+await core.handleCommand({ … action: 'skip' }, aba);   // a cascata inteira roda AQUI
+audio.falhaAoCarregar = null;                          // tarde demais
+```
+
+A cascata toda acontece dentro daquele único `await`. Com o motor **corrigido**,
+`playEntry(ruim)` recusaria e chamaria `advance()` → `playEntry(outra)` — que
+recusaria também, porque a bandeira ainda está ligada. Fim: fila vazia, corrente
+`null`, e a asserção `current?.title === 'outra'` **falha do mesmo jeito**. Ou
+seja: o teste acusava um defeito real, mas não teria como confirmar o conserto —
+um vermelho permanente, que é a pior espécie de teste para devolver a alguém.
+
+**Conserto (nesta rodada, e só no teste):** `AudioQueFalha` ganhou
+`falhasPorTitulo: Map<string, string>`, que recusa **apenas** a faixa nomeada. O
+teste agora marca só `'ruim'`, e as vizinhas continuam carregáveis — que é o
+cenário que ele diz medir. O `falhaAoCarregar` global fica, porque o teste de uma
+faixa só (§9.2) o usa legitimamente.
+
+### 11.3 A prova de que os dois testes são satisfazíveis
+
+Com os dois vermelhos em mãos, o conserto candidato foi aplicado **em caráter de
+sonda**, medido, e **revertido** — `packages/extension/src/engine/core.ts` está
+byte a byte igual ao de `f43b031`, e o único arquivo que esta rodada modifica é
+`test/engineQueue.test.ts`.
+
+```diff
+--- queueRemove: deixar o advance() remover a corrente, em vez de removê-la antes
+     const corrente = this.state.current?.entryId === entryId;
+-    this.session = removeEntry(this.session, entryId);
+-    this.fileIds.delete(entryId);
+-    if (corrente) await this.advance();
+-    else this.publish();
++    if (corrente) return this.advance();
++    this.session = removeEntry(this.session, entryId);
++    this.fileIds.delete(entryId);
++    this.publish();
+
+--- playEntry: recusa ao carregar segue a fila, em vez de parar nela
+       this.session = removeEntry(this.session, entry.id);
++      this.fileIds.delete(entry.id);
+       this.currentEntryId = null;
+       this.publish();
+-      return;
++      return this.advance();
+```
+
+Resultado da sonda: **87/87**. Com o código de volta ao original: 85/87.
+
+Isso responde a única pergunta que ainda estava em aberto sobre o §10 — se os
+vermelhos eram acionáveis — e mostra que o conserto é pequeno. Ele **não** foi
+entregue: alterar produção não é desta coluna, e a escolha entre este desenho e o
+`nextEntryAfterKey` do client (§10.4) é de quem implementa.
+
+### 11.4 Por que o defeito do §10.2 acontece, em uma linha
+
+`advance()` lê `atual` de `this.state.current`, que é um campo **derivado e só
+recalculado em `publish()`**. O `queueRemove` tira a entrada da sessão sem
+publicar, então `advance()` enxerga um `atual` que a fila já não contém;
+`nextEntry` devolve `null` para id desconhecido (`index < 0`) e o motor conclui
+"acabou a fila" com duas faixas nela. É stale state, não lógica de fila — e é por
+isso que o `skip`, que não remove antes de avançar, escapa.

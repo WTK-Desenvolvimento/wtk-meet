@@ -40,12 +40,23 @@ const PROBE_TIMEOUT_MS = 8_000;
 class AudioQueFalha extends FakeAudio {
   /** Razão de `SOURCE_ERRORS` para `loadTrack` recusar, ou `null`. */
   falhaAoCarregar: string | null = null;
+  /**
+   * Títulos que recusam ao carregar — o resto carrega normalmente.
+   *
+   * Existe porque `falhaAoCarregar` é global e permanente: num teste de cascata
+   * (a faixa do meio é ruim, as vizinhas são boas) ele derrubaria *todas* as
+   * faixas, e o teste continuaria vermelho mesmo com o motor corrigido —
+   * provando nada. Aqui só a faixa nomeada recusa.
+   */
+  falhasPorTitulo = new Map<string, string>();
   /** Quando `true`, `play()` devolve `false` (política de autoplay). */
   bloqueado = false;
   /** Quando `true`, a sonda de CORS nunca responde. */
   sondaMuda = false;
 
   override async loadTrack(entry: QueueEntry): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const porTitulo = this.falhasPorTitulo.get(entry.title);
+    if (porTitulo) return { ok: false, reason: porTitulo };
     if (this.falhaAoCarregar) return { ok: false, reason: this.falhaAoCarregar };
     return super.loadTrack(entry);
   }
@@ -148,10 +159,12 @@ test('uma faixa que não carrega não leva o resto da fila junto', async () => {
   await adicionar(core, 'https://cdn.example/ruim.mp3', aba);
   await adicionar(core, 'https://cdn.example/outra.mp3', aba);
 
-  // A faixa do meio recusa ao carregar; as outras duas são boas.
-  audio.falhaAoCarregar = 'not-audio';
+  // Só a faixa do meio recusa ao carregar; as outras duas são boas. Marcar pelo
+  // título (e não pelo `falhaAoCarregar` global, que é permanente) é o que deixa
+  // a faixa seguinte carregável — sem isso o teste ficaria vermelho mesmo depois
+  // do conserto, e não provaria defeito nenhum.
+  audio.falhasPorTitulo.set('ruim', 'not-audio');
   await core.handleCommand({ target: 'engine', type: 'transport', action: 'skip' }, aba);
-  audio.falhaAoCarregar = null;
 
   // O client faz exatamente isto: erro de reprodução vira `advanceFrom(id,
   // 'error')` (`useMusicRoom.ts`), e a fila segue. Aqui a mensagem aparece — o
