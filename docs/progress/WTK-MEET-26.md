@@ -246,3 +246,77 @@ escrito ali.
   desta entrega e não foram tocadas aqui.
 - **O volume da música do app nasce zero** (§7). Uma linha, no client, com teste
   próprio — precisa de aval por estar fora do escopo desta task.
+
+---
+
+## 9. Rodada de QA — 2026-09-16
+
+Papel desta sessão: **QA**. Nenhuma linha de produção foi tocada; o que entra são
+testes, e o que sai é um defeito confirmado.
+
+### 9.1 O que foi medido, e com que resultado
+
+| Portão | Antes desta rodada | Depois dos testes novos |
+|---|---|---|
+| `npm test` — client | **571/574** (3 falhas) | 571/574 (as mesmas 3) |
+| `npm test` — server | 98/98 | 98/98 |
+| `npm test` — extensão | 50/50 | **85/86 — 1 falha nova, e ela é real** |
+| `npm run typecheck` | limpo | limpo |
+| `npm run lint` | limpo (1 warning pré-existente no client) | idem |
+| `npm run test:e2e:extension` | 16/16 | 16/16 |
+| `npm run test:e2e:extension:room` | 7/7 | 7/7 |
+
+As 3 falhas do client são `roomPhases.test.ts` (os três redirects) — **conferidas
+nesta sessão**, e elas não têm relação com a extensão: nada em `packages/client`
+mudou nesta entrega além de um comentário. Os dois roteiros Playwright foram
+executados aqui e reproduzem, checagem a checagem, o que o §5 afirma.
+
+### 9.2 Os 36 testes novos
+
+| Arquivo | Casos | O que fecha |
+|---|---|---|
+| `test/repoContract.test.ts` | 10 | DoD 1 e 2 (manifest, permissões cruzadas com o uso no código e com `PERMISSIONS.md`, `dist/` carregável) e DoD 15 (a ausência de E2EE está escrita nos três documentos) |
+| `test/engineQueue.test.ts` | 10 | §8 4, 11, 14 e 15 — snapshot completo para quem chega no meio da faixa, recusa com mensagem em vez de silêncio, `fileId` do IndexedDB, teto de tempo da sonda de CORS |
+| `test/favorites.test.ts` | 7 | DoD 7 — teto de 50, duplicata, renome, remoção e o documento gravado no formato do app |
+| `test/engineLifecycle.test.ts` | 9 | §8 8, 9 e 10 — badge (a única coisa que avisa com o popup fechado), motivo da recusa, desligamento que zera a sala |
+
+### 9.3 O defeito encontrado — remover a faixa que está tocando para a música
+
+Reprodução, com os dublês do próprio pacote:
+
+```
+antes  : fila [a, b, c], corrente a, tocando
+remove a (a corrente)
+depois : fila [b, c], corrente null, NÃO tocando, nenhuma mensagem
+play   : volta a tocar b
+```
+
+`EngineCore.queueRemove` tira a entrada da sessão **antes** de chamar
+`advance()`; lá dentro, `nextEntry(session, atual)` procura o sucessor de um id
+que já não está na fila e, para id desconhecido, `nextEntry` devolve `null`
+(`musicSession.ts`, `index < 0`). Resultado: `proxima` é `null`, `stopTrack()`
+roda e a sala fica em silêncio com duas faixas ainda enfileiradas — sem erro em
+lugar nenhum, que é a classe de falha que este repositório persegue desde a
+WTK-MEET-9. O `skip` não sofre disso porque ele **não** remove antes de avançar.
+
+O client já tem a função para este caso exato e diz isso no próprio comentário:
+`nextEntryAfterKey` ("primeira entrada depois de uma chave que pode nem existir
+mais na fila"). O conserto é de uma linha, e é do agente de desenvolvimento —
+não desta sessão.
+
+Teste que cobre: `test/engineQueue.test.ts` → *"remover a faixa corrente avança —
+a fila não fica parada com nada tocando"*.
+
+### 9.4 Duas observações que não são defeito
+
+- **`host_permissions: https://meet.google.com/*` provavelmente é redundante.** O
+  único caminho que lê a URL da aba é o `prefill`, e ele só é chamado pelo popup —
+  ou seja, sempre no clique no ícone, que é exatamente quando `activeTab` é
+  concedida. O DoD pede a host permission e `PERMISSIONS.md` a justifica, então
+  ela fica; mas o §5.4 registra que ela nunca foi medida num Chrome de verdade, e
+  é uma permissão a menos na revisão da Web Store se a medição confirmar.
+- **A fila da extensão para em 10 faixas.** Todas as entradas do motor têm o mesmo
+  autor (`extension`), então o `MAX_PER_PEER` do client vale para a fila inteira.
+  A 11ª é recusada com a mensagem do app ("Você já tem o máximo de faixas na
+  fila"), o que é correto — mas para um motor que existe para tocar playlist, 10 é
+  um teto que merece decisão de produto. Caracterizado em `engineQueue.test.ts`.
