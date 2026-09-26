@@ -69,6 +69,11 @@ export function createSignalingClient(options: SignalingOptions = {}): Signaling
    * token da sala A de ser apresentado na B.
    */
   let currentRoomId: string | null = null;
+  let hasConnected = false;
+
+  socket.on('connect', () => {
+    hasConnected = true;
+  });
 
   socket.on('join-approved', (payload: { resumeToken?: unknown } = {}) => {
     if (!currentRoomId) return;
@@ -106,17 +111,15 @@ export function createSignalingClient(options: SignalingOptions = {}): Signaling
     /**
      * Saída intencional: o token daquela sala deixa de existir na aba.
      *
-     * A guarda do `socket.connected` não é cosmética. O cleanup do efeito do
-     * `Room` chama isto, e em desenvolvimento o `React.StrictMode` monta →
-     * limpa → monta: sem a guarda, a limpeza fantasma apagaria o token **antes**
-     * de a segunda montagem o ler, e a retomada nunca funcionaria com `npm run
-     * dev` — funcionando no build e falhando na mão de quem desenvolve, que é o
-     * pior dos dois mundos para diagnosticar. Na saída real pelo botão "Sair da
-     * sala" o socket está conectado, e a chave some.
+     * A guarda usa `hasConnected`, não `socket.connected`. Em desenvolvimento,
+     * o `React.StrictMode` monta → limpa → monta: na limpeza fantasma o socket
+     * ainda não conectou (`hasConnected === false`), então o token sobrevive para
+     * a segunda montagem. Na saída real — inclusive quando o socket caiu antes de
+     * o usuário clicar "Sair" — `hasConnected` é `true`, e a chave some.
      */
     leaveRoom: (roomId: string) => {
-      if (!socket.connected) return;
-      socket.emit('leave-room');
+      if (!hasConnected) return;
+      if (socket.connected) socket.emit('leave-room');
       clearResumeToken(storage, roomId);
     },
   };

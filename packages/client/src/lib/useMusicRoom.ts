@@ -841,7 +841,7 @@ export function useMusicRoom({
       soundboardRef.current.setNetworkVolume(soundboardVolume);
     }
     return soundboardRef.current;
-  }, [ensureEngine]);
+  }, [ensureEngine, soundboardVolume]);
 
   /**
    * Quem está com o canal de música: o player, o soundboard, ou ninguém.

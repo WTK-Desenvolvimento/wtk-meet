@@ -103,26 +103,23 @@ export async function pickAudioFile(): Promise<File | null> {
 
 /**
  * Persiste um arquivo de áudio no IndexedDB sob a chave `id`.
- * Silencia qualquer falha (IndexedDB indisponível, cota excedida etc.).
+ * Lança em caso de falha (IndexedDB indisponível, cota excedida etc.) para que
+ * o chamador possa exibir feedback adequado sem registrar um favorito inválido.
  */
 export async function saveAudioFile(id: string, file: File): Promise<void> {
-  try {
-    const db = await openDb();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      const record: StoredAudio = { id, name: file.name, type: file.type, blob: file };
-      const req = store.put(record);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
-      tx.oncomplete = () => {
-        db.close();
-      };
-      tx.onerror = () => reject(tx.error);
-    });
-  } catch {
-    // Degrada silenciosamente — o arquivo não persiste nesta sessão.
-  }
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    const record: StoredAudio = { id, name: file.name, type: file.type, blob: file };
+    const req = store.put(record);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+    tx.oncomplete = () => {
+      db.close();
+    };
+    tx.onerror = () => reject(tx.error);
+  });
 }
 
 /**
