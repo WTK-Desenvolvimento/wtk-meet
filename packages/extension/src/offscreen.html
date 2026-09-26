@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>wtk-meet — motor de áudio</title>
+  </head>
+  <body>
+    <!--
+      Este documento não tem UI: ele é o motor. O Chrome permite **um** documento
+      offscreen por extensão, e é essa restrição de plataforma que garante o que
+      o produto promete — uma fila, um player, um soundboard, um AudioContext,
+      não importa quantas abas estejam abertas.
+
+      Os <audio> criados aqui dentro em runtime são os canais de música de outros
+      peers (ver `engine/room.ts`): voz e tela nunca chegam a este documento.
+    -->
+    <script type="module" src="offscreen.js"></script>
+  </body>
+</html>

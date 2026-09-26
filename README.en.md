@@ -463,16 +463,114 @@ that did not fit in this delivery.
 `infra/otel/dashboards/wtk-meet.json` is the Grafana dashboard, importable without manual
 editing.
 
+## Chrome extension: one audio engine for every tab
+
+`packages/extension` is a Chrome (MV3) extension that keeps **one** audio engine — one
+queue, one player, one soundboard, one `AudioContext` — and connects it to a parallel
+wtk-meet room. Everyone in the web app hears the music and the sound effects **without
+installing anything**.
+
+The use case behind it: a Google Meet call (which does not share system audio) where
+someone wants to play music for the room without leaving the tool the conversation is
+happening in. With a Meet tab active, the popup opens with the meeting code already filled
+in as the room id — so two people in the same meeting land in the same room without
+agreeing on anything.
+
+### Install
+
+```bash
+npm install                    # at the root, once
+npm run build:extension        # produces packages/extension/dist/
+```
+
+Then: `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → pick
+`packages/extension/dist`.
+
+### Use
+
+1. Click the extension icon. With an active tab on `meet.google.com/abc-defg-hij`, the room
+   field is pre-filled with `abc-defg-hij`; on any other tab it offers the last room you
+   used, and the popup says why it did not pre-fill.
+2. **Connect** puts the engine in the room. If anyone is already there, they must approve
+   it — and the reverse holds too: with the engine in the room, later arrivals show up in
+   the popup with "Approve"/"Deny" and the icon gets a badge with the count. **The engine
+   never approves anyone on its own.**
+3. **Manage queue and files** opens the management page: full queue, add a URL or a local
+   file, edit soundboard favourites, and configure the server.
+4. From the popup you play, pause, skip, set the volume (which is **local** and never goes
+   on the wire) and fire soundboard favourites.
+
+Audio keeps playing with the popup closed: what plays is the offscreen document, not the
+little window. To stop it, open the popup and hit **Stop and leave**.
+
+### Pointing it at your server
+
+By default the extension talks to `http://localhost:4000`. Change it on the management
+page.
+
+The extension has its own origin (`chrome-extension://<id>`), which is not in any
+deployment's `CLIENT_ORIGIN`. Add it to the list (the variable accepts comma-separated
+values):
+
+```bash
+CLIENT_ORIGIN=https://meet.example.com,chrome-extension://abcdefghijklmnopabcdefghijklmnop
+```
+
+The id is shown in `chrome://extensions`. It changes on every install until the extension
+is published with a fixed `key` in the manifest.
+
+TURN works exactly as it does for the app: the extension fetches `/turn-credentials` from
+the configured server, and the mesh runs with `iceTransportPolicy: 'relay'` — without
+TURN, no connection completes.
+
+### What it asks for, and what it does not do
+
+| Permission | Why |
+|---|---|
+| `offscreen` | create the document that **is** the engine |
+| `storage` | favourites (`wtk-meet:soundboard`, same format as the app) and preferences |
+| `activeTab` | read the active tab's URL **on click**, to explain why it did not pre-fill |
+| `https://meet.google.com/*` | read the meeting code from the active tab |
+
+It does **not** capture the Meet tab's audio (that would carry the voices of people in the
+meeting into another room), does **not** inject scripts into Google's page, does **not**
+use microphone or camera, and does **not** play back other participants' voices — only
+their music channel.
+
+### Two things that need to be explicit
+
+- **The extension's room joins without the extra E2EE layer.** Audio is protected by
+  DTLS-SRTP, like any participant's, but without the additional encryption the app applies
+  when it is on (it is currently off in `Room`; see `ARCHITECTURE.md` §3 and §11.2).
+- **The room inherits the secrecy of the meeting code — no more, no less.** Because the
+  address is derived from the Meet code, anyone who knows the code can guess the room. The
+  remaining defence is entry approval, which stays human. If that is not enough for your
+  case, use "use a random address" on the management page.
+- The engine **takes one of the six seats**: with it in the room, five people fit.
+
+### Limits inherited from the app
+
+An audio URL without CORS is **refused with a message** (MyInstants is the usual case),
+because without `Access-Control-Allow-Origin` what would reach the room is silence, with no
+error. YouTube links are refused too: MV3 forbids remotely hosted code, and YouTube
+delivery requires *every* participant to play the video — the engine is a single machine.
+
 ## Tests
 
 ```bash
 # everything from the root (npm workspaces):
-npm test                    # client + server unit tests (node:test)
-npm run typecheck           # tsc --noEmit on all three packages
+npm test                    # client + server + extension unit tests (node:test)
+npm run typecheck           # tsc --noEmit on all four packages
 npm run lint                # eslint 9 flat config + typescript-eslint
 
 # E2E (end-to-end: 3 Chromium participants + local TURN):
 npm run test:e2e
+
+# Extension E2E: two tabs, a single engine (persistent context + --load-extension)
+npm run test:e2e:extension
+
+# Extension E2E in a room: the app hears the music and the effect coming from the engine
+npm run test:e2e:extension:room
 ```
 
 Typechecking is a **separate** gate from the build: `npm run build` on the client does
@@ -502,7 +600,8 @@ packages/server/         signaling (Express + Socket.IO), in-memory state, ephem
 packages/server/dist/    compiled artifact (`npm run build`) — what the container runs
 packages/client/         React app (Vite) — UI, WebRTC mesh, E2EE via insertable streams
 packages/client/test/    unit tests
-packages/e2e/            end-to-end test with 3 participants
+packages/e2e/            end-to-end test with 3 participants (plus both extension scenarios)
+packages/extension/      Chrome MV3 extension: one audio engine for every tab
 infra/coturn/            reference config for self-hosted STUN/TURN
 ```
 

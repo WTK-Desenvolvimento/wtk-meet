@@ -10,8 +10,40 @@ import 'dotenv/config';
 
 const PORT = process.env.PORT || 4000;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
-const allowedOrigins = CLIENT_ORIGIN.split(',').map(o => o.trim());
-const corsOrigin = allowedOrigins.length === 1 ? allowedOrigins[0] : allowedOrigins;
+const allowedOrigins = new Set(CLIENT_ORIGIN.split(',').map(o => o.trim()));
+
+/**
+ * IDs de extensão Chrome autorizados a chamar `/turn-credentials`.
+ *
+ * Credenciais TURN efêmeras, mesmo com TTL curto, podem ser usadas por qualquer
+ * extensão instalada no navegador para consumir relay/banda da infraestrutura
+ * Cloudflare. `ALLOWED_EXTENSION_IDS` restringe o CORS ao conjunto declarado.
+ *
+ * Formato: `ALLOWED_EXTENSION_IDS=id1,id2` (IDs sem o prefixo do esquema).
+ *
+ * Se a variável **não** for definida, o servidor aceita qualquer origem
+ * `chrome-extension://` (comportamento anterior) e avisa no boot — útil em
+ * desenvolvimento, inadequado para produção.
+ */
+const rawExtIds = process.env.ALLOWED_EXTENSION_IDS ?? '';
+const allowedExtensionIds: Set<string> | null = rawExtIds.trim()
+  ? new Set(rawExtIds.split(',').map(s => s.trim()).filter(Boolean))
+  : null;
+
+function isCorsAllowed(origin: string | undefined): boolean {
+  if (!origin) return true;
+  if (origin.startsWith('chrome-extension://')) {
+    if (!allowedExtensionIds) return true; // modo desenvolvimento — sem restrição
+    const id = origin.slice('chrome-extension://'.length);
+    return allowedExtensionIds.has(id);
+  }
+  return allowedOrigins.has(origin);
+}
+
+const corsOrigin = (
+  origin: string | undefined,
+  callback: (err: Error | null, allow?: boolean) => void,
+) => callback(null, isCorsAllowed(origin));
 
 const rooms = new RoomStore();
 
@@ -438,6 +470,13 @@ server.listen(PORT, () => {
       '[turn] ATENÇÃO: CF_TURN_TOKEN_ID/CF_TURN_API_TOKEN não configurados. ' +
         'O client usa iceTransportPolicy:"relay" — sem TURN, NENHUMA chamada vai conectar. ' +
         '/turn-credentials responderá 503 e /health reportará turn.configured:false.',
+    );
+  }
+  if (!allowedExtensionIds) {
+    console.warn(
+      '[cors] ATENÇÃO: ALLOWED_EXTENSION_IDS não configurado. ' +
+        'Qualquer extensão Chrome instalada pode chamar /turn-credentials e obter credenciais de relay. ' +
+        'Em produção, defina ALLOWED_EXTENSION_IDS=<id1>,<id2> com os IDs da extensão autorizada.',
     );
   }
 });

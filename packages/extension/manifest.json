@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "wtk-meet — motor de áudio",
+  "version": "1.1.0",
+  "description": "Um motor de áudio único (música e soundboard) compartilhado por todas as abas, transmitindo para uma sala wtk-meet paralela.",
+  "minimum_chrome_version": "116",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "wtk-meet — motor de áudio",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": ["offscreen", "storage", "activeTab", "notifications"],
+  "host_permissions": [
+    "https://meet.google.com/*",
+    "https://meet.wtk.app/*",
+    "https://meet-api.wtk.app/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://meet.wtk.app/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

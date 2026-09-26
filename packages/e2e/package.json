@@ -7,7 +7,9 @@
   "type": "module",
   "scripts": {
     "test": "node run.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:extension": "node extension.ts",
+    "test:extension:room": "node extensionRoom.ts"
   },
   "dependencies": {
     "node-turn": "^0.0.6",

@@ -602,6 +602,15 @@ export default function Room() {
         localStream,
         getSelfId: () => selfIdRef.current || signaling.socket.id || '',
         // getRoomKey: () => roomKeyRef.current, // E2EE desabilitado por ora
+        //
+        // ATENÇÃO ao religar (WTK-MEET-26): `packages/extension` entra na sala
+        // **sem** chave derivada, e `makeDecryptTransform` (lib/e2ee.ts)
+        // **descarta** o quadro quando a decifragem falha — sem log, sem erro,
+        // sem `onerror`. Com a E2EE ligada aqui, o áudio da extensão some para
+        // todo mundo em silêncio: o tile continua lá e o `connectionState`
+        // continua `connected`. A decisão, quando chegar a hora, é entre
+        // *derivar de verdade* na extensão e *declará-la incompatível* — não um
+        // meio-termo. Ver `ARCHITECTURE.md` §11.2.
         onRemoteStream: (peerId, stream) => {
           setParticipants((prev) => {
             const next = new Map(prev);

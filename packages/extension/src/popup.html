@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>wtk-meet — motor de áudio</title>
+    <link rel="stylesheet" href="ui.css" />
+  </head>
+  <body class="popup">
+    <header>
+      <h1>wtk-meet</h1>
+      <div class="header-acoes">
+        <button id="manage" data-testid="manage" type="button" class="btn-config" title="Gerenciar fila e arquivos">⚙</button>
+        <span id="status" class="status" data-testid="status">desligado</span>
+      </div>
+    </header>
+
+    <section class="sala">
+      <label for="room">Id da sala</label>
+      <input id="room" data-testid="room" type="text" autocomplete="off" spellcheck="false" />
+      <p id="prefill-notice" class="nota" data-testid="prefill-notice" hidden></p>
+      <label for="name">Nome na sala</label>
+      <input id="name" data-testid="name" type="text" autocomplete="off" />
+      <div class="linha">
+        <button id="connect" data-testid="connect" type="button">Conectar</button>
+        <button id="disconnect" data-testid="disconnect" type="button">Parar e sair</button>
+      </div>
+    </section>
+
+    <section id="pending-box" class="pedidos" hidden>
+      <h2>Pedidos de entrada</h2>
+      <ul id="pending" data-testid="pending"></ul>
+    </section>
+
+    <section id="peers-box" class="participantes" hidden>
+      <h2>Na sala</h2>
+      <ul id="peers" data-testid="peers"></ul>
+    </section>
+
+    <section class="player">
+      <h2>Tocando</h2>
+      <p id="current" data-testid="current" class="faixa">nada na fila</p>
+      <div class="linha">
+        <button id="play" data-testid="play" type="button">Tocar</button>
+        <button id="pause" data-testid="pause" type="button">Pausar</button>
+        <button id="skip" data-testid="skip" type="button">Pular</button>
+      </div>
+      <label for="volume">Volume (só aqui)</label>
+      <input id="volume" data-testid="volume" type="range" min="0" max="1" step="0.05" />
+    </section>
+
+    <section class="soundboard">
+      <h2>Soundboard <span id="cooldown" class="nota" data-testid="cooldown"></span></h2>
+      <div id="favorites" class="grade" data-testid="favorites"></div>
+    </section>
+
+    <p id="notice" class="aviso" data-testid="notice" hidden></p>
+
+    <!--
+      Sonda de diagnóstico: invisível para quem usa, e o único jeito honesto de
+      um teste de fora afirmar "um motor só". `engine-id` muda quando o
+      documento offscreen é recriado; `play-count` e `audio-contexts` vêm do
+      motor, não desta página.
+    -->
+    <span id="diag" data-testid="diag" hidden></span>
+
+    <footer>
+      <p class="rodape" data-testid="e2ee-note">
+        Esta sala entra <strong>sem a camada extra de E2EE</strong> do app — o tráfego é
+        protegido por DTLS-SRTP, como o de qualquer participante.
+      </p>
+    </footer>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

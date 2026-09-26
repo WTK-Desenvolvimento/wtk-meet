@@ -315,10 +315,16 @@ const realAudioLevels = await import('../src/lib/audioLevels.js');
 const realAudioContext = await import('../src/lib/audioContext.js');
 const realMusicRoom = await import('../src/lib/useMusicRoom.js');
 
+// Referência estável: o mesmo objeto função em todo o ciclo de vida do mock,
+// para que `navigate` não apareça como dep modificada no useEffect do Room e
+// dispare o redirect duas vezes quando um re-render assíncrono (ex:
+// useKeyFingerprint) acontece entre os settled ticks.
+const stableNavigate = (to: string, options?: unknown) => cena.navegacoes.push([to, options]);
+
 mock.module('react-router-dom', {
   exports: {
     useLocation: () => cena.location,
-    useNavigate: () => (to: string, options?: unknown) => cena.navegacoes.push([to, options]),
+    useNavigate: () => stableNavigate,
   },
 });
 

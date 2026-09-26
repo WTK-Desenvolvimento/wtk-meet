@@ -370,10 +370,26 @@ test('o boot avisa quando falta TURN, e cala quando não falta (A7)', async (t) 
   assert.match(avisos[0], /relay/, 'o aviso explica por que ninguém vai conectar');
 
   const comTurn = await startServer({
-    env: { CF_TURN_TOKEN_ID: 'id', CF_TURN_API_TOKEN: 'secret' },
+    // ALLOWED_EXTENSION_IDS silencia o aviso de CORS; TURN silencia o aviso de relay.
+    // O teste afirma "nenhum ATENÇÃO" — os dois precisam estar configurados.
+    env: { CF_TURN_TOKEN_ID: 'id', CF_TURN_API_TOKEN: 'secret', ALLOWED_EXTENSION_IDS: 'abc123' },
   });
   t.after(() => comTurn.stop());
   assert.doesNotMatch(comTurn.saida(), /ATENÇÃO/);
+});
+
+test('o boot avisa quando ALLOWED_EXTENSION_IDS não está configurado (cors-warn)', async (t) => {
+  const semIds = await startServer({
+    env: { CF_TURN_TOKEN_ID: 'id', CF_TURN_API_TOKEN: 'secret' },
+  });
+  t.after(() => semIds.stop());
+  assert.match(semIds.saida(), /ALLOWED_EXTENSION_IDS/, 'avisa que qualquer extensão pode obter TURN');
+
+  const comIds = await startServer({
+    env: { CF_TURN_TOKEN_ID: 'id', CF_TURN_API_TOKEN: 'secret', ALLOWED_EXTENSION_IDS: 'abc123' },
+  });
+  t.after(() => comIds.stop());
+  assert.doesNotMatch(comIds.saida(), /ALLOWED_EXTENSION_IDS/, 'silencia quando a lista está configurada');
 });
 
 test('nem o segredo nem o token id aparecem na saída do servidor (A4)', async (t) => {

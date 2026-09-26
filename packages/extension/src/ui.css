@@ -1,0 +1,108 @@
+/*
+ * Uma folha para as duas superfícies (popup e `manager`), com a mesma paleta
+ * escura do app depois do redesign. Sem dependência de fonte externa: a CSP
+ * padrão do MV3 já proíbe recurso remoto, e pedir uma seria descobrir isso na
+ * primeira carga.
+ */
+:root {
+  color-scheme: dark;
+  --fundo: #0b1020;
+  --caixa: #161c30;
+  --linha: #26304d;
+  --texto: #e7ecf7;
+  --suave: #9aa6c4;
+  --acento: #4f7cff;
+  --alerta: #f97362;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 12px;
+  background: var(--fundo);
+  color: var(--texto);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+body.popup { width: 360px; }
+body.manager { max-width: 760px; margin: 0 auto; padding: 24px; }
+
+header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.header-acoes { display: flex; align-items: center; gap: 6px; }
+.btn-config {
+  padding: 2px 7px;
+  font-size: 14px;
+  border-radius: 6px;
+  border: 1px solid var(--linha);
+  background: var(--caixa);
+  color: var(--suave);
+  cursor: pointer;
+  line-height: 1.4;
+}
+.btn-config:hover { border-color: var(--acento); color: var(--texto); }
+h1 { font-size: 15px; margin: 0 0 8px; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--suave); margin: 14px 0 6px; }
+
+section { border-top: 1px solid var(--linha); padding-top: 4px; }
+header + section { border-top: 0; }
+
+label { display: block; font-size: 11px; color: var(--suave); margin-top: 8px; }
+
+input[type='text'] {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--linha);
+  background: var(--caixa);
+  color: var(--texto);
+}
+
+input[type='range'] { width: 100%; }
+
+button {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--linha);
+  background: var(--caixa);
+  color: var(--texto);
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--acento); }
+button:disabled { opacity: .45; cursor: default; }
+
+.linha { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.linha input[type='text'] { flex: 1; }
+
+.status {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--caixa);
+  color: var(--suave);
+}
+.status[data-status='connected'] { color: #6ee7a8; }
+.status[data-status='denied'], .status[data-status='error'] { color: var(--alerta); }
+
+.faixa { margin: 4px 0; font-variant-numeric: tabular-nums; }
+.nota { color: var(--suave); font-size: 11px; margin: 6px 0; }
+.rodape { color: var(--suave); font-size: 11px; border-top: 1px solid var(--linha); padding-top: 8px; margin-top: 12px; }
+
+.aviso {
+  margin: 10px 0 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(249, 115, 98, .12);
+  color: var(--alerta);
+  font-size: 12px;
+}
+.aviso[data-kind='info'] { background: rgba(79, 124, 255, .12); color: #a9c0ff; }
+
+.grade { display: flex; flex-wrap: wrap; gap: 6px; }
+.efeito { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+ul, ol { margin: 4px 0; padding-left: 18px; }
+ul { list-style: none; padding-left: 0; }
+li { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+li span { flex: 1; }
+li input[type='text'] { flex: 1; }
