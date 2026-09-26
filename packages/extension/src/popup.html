@@ -8,7 +8,10 @@
   <body class="popup">
     <header>
       <h1>wtk-meet</h1>
-      <span id="status" class="status" data-testid="status">desligado</span>
+      <div class="header-acoes">
+        <button id="manage" data-testid="manage" type="button" class="btn-config" title="Gerenciar fila e arquivos">⚙</button>
+        <span id="status" class="status" data-testid="status">desligado</span>
+      </div>
     </header>
 
     <section class="sala">
@@ -61,7 +64,6 @@
     <span id="diag" data-testid="diag" hidden></span>
 
     <footer>
-      <button id="manage" data-testid="manage" type="button">Gerenciar fila e arquivos</button>
       <p class="rodape" data-testid="e2ee-note">
         Esta sala entra <strong>sem a camada extra de E2EE</strong> do app — o tráfego é
         protegido por DTLS-SRTP, como o de qualquer participante.

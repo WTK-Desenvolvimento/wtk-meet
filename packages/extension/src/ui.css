@@ -28,7 +28,19 @@ body {
 body.popup { width: 360px; }
 body.manager { max-width: 760px; margin: 0 auto; padding: 24px; }
 
-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.header-acoes { display: flex; align-items: center; gap: 6px; }
+.btn-config {
+  padding: 2px 7px;
+  font-size: 14px;
+  border-radius: 6px;
+  border: 1px solid var(--linha);
+  background: var(--caixa);
+  color: var(--suave);
+  cursor: pointer;
+  line-height: 1.4;
+}
+.btn-config:hover { border-color: var(--acento); color: var(--texto); }
 h1 { font-size: 15px; margin: 0 0 8px; }
 h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--suave); margin: 14px 0 6px; }
 
