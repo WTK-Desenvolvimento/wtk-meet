@@ -87,6 +87,7 @@ const EXIGE = new Map([
   ['offscreen', 'offscreen'],
   ['storage', 'storage'],
   ['tabs', 'activeTab'],
+  ['notifications', 'notifications'],
 ]);
 
 /** Como se prova, no código, que uma permissão declarada é usada. */
@@ -94,6 +95,7 @@ const EVIDENCIA: Record<string, RegExp> = {
   offscreen: /chrome\.offscreen\./,
   storage: /chrome\.storage\./,
   activeTab: /chrome\.tabs\.query/,
+  notifications: /chrome\.notifications\./,
 };
 
 test('o manifest é V3 e o service worker é módulo', () => {
@@ -103,9 +105,9 @@ test('o manifest é V3 e o service worker é módulo', () => {
   assert.equal(manifest.action?.default_popup, 'popup.html');
 });
 
-test('as permissões declaradas são exatamente as três da entrega', () => {
-  assert.deepEqual([...(manifest.permissions ?? [])].sort(), ['activeTab', 'offscreen', 'storage']);
-  assert.deepEqual(manifest.host_permissions, ['https://meet.google.com/*']);
+test('as permissões declaradas são exatamente as quatro da entrega', () => {
+  assert.deepEqual([...(manifest.permissions ?? [])].sort(), ['activeTab', 'notifications', 'offscreen', 'storage']);
+  assert.deepEqual(manifest.host_permissions, ['https://meet.google.com/*', 'https://meet.wtk.app/*']);
 });
 
 test('toda permissão declarada tem uso no código', () => {
@@ -155,7 +157,12 @@ test('o que PERMISSIONS.md diz que não pede, o manifest realmente não pede', (
   // ninguém questiona.
   assert.ok(!(manifest.permissions ?? []).includes('tabs'), 'a permissão ampla `tabs` voltou');
   assert.ok(!(manifest.permissions ?? []).includes('tabCapture'), '`tabCapture` voltou — ver §2 do doc');
-  assert.equal(manifest.content_scripts, undefined, 'nada é injetado na página da Google');
+  // Content scripts são permitidos, mas nunca em google.com (apenas no app wtk-meet).
+  const cs: { matches?: string[] }[] = (manifest.content_scripts as { matches?: string[] }[] | undefined) ?? [];
+  assert.ok(
+    !cs.some((s) => s.matches?.some((m) => m.includes('google.com'))),
+    'content script injetado em google.com',
+  );
   assert.equal(
     manifest.optional_host_permissions,
     undefined,

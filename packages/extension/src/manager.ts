@@ -31,11 +31,7 @@ const els = {
   urlInput: $<HTMLInputElement>('url-input'),
   fileAdd: $<HTMLButtonElement>('file-add'),
   favorites: $<HTMLUListElement>('favorites'),
-  favForm: $<HTMLFormElement>('fav-form'),
-  favInput: $<HTMLInputElement>('fav-input'),
   displayName: $<HTMLInputElement>('display-name'),
-  signaling: $<HTMLInputElement>('signaling'),
-  appUrl: $<HTMLInputElement>('app-url'),
   save: $<HTMLButtonElement>('save'),
   randomRoom: $<HTMLButtonElement>('random-room'),
   invite: $<HTMLParagraphElement>('invite'),
@@ -132,32 +128,20 @@ els.fileAdd.addEventListener('click', async () => {
   await saveAudioFile(fileId, file);
   client.send({
     target: 'engine',
-    type: 'queue-add',
-    source: { kind: 'file', fileId, title: file.name },
+    type: 'favorite-add-file',
+    fileId,
+    title: file.name,
   });
-});
-
-els.favForm.addEventListener('submit', (event) => {
-  event.preventDefault();
-  const input = els.favInput.value.trim();
-  if (!input) return;
-  client.send({ target: 'engine', type: 'favorite-add', input });
-  els.favInput.value = '';
 });
 
 els.save.addEventListener('click', () => {
-  const prefs = storage.readPreferences();
   const next = storage.writePreferences({
-    ...prefs,
+    ...storage.readPreferences(),
     displayName: els.displayName.value,
-    signalingUrl: els.signaling.value,
-    appUrl: els.appUrl.value,
   });
   els.displayName.value = next.displayName;
-  els.signaling.value = next.signalingUrl;
-  els.appUrl.value = next.appUrl;
   els.notice.hidden = false;
-  els.notice.textContent = 'Salvo. A URL do servidor vale já na próxima conexão.';
+  els.notice.textContent = 'Salvo.';
 });
 
 /**
@@ -175,8 +159,6 @@ async function boot(): Promise<void> {
   await storage.hydrate();
   const prefs = storage.readPreferences();
   els.displayName.value = prefs.displayName;
-  els.signaling.value = prefs.signalingUrl;
-  els.appUrl.value = prefs.appUrl;
   if (prefs.lastRoom) {
     els.invite.textContent = `Última sala: ${prefs.lastRoom} — convite: ${prefs.appUrl.replace(/\/$/, '')}/${prefs.lastRoom}`;
   }

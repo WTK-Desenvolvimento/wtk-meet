@@ -54,8 +54,8 @@ export interface ExtensionPreferences {
 export const DEFAULT_EXTENSION_PREFERENCES: ExtensionPreferences = {
   lastRoom: '',
   displayName: 'Música (extensão)',
-  signalingUrl: 'http://localhost:4000',
-  appUrl: 'http://localhost:5173',
+  signalingUrl: 'https://meet-api.wtk.app',
+  appUrl: 'https://meet.wtk.app',
   volume: 1,
 };
 

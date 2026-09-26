@@ -9,7 +9,9 @@ e a lista abaixo é o que se responde quando alguém pergunta.
 | `offscreen` | `src/background.ts` | Criar o documento offscreen que é **o motor** (`chrome.offscreen.createDocument`). Sem ela não há áudio nenhum. |
 | `storage` | `src/lib/storage.ts` | `chrome.storage.local`: favoritos do soundboard (chave `wtk-meet:soundboard`, o mesmo formato do app) e as preferências da extensão (última sala, nome, URL do servidor, volume). |
 | `activeTab` | `src/background.ts` (`prefill`) | Ler a URL da aba ativa **no clique no ícone**, para dizer *por que* o campo de sala não foi preenchido quando a aba não é uma reunião. É concedida no ato da invocação e só para aquela aba. |
+| `notifications` | `src/background.ts` (`badge`) | Exibir notificação do sistema quando alguém pede para entrar na sala e o popup está fechado. Sem ela o usuário só vê o badge laranja, que pode passar despercebido. |
 | `host_permissions: https://meet.google.com/*` | `src/background.ts` (`prefill`) | Ler o código da reunião da aba ativa do Meet mesmo quando `activeTab` não está concedida — é o que garante o pré-preenchimento do campo de id, que é o comportamento central desta entrega. |
+| `host_permissions: https://meet.wtk.app/*` | `src/content.ts` | Injetar o content script de sincronização na página do app para compartilhar a lista de favoritos do soundboard entre `localStorage` do app e `chrome.storage.local` da extensão. |
 
 O que **não** está pedido, e por quê:
 

@@ -34,6 +34,13 @@ const OFFSCREEN_PATH = 'offscreen.html';
 let ensuring: Promise<void> | null = null;
 
 /**
+ * Último count de pedidos de entrada visto. Zera quando o SW é reiniciado pelo
+ * Chrome — aceitável: a notificação vai aparecer de novo na próxima mensagem de
+ * badge, o que é o comportamento correto após um reinício.
+ */
+let prevPending = 0;
+
+/**
  * Espera o motor **atender**, e não só o documento existir.
  *
  * `createDocument` resolve quando o documento foi criado; o script dele pode
@@ -148,6 +155,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       void chrome.action.setTitle({
         title: message.title || 'wtk-meet — motor de áudio',
       });
+      if (message.pending > 0 && prevPending === 0) {
+        const msg =
+          message.pending === 1
+            ? '1 pessoa aguarda aprovação para entrar na sala.'
+            : `${message.pending} pessoas aguardam aprovação para entrar na sala.`;
+        void chrome.notifications.create('join-request', {
+          type: 'basic',
+          iconUrl: 'icons/icon48.png',
+          title: 'wtk-meet — pedido de entrada',
+          message: msg,
+          priority: 2,
+        });
+      }
+      prevPending = message.pending;
       return undefined;
     }
 

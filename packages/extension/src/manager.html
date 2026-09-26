@@ -18,9 +18,6 @@
         <input id="url-input" data-testid="url-input" type="text" placeholder="URL de áudio (com CORS)" />
         <button type="submit" data-testid="url-add">Adicionar à fila</button>
       </form>
-      <div class="linha">
-        <button id="file-add" data-testid="file-add" type="button">Adicionar arquivo do computador</button>
-      </div>
       <p class="nota">
         Links do YouTube não entram aqui: a extensão não carrega código remoto e a entrega
         do YouTube exige que <em>cada</em> participante toque o vídeo. Use o app para isso.
@@ -30,10 +27,9 @@
     <section>
       <h2>Favoritos do soundboard</h2>
       <ul id="favorites" data-testid="favorites"></ul>
-      <form id="fav-form" class="linha">
-        <input id="fav-input" data-testid="fav-input" type="text" placeholder="URL de um efeito" />
-        <button type="submit" data-testid="fav-add">Favoritar</button>
-      </form>
+      <div class="linha">
+        <button id="file-add" data-testid="file-add" type="button">Adicionar arquivo do computador</button>
+      </div>
       <p class="nota">
         Até 50 favoritos, gravados em <code>chrome.storage.local</code> sob
         <code>wtk-meet:soundboard</code> — o mesmo formato do app.
@@ -41,13 +37,9 @@
     </section>
 
     <section>
-      <h2>Configuração</h2>
+      <h2>Configurações</h2>
       <label for="display-name">Nome do motor na sala</label>
       <input id="display-name" data-testid="display-name" type="text" />
-      <label for="signaling">Servidor de sinalização</label>
-      <input id="signaling" data-testid="signaling" type="text" />
-      <label for="app-url">Endereço do app (para o link de convite)</label>
-      <input id="app-url" data-testid="app-url" type="text" />
       <div class="linha">
         <button id="save" data-testid="save" type="button">Salvar</button>
         <button id="random-room" data-testid="random-room" type="button">

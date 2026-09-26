@@ -10,8 +10,24 @@ import 'dotenv/config';
 
 const PORT = process.env.PORT || 4000;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
-const allowedOrigins = CLIENT_ORIGIN.split(',').map(o => o.trim());
-const corsOrigin = allowedOrigins.length === 1 ? allowedOrigins[0] : allowedOrigins;
+const allowedOrigins = new Set(CLIENT_ORIGIN.split(',').map(o => o.trim()));
+
+/**
+ * Extensões Chrome fazem fetch com `Origin: chrome-extension://<id>`. O id
+ * muda entre instâncias de developer mode e a Chrome Web Store, então qualquer
+ * origem desse esquema é aceita — o endpoint de turn-credentials não tem dado
+ * sensível que justifique restringir por id específico.
+ */
+function isCorsAllowed(origin: string | undefined): boolean {
+  if (!origin) return true;
+  if (origin.startsWith('chrome-extension://')) return true;
+  return allowedOrigins.has(origin);
+}
+
+const corsOrigin = (
+  origin: string | undefined,
+  callback: (err: Error | null, allow?: boolean) => void,
+) => callback(null, isCorsAllowed(origin));
 
 const rooms = new RoomStore();
 

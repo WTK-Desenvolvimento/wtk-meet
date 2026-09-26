@@ -27,6 +27,7 @@
 import {
   SOUNDBOARD_ERRORS,
   addFavorite,
+  addFileFavorite,
   readSoundboard,
   removeFavorite,
   renameFavorite,
@@ -212,6 +213,8 @@ export class EngineCore {
         return this.fire(command.favoriteId, port);
       case 'favorite-add':
         return this.favoriteAdd(command.input, port);
+      case 'favorite-add-file':
+        return this.favoriteAddFile(command.fileId, command.title, port);
       case 'favorite-remove':
         this.commitFavorites(removeFavorite(this.prefs(), command.favoriteId));
         return this.publish();
@@ -518,6 +521,16 @@ export class EngineCore {
   private commitFavorites(next: ReturnType<typeof readSoundboard>): void {
     const efetivo = writeSoundboard(this.storage, next);
     this.state.favorites = [...efetivo.favorites];
+  }
+
+  private favoriteAddFile(fileId: string, title: string, port?: PortLike | null): void {
+    const result = addFileFavorite(this.prefs(), { name: title }, { fileId, now: Date.now() });
+    if (!result.ok) {
+      this.hub.notice('error', SOUNDBOARD_ERRORS[result.reason ?? 'full'] ?? SOUNDBOARD_ERRORS.full!, port);
+      return;
+    }
+    this.commitFavorites(result.prefs);
+    this.publish();
   }
 
   private async favoriteAdd(input: string, port?: PortLike | null): Promise<void> {

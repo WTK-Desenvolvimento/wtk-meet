@@ -52,23 +52,11 @@ async function build(): Promise<void> {
   rmSync(DIST, { recursive: true, force: true });
   mkdirSync(DIST, { recursive: true });
 
-  await esbuild.build({
-    entryPoints: [
-      join(SRC, 'background.ts'),
-      join(SRC, 'offscreen.ts'),
-      join(SRC, 'popup.ts'),
-      join(SRC, 'manager.ts'),
-    ],
-    outdir: DIST,
+  const sharedOptions = {
     bundle: true,
-    format: 'esm',
-    // Ver o cabeçalho: um `import()` que não resolve sob `chrome-extension://` é
-    // um bug que só aparece na máquina de quem instalou.
-    splitting: false,
-    target: 'chrome116',
-    platform: 'browser',
-    sourcemap: 'linked',
-    logLevel: 'info',
+    target: 'chrome116' as const,
+    platform: 'browser' as const,
+    sourcemap: 'linked' as const,
     plugins: [resolveJsToTs],
     define: {
       // O client lê `import.meta.env` em `config.ts` — que a extensão **não**
@@ -78,6 +66,32 @@ async function build(): Promise<void> {
       // telemetria do app.
       'import.meta.env': 'undefined',
     },
+  };
+
+  await esbuild.build({
+    ...sharedOptions,
+    entryPoints: [
+      join(SRC, 'background.ts'),
+      join(SRC, 'offscreen.ts'),
+      join(SRC, 'popup.ts'),
+      join(SRC, 'manager.ts'),
+    ],
+    outdir: DIST,
+    format: 'esm',
+    // Ver o cabeçalho: um `import()` que não resolve sob `chrome-extension://` é
+    // um bug que só aparece na máquina de quem instalou.
+    splitting: false,
+    logLevel: 'info',
+  });
+
+  // Content script usa IIFE: roda como classic script (sem `type="module"`),
+  // o que evita o overhead de negociação de módulo no contexto da página.
+  await esbuild.build({
+    ...sharedOptions,
+    entryPoints: [join(SRC, 'content.ts')],
+    outdir: DIST,
+    format: 'iife',
+    logLevel: 'silent',
   });
 
   // Ícones: gerados se ainda não existirem (nenhum binário versionado).

@@ -34,14 +34,14 @@ const els = {
   disconnect: $<HTMLButtonElement>('disconnect'),
   pendingBox: $<HTMLElement>('pending-box'),
   pending: $<HTMLUListElement>('pending'),
+  peersBox: $<HTMLElement>('peers-box'),
+  peers: $<HTMLUListElement>('peers'),
   current: $<HTMLParagraphElement>('current'),
   play: $<HTMLButtonElement>('play'),
   pause: $<HTMLButtonElement>('pause'),
   skip: $<HTMLButtonElement>('skip'),
   volume: $<HTMLInputElement>('volume'),
   favorites: $<HTMLDivElement>('favorites'),
-  favForm: $<HTMLFormElement>('fav-form'),
-  favInput: $<HTMLInputElement>('fav-input'),
   cooldown: $<HTMLSpanElement>('cooldown'),
   notice: $<HTMLParagraphElement>('notice'),
   manage: $<HTMLButtonElement>('manage'),
@@ -115,6 +115,7 @@ function render(): void {
   els.diag.dataset.lastCommand = state.lastCommand ?? '';
 
   renderPending();
+  renderPeers();
   renderFavorites();
 }
 
@@ -154,6 +155,19 @@ function renderPending(): void {
   );
 }
 
+function renderPeers(): void {
+  els.peersBox.hidden = state.peers.length === 0;
+  els.peers.replaceChildren(
+    ...state.peers.map((peer) => {
+      const item = document.createElement('li');
+      const nome = document.createElement('span');
+      nome.textContent = peer.displayName;
+      item.append(nome);
+      return item;
+    }),
+  );
+}
+
 function renderFavorites(): void {
   els.favorites.replaceChildren(
     ...state.favorites.map((favorite) => {
@@ -172,7 +186,7 @@ function renderFavorites(): void {
   if (!state.favorites.length) {
     const vazio = document.createElement('p');
     vazio.className = 'nota';
-    vazio.textContent = 'Nenhum favorito ainda — cole a URL de um efeito abaixo.';
+    vazio.textContent = 'Nenhum favorito ainda — adicione arquivos pelo gerenciador.';
     els.favorites.replaceChildren(vazio);
   }
 }
@@ -200,14 +214,6 @@ els.room.addEventListener('input', () => {
   // Normaliza enquanto se digita, com a mesma regra do app — o valor que vira
   // endereço passa por `normalizeRoomPath` no motor de qualquer jeito.
   els.room.value = normalizeRoomPathInput(els.room.value);
-});
-
-els.favForm.addEventListener('submit', (event) => {
-  event.preventDefault();
-  const input = els.favInput.value.trim();
-  if (!input) return;
-  client.send({ target: 'engine', type: 'favorite-add', input });
-  els.favInput.value = '';
 });
 
 els.manage.addEventListener('click', () => EngineClient.openManager());

@@ -142,6 +142,15 @@ export interface FavoriteAddCommand {
   input: string;
 }
 
+export interface FavoriteAddFileCommand {
+  target: 'engine';
+  type: 'favorite-add-file';
+  /** Chave no IndexedDB da origem da extensão — gravado pela manager antes de enviar. */
+  fileId: string;
+  /** Nome do arquivo, usado como título inicial do favorito. */
+  title: string;
+}
+
 export interface FavoriteRemoveCommand {
   target: 'engine';
   type: 'favorite-remove';
@@ -181,6 +190,7 @@ export type EngineCommand =
   | VolumeCommand
   | SoundboardFireCommand
   | FavoriteAddCommand
+  | FavoriteAddFileCommand
   | FavoriteRemoveCommand
   | FavoriteRenameCommand
   | JoinDecisionCommand
