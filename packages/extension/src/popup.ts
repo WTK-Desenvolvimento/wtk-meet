@@ -237,7 +237,12 @@ async function boot(): Promise<void> {
     els.prefillNotice.textContent = prefill.notice;
   }
 
-  await client.start();
+  try {
+    await client.start();
+  } catch (err) {
+    showNotice(err instanceof Error ? err.message : 'O motor não iniciou.', 'error');
+    return;
+  }
   render();
 }
 

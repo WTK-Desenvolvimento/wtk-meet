@@ -162,7 +162,13 @@ async function boot(): Promise<void> {
   if (prefs.lastRoom) {
     els.invite.textContent = `Última sala: ${prefs.lastRoom} — convite: ${prefs.appUrl.replace(/\/$/, '')}/${prefs.lastRoom}`;
   }
-  await client.start();
+  try {
+    await client.start();
+  } catch (err) {
+    els.notice.hidden = false;
+    els.notice.textContent = err instanceof Error ? err.message : 'O motor não iniciou.';
+    return;
+  }
   render();
 }
 

@@ -51,17 +51,21 @@ let prevPending = 0;
  */
 async function esperarMotor(tentativas = 40): Promise<void> {
   for (let i = 0; i < tentativas; i += 1) {
+    let resposta: { ready?: boolean; error?: string | null } | undefined;
     try {
-      const resposta = (await chrome.runtime.sendMessage({ target: 'engine', type: 'ping' })) as
-        | { ready?: boolean }
-        | undefined;
-      if (resposta?.ready) return;
+      resposta = (await chrome.runtime.sendMessage({ target: 'engine', type: 'ping' })) as
+        typeof resposta;
     } catch {
       // "Receiving end does not exist": o documento ainda não atende. É o caso
       // esperado nas primeiras voltas.
     }
+    // Se o motor reportou uma falha de boot, propaga imediatamente — nova
+    // tentativa não ajuda: o problema está no boot, não no timing.
+    if (resposta?.error) throw new Error(resposta.error);
+    if (resposta?.ready) return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+  throw new Error('O motor não ficou pronto após o tempo limite (2 s).');
 }
 
 async function ensureEngine(): Promise<void> {

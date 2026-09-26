@@ -45,7 +45,14 @@ export class EngineClient {
   }
 
   async start(): Promise<void> {
-    await chrome.runtime.sendMessage({ target: 'sw', type: 'ensure-engine' });
+    const resposta = (await chrome.runtime.sendMessage({ target: 'sw', type: 'ensure-engine' })) as
+      | { ok: boolean; error?: string }
+      | undefined;
+    if (!resposta?.ok) {
+      throw new Error(
+        resposta?.error ?? 'O motor não iniciou — resposta inesperada do service worker.',
+      );
+    }
     const port = chrome.runtime.connect({ name: PORT_NAME });
     this.port = port;
 
