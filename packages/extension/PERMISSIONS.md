@@ -12,6 +12,7 @@ e a lista abaixo é o que se responde quando alguém pergunta.
 | `notifications` | `src/background.ts` (`badge`) | Exibir notificação do sistema quando alguém pede para entrar na sala e o popup está fechado. Sem ela o usuário só vê o badge laranja, que pode passar despercebido. |
 | `host_permissions: https://meet.google.com/*` | `src/background.ts` (`prefill`) | Ler o código da reunião da aba ativa do Meet mesmo quando `activeTab` não está concedida — é o que garante o pré-preenchimento do campo de id, que é o comportamento central desta entrega. |
 | `host_permissions: https://meet.wtk.app/*` | `src/content.ts` | Injetar o content script de sincronização na página do app para compartilhar a lista de favoritos do soundboard entre `localStorage` do app e `chrome.storage.local` da extensão. |
+| `host_permissions: https://meet-api.wtk.app/*` | `src/engine/room.ts` | Conectar ao servidor de sinalização padrão (WebSocket + HTTP polling do socket.io). A URL é configurável pelo usuário; esta permissão cobre o servidor de produção da WTK sem exigir `https://*/*`. |
 
 O que **não** está pedido, e por quê:
 

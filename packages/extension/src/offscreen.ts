@@ -149,6 +149,13 @@ async function boot(): Promise<void> {
         // Sem receptor (o SW ainda não acordou): o próximo `publish` repete.
       });
     },
+    onVolumeChange: (value) => {
+      // Persiste o volume escolhido pelo usuário. Sem isso, o motor volta a 1
+      // (o default) sempre que é recriado — e o slider não reflete o que foi
+      // salvo. A leitura é write-through: o próximo boot lê o valor correto.
+      const prefs = storage.readPreferences();
+      storage.writePreferences({ ...prefs, volume: value });
+    },
   });
   core.init();
   audio.setMonitorVolume(prefs.volume);

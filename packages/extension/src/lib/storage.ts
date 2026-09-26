@@ -31,7 +31,7 @@
 
 import type { PreferenceStorage } from '../../../client/src/lib/soundboard.js';
 import { STORAGE_KEY as SOUNDBOARD_KEY } from '../../../client/src/lib/soundboard.js';
-import { runtime, runtimeStorage } from './chromeCommon.js';
+import { runtime } from './chromeCommon.js';
 
 /** Preferências da própria extensão. Análoga a `wtk-meet:devices` no app. */
 export const EXTENSION_KEY = 'wtk-meet:extension';
@@ -67,11 +67,20 @@ export interface StorageBackend {
   subscribe(listener: (key: string, value: string | null) => void): void;
 }
 
-/** Quem tem `chrome.storage` (service worker, popup, `manager`). */
+/**
+ * Quem tem `chrome.storage` (service worker, popup, `manager`).
+ *
+ * `chrome.storage` é acessado de forma *lazy* (dentro das funções), e não no
+ * nível do módulo, de propósito: o documento offscreen importa `storage.ts`
+ * para usar apenas `messageBackend`, mas se `chrome.storage` fosse avaliado
+ * no topo do módulo (como era via `runtimeStorage = chrome.storage`), o Chrome
+ * abortaria o bundle antes de registrar `onConnect` — derrubando popup, fila e
+ * motor em silêncio, sem nenhuma mensagem de erro visível.
+ */
 export function directBackend(): StorageBackend {
   return {
     async readAll(keys) {
-      const stored = await runtimeStorage.local.get(keys);
+      const stored = await chrome.storage.local.get(keys);
       const out: Record<string, string> = {};
       for (const key of keys) {
         const value = stored[key];
@@ -84,10 +93,10 @@ export function directBackend(): StorageBackend {
       // módulo puro, que não tem onde esperar. Uma falha de cota aqui é um
       // favorito que não sobrevive ao reload — melhor que uma rejeição não
       // tratada derrubando o motor no meio de uma faixa.
-      void runtimeStorage.local.set({ [key]: value }).catch(() => {});
+      void chrome.storage.local.set({ [key]: value }).catch(() => {});
     },
     subscribe(listener) {
-      runtimeStorage.onChanged.addListener((changes, areaName) => {
+      chrome.storage.onChanged.addListener((changes, areaName) => {
         if (areaName !== 'local') return;
         for (const [key, change] of Object.entries(changes)) {
           listener(key, typeof change.newValue === 'string' ? change.newValue : null);

@@ -65,7 +65,14 @@ async function esperarMotor(tentativas = 40): Promise<void> {
 }
 
 async function ensureEngine(): Promise<void> {
-  if (await chrome.offscreen.hasDocument()) return esperarMotor();
+  // `hasDocument()` foi adicionado no Chrome 116 junto com a API offscreen, mas
+  // versões posteriores ao corte de 150 é onde ele está estável em builds
+  // distribuídos. Guardamos com `typeof` para não lançar TypeError em builds
+  // mais antigos que possam rodar a extensão durante testes de QA.
+  const hasDoc = typeof chrome.offscreen.hasDocument === 'function'
+    ? await chrome.offscreen.hasDocument()
+    : false;
+  if (hasDoc) return esperarMotor();
   if (ensuring) return ensuring;
   ensuring = chrome.offscreen
     .createDocument({
@@ -81,7 +88,9 @@ async function ensureEngine(): Promise<void> {
     .catch(async (err: unknown) => {
       // "Only a single offscreen document may be created" é sucesso disfarçado:
       // outro contexto ganhou a corrida.
-      if (await chrome.offscreen.hasDocument()) return;
+      const alreadyExists = typeof chrome.offscreen.hasDocument === 'function'
+        && (await chrome.offscreen.hasDocument());
+      if (alreadyExists) return;
       throw err;
     })
     .finally(() => {
@@ -208,4 +217,3 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.action.setBadgeText({ text: '' });
 });
-

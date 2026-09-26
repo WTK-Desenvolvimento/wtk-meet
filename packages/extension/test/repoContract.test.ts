@@ -107,7 +107,11 @@ test('o manifest é V3 e o service worker é módulo', () => {
 
 test('as permissões declaradas são exatamente as quatro da entrega', () => {
   assert.deepEqual([...(manifest.permissions ?? [])].sort(), ['activeTab', 'notifications', 'offscreen', 'storage']);
-  assert.deepEqual(manifest.host_permissions, ['https://meet.google.com/*', 'https://meet.wtk.app/*']);
+  assert.deepEqual(manifest.host_permissions, [
+    'https://meet.google.com/*',
+    'https://meet.wtk.app/*',
+    'https://meet-api.wtk.app/*',
+  ]);
 });
 
 test('toda permissão declarada tem uso no código', () => {

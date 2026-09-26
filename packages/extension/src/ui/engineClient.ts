@@ -99,4 +99,3 @@ export class EngineClient {
     void chrome.runtime.sendMessage({ target: 'sw', type: 'open-manager' });
   }
 }
-

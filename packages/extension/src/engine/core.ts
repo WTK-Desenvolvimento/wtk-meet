@@ -125,6 +125,12 @@ export interface EngineCoreOptions {
   engineId?: string;
   /** Chamado quando o badge do ícone precisa mudar (o motor não tem `action`). */
   onBadge?: (badge: { pending: number; playing: boolean; title: string }) => void;
+  /**
+   * Chamado quando o usuário muda o volume, com o valor já clampeado (0..1).
+   * Injetado pelo `offscreen.ts` para persistir a preferência sem que o motor
+   * precise conhecer `EXTENSION_KEY` ou `ExtensionPreferences`.
+   */
+  onVolumeChange?: (value: number) => void;
 }
 
 export class EngineCore {
@@ -133,6 +139,7 @@ export class EngineCore {
   private storage: PreferenceStorage;
   private now: () => number;
   private onBadge: EngineCoreOptions['onBadge'];
+  private onVolumeChange: EngineCoreOptions['onVolumeChange'];
 
   private hub = new UiHub();
   private state: EngineState;
@@ -144,12 +151,13 @@ export class EngineCore {
   private lamport = 0;
   private seq = 0;
 
-  constructor({ audio, room, storage, now, engineId = '', onBadge }: EngineCoreOptions) {
+  constructor({ audio, room, storage, now, engineId = '', onBadge, onVolumeChange }: EngineCoreOptions) {
     this.audio = audio;
     this.room = room;
     this.storage = storage;
     this.now = now ?? (() => Date.now());
     this.onBadge = onBadge;
+    this.onVolumeChange = onVolumeChange;
     this.state = emptyState(engineId);
     this.published = { ...this.state };
   }
@@ -205,10 +213,13 @@ export class EngineCore {
         return this.queueRemove(command.entryId);
       case 'transport':
         return this.transport(command.action, command.positionSec);
-      case 'volume':
-        this.audio.setMonitorVolume(command.value);
-        this.state.volume = Math.min(1, Math.max(0, command.value));
+      case 'volume': {
+        const clamped = Math.min(1, Math.max(0, command.value));
+        this.audio.setMonitorVolume(clamped);
+        this.state.volume = clamped;
+        this.onVolumeChange?.(clamped);
         return this.publish();
+      }
       case 'soundboard-fire':
         return this.fire(command.favoriteId, port);
       case 'favorite-add':

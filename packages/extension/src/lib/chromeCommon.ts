@@ -16,6 +16,3 @@
 
 /** `chrome.runtime`, na fatia que existe em qualquer contexto. */
 export const runtime = chrome.runtime;
-
-/** `chrome.storage`, idem. Exportado com nome próprio para não colidir. */
-export const runtimeStorage = chrome.storage;

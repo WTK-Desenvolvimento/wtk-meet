@@ -163,6 +163,14 @@ export class ExtensionRoom implements RoomSide {
     });
 
     signaling.socket.on('disconnect', () => {
+      // Queda de rede: limpa o mesmo estado que `disconnect()` limpa na saída
+      // voluntária. Sem isso, popup e manager continuam mostrando peers e
+      // pedidos de uma sala que não existe mais.
+      this.peers.clear();
+      this.pending.clear();
+      this.selfId = '';
+      this.events.onPeers(this.peerList());
+      this.events.onPendingJoins(this.pendingList());
       this.events.onStatus('idle', null);
     });
 

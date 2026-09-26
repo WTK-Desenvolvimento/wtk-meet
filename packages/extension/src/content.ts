@@ -19,7 +19,7 @@ import { readSoundboard, STORAGE_KEY } from '../../client/src/lib/soundboard.js'
 import type { Favorite, SoundboardPreferences } from '../../client/src/lib/soundboard.js';
 
 function parsePrefs(raw: string | null): SoundboardPreferences {
-  return readSoundboard({ getItem: (_k: string) => raw });
+  return readSoundboard({ getItem: () => raw });
 }
 
 function urlOnly(list: Favorite[]): Favorite[] {
@@ -47,7 +47,7 @@ let lastWrittenByUs: string | null = null;
  * `chrome.storage`. Pula se o resultado já é o que está lá (sem mudança real).
  */
 function pushToExtension(): void {
-  void chrome.storage.local.get([STORAGE_KEY], (result) => {
+  void chrome.storage.local.get([STORAGE_KEY]).then((result) => {
     const extRaw = typeof result[STORAGE_KEY] === 'string' ? (result[STORAGE_KEY] as string) : null;
     const appRaw = localStorage.getItem(STORAGE_KEY);
 
@@ -83,7 +83,7 @@ function pullFromExtension(extRaw: string): void {
 }
 
 // ── Sync inicial ao carregar ──────────────────────────────────────────────────
-void chrome.storage.local.get([STORAGE_KEY], (result) => {
+void chrome.storage.local.get([STORAGE_KEY]).then((result) => {
   const extRaw = typeof result[STORAGE_KEY] === 'string' ? (result[STORAGE_KEY] as string) : null;
   if (extRaw) pullFromExtension(extRaw);
   pushToExtension();

@@ -89,8 +89,22 @@ interface ChromePrivileged extends ChromeCommon {
   };
   offscreen: {
     createDocument(params: { url: string; reasons: string[]; justification: string }): Promise<void>;
-    hasDocument(): Promise<boolean>;
+    /** Disponível a partir do Chrome 116; guardado com `typeof` antes de chamar. */
+    hasDocument?(): Promise<boolean>;
     closeDocument(): Promise<void>;
+  };
+  notifications: {
+    create(
+      notificationId: string,
+      options: {
+        type: string;
+        iconUrl: string;
+        title: string;
+        message: string;
+        priority?: number;
+      },
+    ): Promise<string>;
+    clear(notificationId: string): Promise<boolean>;
   };
 }
 
