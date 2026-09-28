@@ -73,6 +73,7 @@ class FakeSocket {
 
   connect(): void {
     this.connected = true;
+    this.receive('connect');
   }
 
   disconnect(): void {
