@@ -781,7 +781,11 @@ export default function Room() {
       // webcam apaga e que os decoders/ICE agents param de existir.
       meshRef.current?.closeAll();
       meshRef.current = null;
-      signalingRef.current?.leaveRoom();
+      // A sala vai junto: é ela que diz qual token de retorno apagar. Só a
+      // saída intencional apaga — e só quando o socket chegou a conectar, para
+      // que a montagem fantasma do StrictMode não jogue fora o token que a
+      // montagem seguinte vai precisar ler (ver `lib/signaling.ts`).
+      signalingRef.current?.leaveRoom(roomId);
       signalingRef.current?.disconnect();
       signalingRef.current = null;
 

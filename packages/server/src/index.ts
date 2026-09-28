@@ -291,12 +291,13 @@ interface PendingJoin {
 const pendingJoins = new Map<string, PendingJoin>();
 
 /**
- * O que o client manda no `join-request`. Nada aqui é confiável: os dois campos
+ * O que o client manda no `join-request`. Nada aqui é confiável: os três campos
  * são validados antes de qualquer uso, e é por isso que chegam como `unknown`.
  */
 interface JoinRequestPayload {
   roomId?: unknown;
   displayName?: unknown;
+  resumeToken?: unknown;
 }
 
 function sanitizeDisplayName(name: unknown): string {
@@ -305,8 +306,23 @@ function sanitizeDisplayName(name: unknown): string {
   return trimmed.length > 0 ? trimmed : 'Guest';
 }
 
+/** 32 bytes em hex — a forma exata do que `RoomStore` emite. */
+const RESUME_TOKEN_SHAPE = /^[0-9a-f]{64}$/;
+
+/**
+ * Checagem de forma antes de usar o valor como chave de `Map`.
+ *
+ * O campo chega de fora, como `roomId` e `displayName`. Sem isto, uma string de
+ * megabytes viraria chave de lookup vinda direto da rede. O `length` primeiro é
+ * o que mantém a checagem O(1) para esse caso. Qualquer coisa que não case é
+ * tratada como token **ausente** — nunca como motivo de recusa.
+ */
+function isResumeTokenShaped(token: unknown): token is string {
+  return typeof token === 'string' && token.length === 64 && RESUME_TOKEN_SHAPE.test(token);
+}
+
 io.on('connection', (socket) => {
-  socket.on('join-request', ({ roomId, displayName }: JoinRequestPayload = {}) => {
+  socket.on('join-request', ({ roomId, displayName, resumeToken }: JoinRequestPayload = {}) => {
     if (typeof roomId !== 'string' || roomId.length === 0) {
       socket.emit('join-denied', { reason: 'invalid-room' });
       // Todo `record*` é síncrono, total e chamado **depois** dos `emit` deste
@@ -316,6 +332,30 @@ io.on('connection', (socket) => {
       return;
     }
     const name = sanitizeDisplayName(displayName);
+
+    // A retomada vem **antes** do `isFull`, e a ordem é a regra: a vaga que
+    // torna a sala cheia pode ser a reserva do próprio retornante. Checar
+    // `isFull` primeiro o barraria com a cadeira que foi guardada para ele — um
+    // bug que só aparece com a sala em 6, que é exatamente o cenário que a
+    // reserva existe para cobrir.
+    if (isResumeTokenShaped(resumeToken)) {
+      const resumed = rooms.consumeResumeToken(resumeToken, roomId);
+      if (resumed) {
+        // Nome do registro, e não do payload: a autoridade do token cobre a
+        // identidade que foi aprovada, e nada além. Deixar o payload renomear
+        // abriria um canal de renomeação que ninguém revisa — quem volta
+        // apareceria com nome novo na tela de quem nem viu a queda.
+        admitToRoom(socket, roomId, resumed.displayName);
+        telemetry.recordJoin('resumed');
+        // E nenhum broadcast de `join-request`: o modal não aparece para
+        // ninguém. É o ponto inteiro desta entrega.
+        return;
+      }
+      // Token que não vale **não** nega entrada: cai no fluxo de sempre, sem
+      // `join-denied`, sem log e sem métrica de fracasso. Um token ruim que
+      // negasse seria uma forma de bloquear alguém plantando lixo no
+      // `sessionStorage` dele.
+    }
 
     if (rooms.isFull(roomId)) {
       socket.emit('join-denied', { reason: 'room-full' });
@@ -392,13 +432,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('leave-room', () => {
-    leaveCurrentRoom(socket);
+    leaveCurrentRoom(socket, 'leave');
   });
 
   socket.on('disconnect', () => {
     const pending = pendingJoins.get(socket.id);
     if (pending) cancelPendingJoin(socket.id, pending.roomId);
-    leaveCurrentRoom(socket);
+    leaveCurrentRoom(socket, 'disconnect');
   });
 });
 
@@ -425,16 +465,35 @@ function admitToRoom(socket: Socket, roomId: string, displayName: string): void 
   rooms.addMember(roomId, socket.id, displayName);
   socket.join(roomId);
 
+  // Toda admissão rotaciona: primeira da sala, aprovada e retomada. O token
+  // anterior daquele socket morre aqui dentro, o que é o que impede replay.
+  //
+  // Este valor tem exatamente um destino — o `join-approved` logo abaixo, que
+  // vai só para o socket admitido. Ele não entra em log, em atributo de
+  // métrica, em mensagem de erro nem no `peer-joined` que sai na sequência.
+  const resumeToken = rooms.issueResumeToken(roomId, socket.id, displayName);
+
   socket.emit('join-approved', {
     selfId: socket.id,
     members: existingMembers.map(([id, info]) => ({ id, displayName: info.displayName })),
     maxParticipants: MAX_PARTICIPANTS,
+    resumeToken,
   });
 
   socket.to(roomId).emit('peer-joined', { peerId: socket.id, displayName });
 }
 
-function leaveCurrentRoom(socket: Socket): void {
+/**
+ * Saída da sala, com o motivo — e o motivo decide a graça.
+ *
+ * Os dois chamadores têm semânticas diferentes e não podem compartilhar
+ * comportamento aqui: quem **caiu** (`disconnect`) ganha os 60 segundos e a
+ * vaga reservada; quem **clicou em sair** (`leave-room`) decidiu sair, e
+ * reservar a cadeira dele num teto de 6 seguraria um lugar que ninguém pediu.
+ * Confiar na limpeza que o client faz do `sessionStorage` não substitui isto —
+ * seria uma regra de acesso implementada do lado errado do fio.
+ */
+function leaveCurrentRoom(socket: Socket, reason: 'leave' | 'disconnect'): void {
   const roomId = rooms.findRoomOf(socket.id);
   if (!roomId) return;
 
@@ -445,6 +504,12 @@ function leaveCurrentRoom(socket: Socket): void {
   const stats = rooms.roomStats(roomId);
 
   rooms.removeMember(roomId, socket.id);
+  // Depois da remoção, sempre: a graça descreve uma **ausência**, e armá-la com
+  // o socket ainda na sala faria o próprio token do ausente ser recusado pela
+  // regra anti-clone. Se este era o último membro, a sala já morreu e levou os
+  // tokens dela junto — quem voltar entra como primeiro, por `admitted`.
+  if (reason === 'disconnect') rooms.armResumeGrace(roomId, socket.id);
+  else rooms.discardResumeTokens(roomId, socket.id);
   socket.leave(roomId);
   socket.to(roomId).emit('peer-left', { peerId: socket.id });
 

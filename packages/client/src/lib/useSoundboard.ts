@@ -107,6 +107,7 @@ export function useSoundboard({ storage }: UseSoundboardOptions = {}) {
       }
       const result = addFileFavorite(prefs, file, { fileId, now: Date.now() });
       if (!result.ok) {
+        removeAudioFile(fileId).catch(() => {});
         setError(mensagem(result.reason));
         return false;
       }
