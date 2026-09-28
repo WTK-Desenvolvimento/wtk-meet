@@ -41,3 +41,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - name: Pack extension zip
+        run: |
+          npm run pack:extension
+          unzip -Z1 packages/extension/release/wtk-meet-extension-v*.zip | grep -qx 'manifest.json'

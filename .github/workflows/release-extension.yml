@@ -1,0 +1,54 @@
+name: Release extension zip
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag da release (ex.: v1.1.0)
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-extension-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+
+      - run: npm ci
+
+      # A tag aponta para um commit anterior ao bump feito por release-version.yml,
+      # então o manifest ainda teria a versão antiga. Carimba a versão da tag só no
+      # working tree do runner (sem commit).
+      - name: Stamp version from tag
+        run: |
+          VERSION="${TAG#v}"
+          for f in packages/extension/manifest.json packages/extension/package.json; do
+            jq --arg v "$VERSION" '.version = $v' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+          done
+
+      - run: npm run build:extension
+
+      - run: npm run pack:extension
+
+      - name: Upload zip to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" packages/extension/release/wtk-meet-extension-v*.zip --clobber

@@ -22,6 +22,7 @@
     "build:server": "npm -w wtk-meet-server run build",
     "build:client": "npm -w wtk-meet-client run build",
     "build:extension": "npm -w wtk-meet-extension run build",
+    "pack:extension": "npm -w wtk-meet-extension run pack",
     "test": "npm -w wtk-meet-client -w wtk-meet-server -w wtk-meet-extension run test",
     "test:e2e": "npm -w wtk-meet-e2e run test",
     "test:e2e:extension": "npm -w wtk-meet-e2e run test:extension",

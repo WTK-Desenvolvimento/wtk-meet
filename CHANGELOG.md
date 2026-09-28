@@ -9,6 +9,8 @@ e o projeto adere ao [Versionamento Semantico](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
+- A cada release publicada, o CI gera e anexa `wtk-meet-extension-v<versao>.zip` (a extensao
+  compilada) aos assets da release. `npm run pack:extension` gera o mesmo zip localmente.
 - Extensao Chrome (MV3) em `packages/extension`: um motor de audio unico — uma fila,
   um player, um soundboard e um `AudioContext` num documento offscreen — compartilhado
   por todas as abas e conectado a uma sala wtk-meet paralela, que serve de canal de
