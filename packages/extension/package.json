@@ -1,6 +1,6 @@
 {
   "name": "wtk-meet-extension",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "license": "Apache-2.0",
   "description": "Extensão Chrome (MV3) com um motor de áudio único para música e soundboard numa sala wtk-meet paralela",
