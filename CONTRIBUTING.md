@@ -79,10 +79,10 @@ O flag `-s` adiciona automaticamente a linha `Signed-off-by: Seu Nome <email>` a
 
 ## Releases
 
-Crie a release (com tag `vX.Y.Z`) no GitHub. O CI faz o bump de versao em `main`
-(`release-version.yml`) e anexa o zip da extensao a release (`release-extension.yml`). Para
-reprocessar uma release existente, rode o workflow **Release extension zip** manualmente
-informando a tag.
+Crie a release no GitHub com uma tag no formato `vX.Y.Z` (outros formatos, como `v1.2.0-beta.1`, são rejeitados pelos workflows, pois o manifest do Chrome só aceita números). O CI faz o bump de versao em `main`
+(`release-version.yml`) e anexa o zip da extensao a release (`release-extension.yml`). Releases cuja tag aponta
+para um commit anterior a esses workflows não os disparam: para elas (e para reprocessar qualquer
+release), rode o workflow **Release extension zip** manualmente informando a tag.
 
 ## Estilo de codigo
 
