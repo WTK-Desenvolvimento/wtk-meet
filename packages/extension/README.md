@@ -13,6 +13,7 @@ A documentação de produto está no [README da raiz](../../README.md#extensão-
 
 ```bash
 npm run build:extension   # (da raiz) gera dist/, carregável sem compactação
+npm run pack:extension    # (da raiz) empacota dist/ em release/wtk-meet-extension-v<versão>.zip
 npm test                  # (da raiz) inclui os unitários daqui
 npm run test:e2e:extension        # duas abas, um motor só
 npm run test:e2e:extension:room   # o app ouve o que sai do motor

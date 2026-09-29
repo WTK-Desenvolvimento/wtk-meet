@@ -15,6 +15,8 @@ jobs:
         with:
           node-version: 26
           cache: npm
+      - name: Lint workflows (actionlint)
+        run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 && ./actionlint -color
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
@@ -41,3 +43,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - name: Pack extension zip
+        run: |
+          npm run pack:extension
+          unzip -Z1 packages/extension/release/wtk-meet-extension-v*.zip > zip-entries.txt
+          grep -qx 'manifest.json' zip-entries.txt
+          ! grep -q '\.map$' zip-entries.txt

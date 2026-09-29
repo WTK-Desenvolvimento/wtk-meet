@@ -77,6 +77,13 @@ O flag `-s` adiciona automaticamente a linha `Signed-off-by: Seu Nome <email>` a
    ```
 6. **Abra um Pull Request** contra `main` no repositorio original.
 
+## Releases
+
+Crie a release no GitHub com uma tag no formato `vX.Y.Z` (outros formatos, como `v1.2.0-beta.1`, são rejeitados pelos workflows, pois o manifest do Chrome só aceita números). O CI faz o bump de versao em `main`
+(`release-version.yml`) e anexa o zip da extensao a release (`release-extension.yml`). Releases cuja tag aponta
+para um commit anterior a esses workflows não os disparam: para elas (e para reprocessar qualquer
+release), rode o workflow **Release extension zip** manualmente informando a tag.
+
 ## Estilo de codigo
 
 - O projeto usa **ESLint 9** com flat config. Rode `npm run lint` antes de abrir PR.

@@ -258,13 +258,13 @@ test('a ausência de E2EE derivada está escrita nos três documentos', () => {
  * que o §11 do `ARCHITECTURE.md` persegue, só que no empacotamento em vez de no
  * áudio.
  *
- * `dist/`, `icons/` e `node_modules/` são ignorados **de propósito** — os dois
- * primeiros o `build.ts` gera (os ícones são desenhados por
+ * `dist/`, `icons/`, `release/` e `node_modules/` são ignorados **de propósito** —
+ * `dist/` e `icons/` o `build.ts` gera, `release/` recebe o zip de `tools/pack.ts` (os ícones são desenhados por
  * `tools/makeIcons.ts`, para não versionar binário). Qualquer outra ausência é
  * defeito, e a mensagem traz a regra de `.gitignore` responsável para que o
  * conserto não dependa de adivinhação.
  */
-const GERADOS_DE_PROPOSITO = new Set(['node_modules', 'dist', 'icons']);
+const GERADOS_DE_PROPOSITO = new Set(['node_modules', 'dist', 'icons', 'release']);
 
 function arquivosEmDisco(relativo = ''): string[] {
   return readdirSync(join(EXT, relativo), { withFileTypes: true }).flatMap((entrada) => {

@@ -482,6 +482,13 @@ pessoas da mesma reunião chegam ao mesmo lugar sem combinar nada.
 
 ### Instalar
 
+**Pela release (sem clonar o repositório):** baixe o `wtk-meet-extension-v<versão>.zip` na
+[página de releases](https://github.com/WTK-Desenvolvimento/wtk-meet/releases), descompacte **numa pasta nova** (o zip não tem pasta raiz) e, em `chrome://extensions` → **Modo do
+desenvolvedor** → **Carregar sem compactação**, escolha a pasta descompactada. O zip é
+anexado automaticamente a cada release.
+
+**Pelo código:**
+
 ```bash
 npm install                    # na raiz, uma vez
 npm run build:extension        # gera packages/extension/dist/
